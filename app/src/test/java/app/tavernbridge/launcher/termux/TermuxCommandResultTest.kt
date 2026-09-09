@@ -1,0 +1,66 @@
+package app.tavernbridge.launcher.termux
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class TermuxCommandResultTest {
+    @Test
+    fun `android result ok minus one and shell exit zero is success`() {
+        val result = TermuxCommandResult(
+            callbackId = "test",
+            stdout = "ok",
+            stderr = "",
+            exitCode = 0,
+            errorCode = -1,
+            errorMessage = "",
+        )
+
+        assertTrue(result.isSuccess)
+    }
+
+    @Test
+    fun `shell failures include stable support code`() {
+        val result = TermuxCommandResult(
+            callbackId = "test",
+            stdout = "",
+            stderr = "저장 공간이 부족합니다.",
+            exitCode = 30,
+            errorCode = -1,
+            errorMessage = "",
+        )
+
+        assertFalse(result.isSuccess)
+        assertTrue(result.readableError().startsWith("[INSUFFICIENT_STORAGE]"))
+    }
+
+    @Test
+    fun `missing result bundle is not success`() {
+        val result = TermuxCommandResult(
+            callbackId = "test",
+            stdout = "",
+            stderr = "",
+            exitCode = -1,
+            errorCode = 0,
+            errorMessage = "Termux 실행 결과 Bundle을 읽지 못했습니다.",
+        )
+
+        assertFalse(result.isSuccess)
+        assertTrue(result.readableError().contains("Bundle"))
+    }
+
+    @Test
+    fun `manager error code overrides numeric fallback and is hidden from detail`() {
+        val result = TermuxCommandResult(
+            callbackId = "test",
+            stdout = "",
+            stderr = "복원 공간이 부족합니다.\nerror_code=RESTORE_NO_SPACE",
+            exitCode = 29,
+            errorCode = -1,
+            errorMessage = "",
+        )
+
+        assertTrue(result.readableError().startsWith("[RESTORE_NO_SPACE]"))
+        assertFalse(result.readableError().contains("error_code="))
+    }
+}

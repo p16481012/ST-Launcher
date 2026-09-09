@@ -1,0 +1,90 @@
+name: Android build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          validate-wrappers: true
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Check manager shell syntax
+        run: bash -n app/src/main/assets/manager.sh
+
+      - name: Test manager safety helpers
+        run: bash scripts/test-manager.sh
+
+      - name: Test, lint, and build debug and unsigned release APKs
+        run: ./gradlew --no-daemon test lint assembleDebug assembleRelease
+
+      - name: Verify APK identities and versions
+        run: |
+          for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release-unsigned.apk; do
+            badging="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
+            echo "$badging"
+            grep -F "versionCode='1'" <<< "$badging"
+            if [[ "$apk" == */release/* ]]; then
+              grep -F "package: name='app.tavernbridge.stlauncher'" <<< "$badging"
+              grep -F "versionName='0.1.0'" <<< "$badging"
+              if grep -q 'application-debuggable' <<< "$badging"; then
+                echo 'Production APK must not be debuggable' >&2
+                exit 1
+              fi
+            else
+              grep -F "package: name='app.tavernbridge.stlauncher.debug'" <<< "$badging"
+              grep -F "versionName='0.1.0-dev'" <<< "$badging"
+            fi
+          done
+
+      - name: Upload unsigned release APK (build validation only, not installable)
+        uses: actions/upload-artifact@v6
+        with:
+          name: st-launcher-release-unsigned
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-unit-test-reports
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-lint-report
+          path: app/build/reports/lint-results-*.html
+          if-no-files-found: ignore
+          retention-days: 14
