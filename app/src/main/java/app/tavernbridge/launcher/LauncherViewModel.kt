@@ -49,6 +49,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             autoBackupBeforeUpdate = repository.autoBackupBeforeUpdate(),
             backgroundStatus = repository.backgroundStatus(),
             lastOperationResult = operationResultStore.load(),
+            lastTrashedEntryId = repository.lastTrashedEntryId(),
         ),
     )
     val state = mutableState.asStateFlow()

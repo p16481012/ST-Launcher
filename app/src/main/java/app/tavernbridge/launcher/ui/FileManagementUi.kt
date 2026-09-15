@@ -83,7 +83,7 @@ internal fun InstallationImportConfirmation(
                 Text("파일 용량: ${fileBytes(installation.sizeBytes)}")
                 Text("사용할 위치: ${installation.destinationPath}", fontFamily = FontFamily.Monospace)
                 Text(if (installation.sameInstallation) "이미 런처가 사용하는 설치 폴더입니다. 이 폴더를 복사하거나 삭제하지 않습니다."
-                    else "원본을 임시 복사하고 구조·용량·실행 패키지를 검사합니다. 이동이 성공한 뒤에만 선택한 원본 폴더를 삭제합니다. 실패하면 원본을 유지합니다.")
+                    else "다른 런처에서 실행한 서버도 먼저 종료해 주세요. 원본을 임시 복사하고 구조·용량·실행 패키지를 검사합니다. 이동이 성공한 뒤에만 선택한 원본 폴더를 삭제합니다. 실패하면 원본을 유지합니다.")
                 if (!installation.sameInstallation) Text(
                     if (destinationExists) "현재 ~/SillyTavern의 데이터와 설정은 가져온 설치로 교체됩니다. 교체 전 현재 설치를 안전 보관합니다."
                     else "대상 위치에 기존 폴더가 남아 있다면 먼저 안전 보관하고 가져온 설치로 교체합니다.",

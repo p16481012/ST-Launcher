@@ -2080,6 +2080,47 @@ install_source_snapshot() {
     find "$1" -printf '%y %i %s %T@ %p\0' | LC_ALL=C sort -z | sha256sum | awk '{print $1}'
 }
 
+installation_server_running() {
+    # Other launchers do not use our PID file. Inspect only readable Node
+    # processes whose actual server.js resolves into this installation; never
+    # terminate them and do not mistake a shell with this cwd for a server.
+    local root="$1" entry pid started executable cwd argument candidate
+    local -a arguments=()
+    [[ -f "$root/server.js" ]] || return 1
+    for entry in /proc/[0-9]*/cmdline; do
+        [[ -r "$entry" ]] || continue
+        pid="${entry#/proc/}"; pid="${pid%/cmdline}"
+        executable="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        [[ "${executable##*/}" == node || "${executable##*/}" == nodejs ]] || continue
+        started="$(process_start_ticks "$pid")"
+        [[ -n "$started" ]] || continue
+        cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
+        arguments=()
+        while IFS= read -r -d '' argument; do arguments+=("$argument"); done < "$entry" 2>/dev/null || continue
+        for argument in "${arguments[@]:1}"; do
+            [[ "${argument##*/}" == server.js ]] || continue
+            if [[ "$argument" == /* ]]; then
+                candidate="$argument"
+            else
+                [[ -n "$cwd" ]] || continue
+                candidate="$cwd/$argument"
+            fi
+            if [[ "$candidate" -ef "$root/server.js" && "$(process_start_ticks "$pid")" == "$started" ]] && kill -0 "$pid" 2>/dev/null; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+ensure_restore_target_stopped() {
+    if is_running || installation_server_running "$ST_HOME" ||
+        curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+        echo "설치·데이터를 변경하기 전에 실행 중인 SillyTavern 서버를 종료해 주세요. 다른 런처에서 시작한 서버도 확인해 주세요." >&2
+        exit 10
+    fi
+}
+
 inspect_install() {
     local source destination bytes invalid same=0 tools_ready=1
     source="$(resolve_install_source "${1:-}")" || exit $?
@@ -2111,6 +2152,11 @@ import_install() {
     source="$(resolve_install_source "${1:-}")" || exit $?
     if is_running; then echo "설치 폴더를 옮기기 전에 SillyTavern 서버를 종료해 주세요." >&2; exit 10; fi
     begin_operation "import-install"
+    ensure_restore_target_stopped
+    if installation_server_running "$source"; then
+        echo "가져올 원본 설치의 서버가 실행 중입니다. 해당 런처·Termux에서 서버를 종료한 뒤 다시 시도해 주세요." >&2
+        exit 10
+    fi
     ensure_import_runtime
     validate_install_tree "$source" || exit $?
     destination="$(realpath -m "$ST_HOME")"
@@ -2146,7 +2192,7 @@ import_install() {
     restore_extracted_tree "$extracted" "existing-installation"
     # Destination is now complete and the rollback transaction has committed.
     # A late source change or cleanup failure does not invalidate that success.
-    if [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
+    if ! installation_server_running "$source" && [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
         "$(stat -c '%d:%i' -- "$source" 2>/dev/null || true)" == "$identity" &&
         "$(install_source_snapshot "$source" 2>/dev/null || true)" == "$snapshot" ]]; then
         if rm -rf -- "$source" && [[ ! -e "$source" && ! -L "$source" ]]; then
@@ -2158,7 +2204,7 @@ import_install() {
         fi
     else
         echo "source_cleanup_failed=1"
-        write_progress 100 "설치 이동 완료 · 원본 유지" "새 설치는 정상입니다. 작업 중 원본이 변경되어 원본 폴더를 지우지 않았습니다." success
+        write_progress 100 "설치 이동 완료 · 원본 유지" "새 설치는 정상입니다. 원본이 변경되었거나 원본 서버가 실행되어 원본 폴더를 지우지 않았습니다." success
     fi
     echo "imported_installation=1"
     echo "same_installation=0"
@@ -2347,6 +2393,7 @@ restore_extracted_tree() {
     required_bytes=$((incoming_bytes + current_bytes + 268435456))
     (( free_bytes >= required_bytes )) || { echo "기존 데이터 보호와 복원 적용에 필요한 저장 공간이 부족합니다." >&2; exit 29; }
 
+    ensure_restore_target_stopped
     write_progress 38 "현재 상태 보호" "문제가 생기면 되돌릴 수 있도록 현재 데이터를 임시 보관하고 있습니다."
     local -a affected=()
     if [[ ",$kinds," == *,full,* ]]; then

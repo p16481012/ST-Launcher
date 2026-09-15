@@ -17,6 +17,7 @@ zip_regression_setup() {
     source "$ROOT_DIR/app/src/main/assets/manager.sh"
     # Never install packages or access the network in these fixture tests.
     ensure_import_runtime() { command -v node >/dev/null && command -v git >/dev/null; }
+    curl() { return 1; }
     ensure_archive_tools() { command -v zip >/dev/null && command -v unzip >/dev/null; }
     install_dependencies() { echo "Unexpected dependency installation in ZIP fixture" >&2; return 99; }
 }
@@ -302,7 +303,69 @@ zip_regression_expect_exit 0 folder-changed zip_regression_folder_changed
 [[ -f "$TEST_ROOT/zip-folder-changed/old/SillyTavern/data/default-user/new.txt" ]] || fail "late source edit was deleted"
 grep -Fxq source_cleanup_failed=1 "$TEST_ROOT/zip-folder-changed.output" || fail "late source preservation was not reported"
 
+zip_regression_folder_source_running() {
+    zip_regression_setup folder-source-running
+    zip_regression_install "$ST_HOME" original 1
+    local source="$ZIP_CASE_ROOT/old/SillyTavern"
+    zip_regression_install "$source" incoming 1
+    installation_server_running() { [[ "$1" == "$source" ]]; }
+    import_install "$(printf '%s' "$source" | base64 -w 0)"
+}
+zip_regression_expect_exit 10 folder-source-running zip_regression_folder_source_running
+[[ "$(cat "$TEST_ROOT/zip-folder-source-running/install/data/default-user/state.txt")" == original ]] || fail "active source changed destination"
+[[ "$(cat "$TEST_ROOT/zip-folder-source-running/old/SillyTavern/data/default-user/state.txt")" == incoming ]] || fail "active source was removed"
+
+zip_regression_folder_source_started_late() {
+    zip_regression_setup folder-source-started-late
+    zip_regression_install "$ST_HOME" original 1
+    local source="$ZIP_CASE_ROOT/old/SillyTavern" source_started=0
+    zip_regression_install "$source" incoming 1
+    installation_server_running() { [[ "$1" == "$source" && "$source_started" == 1 ]]; }
+    install_dependencies() { source_started=1; }
+    import_install "$(printf '%s' "$source" | base64 -w 0)"
+}
+zip_regression_expect_exit 0 folder-source-started-late zip_regression_folder_source_started_late
+[[ "$(cat "$TEST_ROOT/zip-folder-source-started-late/install/data/default-user/state.txt")" == incoming ]] || fail "late source startup invalidated completed destination"
+[[ "$(cat "$TEST_ROOT/zip-folder-source-started-late/old/SillyTavern/data/default-user/state.txt")" == incoming ]] || fail "late source startup was ignored before deletion"
+grep -Fxq source_cleanup_failed=1 "$TEST_ROOT/zip-folder-source-started-late.output" || fail "late source startup preservation was not reported"
+
+zip_regression_folder_target_running() {
+    zip_regression_setup folder-target-running
+    zip_regression_install "$ST_HOME" original 1
+    local source="$ZIP_CASE_ROOT/old/SillyTavern"
+    zip_regression_install "$source" incoming 1
+    curl() { return 0; }
+    import_install "$(printf '%s' "$source" | base64 -w 0)"
+}
+zip_regression_expect_exit 10 folder-target-running zip_regression_folder_target_running
+[[ "$(cat "$TEST_ROOT/zip-folder-target-running/install/data/default-user/state.txt")" == original ]] || fail "HTTP-active target was changed"
+
 if [[ "$OSTYPE" != msys* ]]; then
+    zip_regression_source_process_probe() {
+        zip_regression_setup source-process-probe
+        local source="$ZIP_CASE_ROOT/old/SillyTavern" probe_pid found=0
+        zip_regression_install "$source" incoming 1
+        printf 'setTimeout(() => {}, 5000);\n' > "$source/server.js"
+        node "$source/server.js" &
+        probe_pid=$!
+        for _ in $(seq 1 20); do
+            if installation_server_running "$source"; then found=1; break; fi
+            sleep 0.05
+        done
+        # This is our own fixture child, never a discovered user's process.
+        kill -TERM "$probe_pid" 2>/dev/null || true
+        wait "$probe_pid" 2>/dev/null || true
+        [[ "$found" == 1 ]] || fail "source Node server outside launcher PID was not detected"
+        (cd "$source" && sleep 5) &
+        probe_pid=$!
+        found=0
+        installation_server_running "$source" && found=1
+        kill -TERM "$probe_pid" 2>/dev/null || true
+        wait "$probe_pid" 2>/dev/null || true
+        [[ "$found" == 0 ]] || fail "ordinary shell/sleep cwd was mistaken for a source server"
+    }
+    zip_regression_expect_exit 0 source-process-probe zip_regression_source_process_probe
+
     zip_regression_folder_symlink() {
         zip_regression_setup folder-symlink
         zip_regression_install "$ST_HOME" original 1

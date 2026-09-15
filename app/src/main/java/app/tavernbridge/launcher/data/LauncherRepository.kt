@@ -327,11 +327,26 @@ class LauncherRepository(private val context: Context) {
     suspend fun renameSillyTavernEntry(relativePath: String, newName: String): TermuxCommandResult =
         runManager("rename-st ${shellQuote(encodeFileArgument(relativePath))} ${shellQuote(encodeFileArgument(fileChildPath(relativePath.substringBeforeLast('/', ""), newName)))}", 30_000)
 
-    suspend fun trashSillyTavernEntry(relativePath: String): TermuxCommandResult =
-        runManager("delete-st ${shellQuote(encodeFileArgument(relativePath))}", 30_000)
+    fun lastTrashedEntryId(): String = preferences.getString("last_trashed_entry", "").orEmpty()
 
-    suspend fun restoreSillyTavernEntry(trashId: String): TermuxCommandResult =
-        runManager("restore-st-trash ${shellQuote(trashId)}", 30_000)
+    suspend fun trashSillyTavernEntry(relativePath: String): TermuxCommandResult {
+        val result = runManager("delete-st ${shellQuote(encodeFileArgument(relativePath))}", 30_000)
+        if (result.isSuccess) {
+            val id = result.stdout.lineSequence().firstOrNull { it.startsWith("trash_id=") }?.substringAfter('=')
+            if (id != null && id.matches(Regex("[0-9]+-[a-f0-9-]{36}"))) {
+                preferences.edit().putString("last_trashed_entry", id).commit()
+            }
+        }
+        return result
+    }
+
+    suspend fun restoreSillyTavernEntry(trashId: String): TermuxCommandResult {
+        val result = runManager("restore-st-trash ${shellQuote(trashId)}", 30_000)
+        if (result.isSuccess && lastTrashedEntryId() == trashId) {
+            preferences.edit().remove("last_trashed_entry").commit()
+        }
+        return result
+    }
 
     suspend fun importSillyTavernFile(parent: String, uri: Uri): TermuxCommandResult {
         val destination = withContext(Dispatchers.IO) { fileChildPath(parent, importStaging.displayName(uri)) }
