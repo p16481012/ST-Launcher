@@ -922,7 +922,9 @@ class LauncherRepository(private val context: Context) {
                 if (progress.bytes != previousBytes || progress.finished) activity = now
                 previousBytes = progress.bytes
                 if ((now - lastHistoryAt >= 2_000L && progress.bytes != lastHistoryBytes) || progress.finished) {
-                    val name = redactSensitiveText(progress.name.filterNot { it.isISOControl() }.take(512))
+                    val name = redactSensitiveText(progress.name.filterNot {
+                        it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt()
+                    }, maxLength = 512)
                     history.addLast("[${clock.format(Date(now))}] ${if (progress.finished) "전달 파일 준비 완료" else "파일 복사"} · $name · ${amount(progress.bytes)} / ${amount(progress.total)}")
                     while (history.size > 8) history.removeFirst()
                     lastHistoryAt = now
