@@ -602,7 +602,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onTheme = viewModel::selectTheme,
                         onSaveServerConnection = viewModel::saveServerConnection,
                         onOpenSillyTavernFolder = viewModel::openSillyTavernFolder,
-                        onOpenSillyTavernDirectory = viewModel::openSillyTavernDirectory,
                         onWakeLockChange = viewModel::setWakeLockEnabled,
                         onOpenDeviceBatterySettings = viewModel::openDeviceBatterySettings,
                         onOpenTermuxAppSettings = viewModel::openTermuxAppSettings,
@@ -2365,7 +2364,6 @@ private fun SettingsScreen(
     onTheme: (AppTheme) -> Unit,
     onSaveServerConnection: (Int, Boolean, String) -> Unit,
     onOpenSillyTavernFolder: () -> Unit,
-    onOpenSillyTavernDirectory: () -> Unit,
     onWakeLockChange: (Boolean) -> Unit,
     onOpenDeviceBatterySettings: () -> Unit,
     onOpenTermuxAppSettings: () -> Unit,
@@ -2647,12 +2645,6 @@ private fun SettingsScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("SillyTavern 폴더 관리")
                     }
-                    OutlinedButton(onClick = onOpenSillyTavernDirectory, modifier = Modifier.fillMaxWidth(),
-                        enabled = state.environment.sillyTavernInstalled && !state.isWorking) {
-                        Text("외부에서 폴더 열기")
-                    }
-                    Text("Android 파일 화면의 Termux 위치가 열립니다. SillyTavern 폴더를 선택하세요.",
-                        style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
