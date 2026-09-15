@@ -37,7 +37,9 @@ jobs:
         run: bash -n app/src/main/assets/manager.sh
 
       - name: Test manager safety helpers
-        run: bash scripts/test-manager.sh
+        run: |
+          bash scripts/test-manager.sh
+          bash scripts/test-manager-files.sh
 
       - name: Test, lint, and build debug and unsigned release APKs
         run: ./gradlew --no-daemon test lint assembleDebug assembleRelease
@@ -47,17 +49,17 @@ jobs:
           for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release-unsigned.apk; do
             badging="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
             echo "$badging"
-            grep -F "versionCode='1'" <<< "$badging"
+            grep -F "versionCode='2'" <<< "$badging"
             if [[ "$apk" == */release/* ]]; then
               grep -F "package: name='app.tavernbridge.stlauncher'" <<< "$badging"
-              grep -F "versionName='0.1.0'" <<< "$badging"
+              grep -F "versionName='0.2.0'" <<< "$badging"
               if grep -q 'application-debuggable' <<< "$badging"; then
                 echo 'Production APK must not be debuggable' >&2
                 exit 1
               fi
             else
               grep -F "package: name='app.tavernbridge.stlauncher.debug'" <<< "$badging"
-              grep -F "versionName='0.1.0-dev'" <<< "$badging"
+              grep -F "versionName='0.2.0-dev'" <<< "$badging"
             fi
           done
 

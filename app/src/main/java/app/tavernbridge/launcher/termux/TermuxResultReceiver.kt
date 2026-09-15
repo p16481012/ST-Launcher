@@ -22,6 +22,8 @@ class TermuxResultReceiver : BroadcastReceiver() {
             errorMessage = resultBundle?.getString("errmsg")
                 ?: intent.getStringExtra("errmsg")
                 ?: "Termux 실행 결과 Bundle을 읽지 못했습니다. Termux 0.109 이상인지 확인해 주세요.",
+            stdoutOriginalLength = (resultBundle?.getString("stdout_original_length")
+                ?: intent.getStringExtra("stdout_original_length"))?.toIntOrNull() ?: -1,
         )
         TermuxResultBus.publish(result)
     }

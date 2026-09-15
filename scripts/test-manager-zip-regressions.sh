@@ -2,7 +2,7 @@
 # Sourced by the sandbox test harness when real ZIP tools are available.
 # Every fixture lives below TEST_ROOT; HOME and the user's Git config are untouched.
 
-for zip_test_tool in zip unzip zipinfo git; do
+for zip_test_tool in zip unzip zipinfo git node npm tar; do
     command -v "$zip_test_tool" >/dev/null 2>&1 || fail "ZIP regressions require $zip_test_tool"
 done
 
@@ -16,6 +16,7 @@ zip_regression_setup() {
     mkdir -p "$ST_HOME" "$ST_DOWNLOAD_DIR" "$PREFIX/etc/apt"
     source "$ROOT_DIR/app/src/main/assets/manager.sh"
     # Never install packages or access the network in these fixture tests.
+    ensure_import_runtime() { command -v node >/dev/null && command -v git >/dev/null; }
     ensure_archive_tools() { command -v zip >/dev/null && command -v unzip >/dev/null; }
     install_dependencies() { echo "Unexpected dependency installation in ZIP fixture" >&2; return 99; }
 }
@@ -118,22 +119,24 @@ zip_regression_generic_import() {
     mkdir -p "$payload/public/scripts/extensions/third-party/example"
     printf 'extension fixture\n' > "$payload/public/scripts/extensions/third-party/example/index.js"
     zip_regression_archive "$payload" "$DOWNLOAD_DIR/SillyTavern-Import-Generic.zip"
+    unzip() {
+        printf '%s\n' "$1" >> "$ZIP_CASE_ROOT/unzip-calls"
+        command unzip "$@"
+    }
     import_backup SillyTavern-Import-Generic.zip
 }
 
 zip_regression_expect_exit 0 generic-import zip_regression_generic_import
-mapfile -t zip_imported_archives < <(find "$TEST_ROOT/zip-generic-import/downloads" -maxdepth 1 -type f -name 'SillyTavern-Launcher-*.zip')
-[[ "${#zip_imported_archives[@]}" == 1 ]] || fail "generic ZIP did not create exactly one launcher backup"
-zip_regression_metadata_complete "${zip_imported_archives[0]}"
-unzip -p "${zip_imported_archives[0]}" .st-launcher-manifest > "$TEST_ROOT/zip-generic-import/manifest.txt"
-grep -Fxq 'items=user_data,config,extensions' "$TEST_ROOT/zip-generic-import/manifest.txt" ||
-    fail "no-Git ZIP was not normalized to partial data/config/extensions"
-unzip -Z1 "${zip_imported_archives[0]}" > "$TEST_ROOT/zip-generic-import/entries.txt"
-if grep -Fxq package.json "$TEST_ROOT/zip-generic-import/entries.txt"; then
-    fail "partial generic import retained the unmanageable installation files"
-fi
-[[ "$(cat "$TEST_ROOT/zip-generic-import/install/data/default-user/state.txt")" == original ]] ||
-    fail "ZIP import changed the current installation"
+[[ -z "$(find "$TEST_ROOT/zip-generic-import/downloads" -maxdepth 1 -type f -name '*.zip')" ]] ||
+    fail "generic ZIP import left an intermediate or picker ZIP"
+[[ "$(cat "$TEST_ROOT/zip-generic-import/install/data/default-user/state.txt")" == incoming ]] ||
+    fail "generic ZIP import did not directly restore the data"
+[[ "$(cat "$TEST_ROOT/zip-generic-import/install/config.yaml")" == incoming-config ]] ||
+    fail "generic ZIP config was not restored"
+[[ -f "$TEST_ROOT/zip-generic-import/install/public/scripts/extensions/third-party/example/index.js" ]] ||
+    fail "generic ZIP extension was not restored"
+[[ "$(cat "$TEST_ROOT/zip-generic-import/unzip-calls")" == -oq ]] ||
+    fail "generic import inflated the ZIP more than once"
 
 zip_regression_tiny_backup() {
     zip_regression_setup tiny-backup
@@ -199,3 +202,132 @@ zip_regression_expect_exit 25 partial-copy zip_regression_partial_copy_failure
     fail "partial first-copy failure did not roll back the later config replacement"
 
 echo "manager real-ZIP regression tests passed"
+
+zip_regression_data_root() {
+    zip_regression_setup data-root
+    zip_regression_install "$ST_HOME" original
+    local payload="$ZIP_CASE_ROOT/payload"
+    mkdir -p "$payload/data/default-user/characters" "$payload/data/second-user/chats"
+    printf 'character\n' > "$payload/data/default-user/characters/card.json"
+    printf 'chat\n' > "$payload/data/second-user/chats/chat.jsonl"
+    zip_regression_archive "$payload" "$DOWNLOAD_DIR/SillyTavern-Import-Data.zip"
+    import_backup SillyTavern-Import-Data.zip
+}
+zip_regression_expect_exit 0 data-root zip_regression_data_root
+[[ -f "$TEST_ROOT/zip-data-root/install/data/second-user/chats/chat.jsonl" ]] || fail "data-only root lost additional users"
+
+zip_regression_users_root() {
+    zip_regression_setup users-root
+    zip_regression_install "$ST_HOME" original
+    local payload="$ZIP_CASE_ROOT/payload"
+    mkdir -p "$payload/default-user/characters" "$payload/second-user/chats"
+    printf 'character\n' > "$payload/default-user/characters/card.json"
+    printf 'chat\n' > "$payload/second-user/chats/chat.jsonl"
+    zip_regression_archive "$payload" "$DOWNLOAD_DIR/SillyTavern-Import-Users.zip"
+    import_backup SillyTavern-Import-Users.zip
+}
+zip_regression_expect_exit 0 users-root zip_regression_users_root
+[[ -f "$TEST_ROOT/zip-users-root/install/data/second-user/chats/chat.jsonl" ]] || fail "users-only root lost sibling users"
+
+zip_regression_missing_install() {
+    zip_regression_setup missing-install
+    local payload="$ZIP_CASE_ROOT/payload"
+    mkdir -p "$payload/data/default-user"
+    printf 'incoming\n' > "$payload/data/default-user/state.txt"
+    zip_regression_archive "$payload" "$DOWNLOAD_DIR/SillyTavern-Import-Missing.zip"
+    import_backup SillyTavern-Import-Missing.zip
+}
+zip_regression_expect_exit 24 missing-install zip_regression_missing_install
+[[ ! -e "$TEST_ROOT/zip-missing-install/install/data" ]] || fail "partial backup modified incomplete target"
+
+zip_regression_folder_move() {
+    zip_regression_setup folder-move
+    zip_regression_install "$ST_HOME" original 1
+    local source="$ZIP_CASE_ROOT/Documents/SillyTavern"
+    zip_regression_install "$source" incoming 1
+    mkdir -p "$source/node_modules" "$source/.git/hooks"
+    printf 'old-device-module\n' > "$source/node_modules/old.txt"
+    printf 'malicious hook fixture\n' > "$source/.git/hooks/post-checkout"
+    git -C "$source" config core.sshCommand 'never-execute-fixture'
+    install_dependencies() {
+        [[ ! -e "$ST_HOME/node_modules/old.txt" ]] || fail "source dependencies were copied"
+        mkdir -p "$ST_HOME/node_modules"
+        printf 'current-device-module\n' > "$ST_HOME/node_modules/current.txt"
+        dependency_hash > "$DEPENDENCY_HASH_FILE"
+    }
+    import_install "$(printf '%s' "$source" | base64 -w 0)"
+}
+zip_regression_expect_exit 0 folder-move zip_regression_folder_move
+[[ "$(cat "$TEST_ROOT/zip-folder-move/install/data/default-user/state.txt")" == incoming ]] || fail "existing folder was not adopted"
+[[ ! -e "$TEST_ROOT/zip-folder-move/Documents/SillyTavern" ]] || fail "successful move retained the source"
+[[ ! -f "$TEST_ROOT/zip-folder-move/install/.git/hooks/post-checkout" ]] || fail "imported executable Git hooks were retained"
+if grep -Fq never-execute-fixture "$TEST_ROOT/zip-folder-move/install/.git/config"; then fail "imported Git executable configuration was retained"; fi
+
+zip_regression_folder_failure() {
+    zip_regression_setup folder-failure
+    zip_regression_install "$ST_HOME" original 1
+    local source="$ZIP_CASE_ROOT/TermuxOld/SillyTavern"
+    zip_regression_install "$source" incoming 1
+    install_dependencies() { return 1; }
+    import_install "$(printf '%s' "$source" | base64 -w 0)"
+}
+zip_regression_expect_exit 26 folder-failure zip_regression_folder_failure
+[[ "$(cat "$TEST_ROOT/zip-folder-failure/install/data/default-user/state.txt")" == original ]] || fail "failed folder import did not roll back destination"
+[[ "$(cat "$TEST_ROOT/zip-folder-failure/TermuxOld/SillyTavern/data/default-user/state.txt")" == incoming ]] || fail "failed folder import removed source"
+
+zip_regression_folder_same() {
+    zip_regression_setup folder-same
+    zip_regression_install "$ST_HOME" original 1
+    import_install "$(printf '%s' "$ST_HOME" | base64 -w 0)"
+}
+zip_regression_expect_exit 0 folder-same zip_regression_folder_same
+[[ "$(cat "$TEST_ROOT/zip-folder-same/install/data/default-user/state.txt")" == original ]] || fail "same-path adoption deleted or changed live installation"
+
+zip_regression_folder_overlap() {
+    zip_regression_setup folder-overlap
+    zip_regression_install "$ST_HOME" original 1
+    import_install "$(printf '%s' "$ST_HOME/data" | base64 -w 0)"
+}
+zip_regression_expect_exit 51 folder-overlap zip_regression_folder_overlap
+
+zip_regression_folder_changed() {
+    zip_regression_setup folder-changed
+    zip_regression_install "$ST_HOME" original 1
+    local source="$ZIP_CASE_ROOT/old/SillyTavern"
+    zip_regression_install "$source" incoming 1
+    install_dependencies() { printf 'late-edit\n' > "$source/data/default-user/new.txt"; }
+    import_install "$(printf '%s' "$source" | base64 -w 0)"
+}
+zip_regression_expect_exit 0 folder-changed zip_regression_folder_changed
+[[ -f "$TEST_ROOT/zip-folder-changed/old/SillyTavern/data/default-user/new.txt" ]] || fail "late source edit was deleted"
+grep -Fxq source_cleanup_failed=1 "$TEST_ROOT/zip-folder-changed.output" || fail "late source preservation was not reported"
+
+if [[ "$OSTYPE" != msys* ]]; then
+    zip_regression_folder_symlink() {
+        zip_regression_setup folder-symlink
+        zip_regression_install "$ST_HOME" original 1
+        local source="$ZIP_CASE_ROOT/old/SillyTavern"
+        zip_regression_install "$source" incoming 1
+        ln -s "$ST_HOME/data" "$source/data/outside"
+        import_install "$(printf '%s' "$source" | base64 -w 0)"
+    }
+    zip_regression_expect_exit 53 folder-symlink zip_regression_folder_symlink
+    [[ "$(cat "$TEST_ROOT/zip-folder-symlink/install/data/default-user/state.txt")" == original ]] || fail "unsafe folder modified destination"
+fi
+
+echo "manager single-pass ZIP and installation-move regression tests passed"
+
+zip_regression_unsafe_archive() {
+    local kind="$1"
+    zip_regression_setup "unsafe-$kind"
+    zip_regression_install "$ST_HOME" original 1
+    node "$ROOT_DIR/scripts/zip-safety-fixture.cjs" "$kind" "$DOWNLOAD_DIR/SillyTavern-Import-Unsafe.zip"
+    import_backup SillyTavern-Import-Unsafe.zip
+}
+for zip_unsafe_case in traversal:21 duplicate:21 symlink:22 encrypted:23 size-mismatch:20 unicode:21 crc:20; do
+    zip_unsafe_name="${zip_unsafe_case%:*}"
+    zip_regression_expect_exit "${zip_unsafe_case#*:}" "unsafe-$zip_unsafe_name" zip_regression_unsafe_archive "$zip_unsafe_name"
+    [[ "$(cat "$TEST_ROOT/zip-unsafe-$zip_unsafe_name/install/data/default-user/state.txt")" == original ]] ||
+        fail "unsafe $zip_unsafe_name ZIP modified live data"
+done
+echo "manager malicious-ZIP regression tests passed"

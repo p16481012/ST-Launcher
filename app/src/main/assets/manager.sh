@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-MANAGER_VERSION="6"
+MANAGER_VERSION="7"
 LAUNCHER_VERSION="${ST_LAUNCHER_VERSION:-unknown}"
 ST_HOME="${ST_HOME:-$HOME/SillyTavern}"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -30,6 +30,7 @@ CURRENT_OPERATION="idle"
 LAST_LOGGED_PROGRESS=""
 OPERATION_STARTED_EPOCH=0
 CURRENT_WORK_DIR=""
+CURRENT_IMPORT_ARCHIVE=""
 TEMP_APT_SOURCES=""
 OPERATION_LOCK_START=""
 RESTORE_TRANSACTION_ACTIVE=0
@@ -88,6 +89,12 @@ manager_error_code() {
         import-backup:22) echo "IMPORT_ZIP_SYMLINK_REJECTED" ;;
         import-backup:23) echo "IMPORT_FORMAT_UNSUPPORTED" ;;
         import-backup:29) echo "IMPORT_NO_SPACE" ;;
+        inspect-install:50|import-install:50) echo "INSTALL_IMPORT_INVALID_PATH" ;;
+        inspect-install:51|import-install:51) echo "INSTALL_IMPORT_OVERLAP" ;;
+        inspect-install:52|import-install:52) echo "INSTALL_IMPORT_INVALID_INSTALLATION" ;;
+        inspect-install:53|import-install:53) echo "INSTALL_IMPORT_UNSAFE_ENTRY" ;;
+        inspect-install:54|import-install:54) echo "INSTALL_IMPORT_NO_SPACE" ;;
+        import-install:55) echo "INSTALL_IMPORT_COPY_FAILED" ;;
         update:29) echo "UPDATE_NODE_REQUIREMENT" ;;
         update:30) echo "UPDATE_NO_SPACE" ;;
         update:31) echo "UPDATE_GIT_FAILED" ;;
@@ -127,6 +134,12 @@ manager_error_code() {
         *:32) echo "UPDATE_PACKAGES_FAILED" ;;
         *:33) echo "UPDATE_SERVER_FAILED" ;;
         *:34) echo "UPDATE_HISTORY_DIVERGED" ;;
+        *:40) echo "FILE_EDIT_TOO_LARGE" ;;
+        *:41) echo "FILE_NOT_TEXT" ;;
+        *:42) echo "FILE_EDIT_CONFLICT" ;;
+        *:43) echo "FILE_ALREADY_EXISTS" ;;
+        *:44) echo "FILE_PROTECTED_PATH" ;;
+        *:45) echo "FILE_OPERATION_FAILED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
         *) echo "UNKNOWN_COMMAND_FAILURE" ;;
@@ -160,7 +173,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        install|start|stop|restart|backup|import-backup|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection)
+        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|import-st-file|mkdir-st|rename-st|delete-st|restore-st-trash)
             return 0
             ;;
         *)
@@ -232,6 +245,11 @@ track_current_work_dir() {
 }
 
 cleanup_current_work_dir() {
+    # The Android picker creates this disposable copy; never remove its source URI.
+    if [[ -n "$CURRENT_IMPORT_ARCHIVE" && "$CURRENT_IMPORT_ARCHIVE" == "$DOWNLOAD_DIR/SillyTavern-Import-"*.zip ]]; then
+        rm -f -- "$CURRENT_IMPORT_ARCHIVE"
+        CURRENT_IMPORT_ARCHIVE=""
+    fi
     if (( RESTORE_TRANSACTION_ACTIVE || RESTORE_RECOVERY_RETAINED )); then
         printf '복원 복구 사본을 보존했습니다: %s\n' "$CURRENT_WORK_DIR" >&2
         return 0
@@ -1365,104 +1383,75 @@ import_backup() {
         exit 64
     }
     local archive="$DOWNLOAD_DIR/$file_name"
-    [[ -f "$archive" ]] || { echo "선택한 ZIP 파일을 Download 폴더에서 찾을 수 없습니다." >&2; exit 6; }
+    [[ -f "$archive" && ! -L "$archive" ]] || { echo "선택한 ZIP 파일을 Download 폴더에서 찾을 수 없습니다." >&2; exit 6; }
+    if is_running; then
+        echo "백업을 가져와 복원하기 전에 SillyTavern 서버를 종료해 주세요." >&2
+        exit 10
+    fi
     begin_operation "import-backup"
+    CURRENT_IMPORT_ARCHIVE="$archive"
+    ensure_import_runtime
     ensure_archive_tools
-    write_progress 8 "가져온 ZIP 검사" "손상 여부와 내부 경로를 확인하고 있습니다."
-    if ! unzip -tq "$archive" >> "$LOG_FILE" 2>&1; then
-        rm -f "$archive"
-        echo "선택한 ZIP 파일이 손상되어 가져올 수 없습니다." >&2
-        exit 20
-    fi
-    if unzip -Z1 "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$)|\\)'; then
-        rm -f "$archive"
-        echo "ZIP 안에 안전하지 않은 경로가 있습니다." >&2
-        exit 21
-    fi
-    if zipinfo -l "$archive" 2>/dev/null | awk '$1 ~ /^l/ {found=1} END {exit !found}'; then
-        rm -f "$archive"
-        echo "심볼릭 링크가 포함된 ZIP은 가져올 수 없습니다." >&2
-        exit 22
-    fi
-
-    local expanded_size free_bytes
-    if ! expanded_size="$(unsigned_decimal "$(archive_expanded_size "$archive")")" ||
-        ! free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)")" ||
-        (( expanded_size > free_bytes / 2 )); then
-        rm -f "$archive"
-        echo "ZIP을 안전하게 검사하고 변환할 저장 공간이 부족합니다." >&2
-        exit 29
-    fi
-
-    local output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S).zip"
-    while [[ -e "$output" ]]; do
-        sleep 1
-        output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S).zip"
-    done
-    local existing_manifest
-    existing_manifest="$(unzip -p "$archive" .st-launcher-manifest 2>/dev/null || true)"
-    if [[ "$(printf '%s\n' "$existing_manifest" | sed -n 's/^format=//p' | head -n 1)" == "st-launcher-backup-v1" ]]; then
-        if ! backup_metadata_valid "$existing_manifest"; then
-            rm -f "$archive"
-            echo "백업 manifest의 항목 또는 숫자 정보가 올바르지 않습니다." >&2
-            exit 23
-        fi
-        mv "$archive" "$output"
-        write_progress 100 "백업 가져오기 완료" "런처 백업을 Download 폴더에 등록했습니다." success
-        echo "imported=$(basename "$output")"
-        return 0
-    fi
-
-    write_progress 26 "백업 구조 분석" "일반 SillyTavern ZIP에서 복원 가능한 항목을 찾고 있습니다."
     local work="$BACKUP_DIR/import-work-$$"
     track_current_work_dir "$work"
     local extracted="$work/extracted"
     local normalized="$work/normalized"
-    mkdir -p "$extracted" "$normalized"
-    if ! unzip -q "$archive" -x 'node_modules/*' '*/node_modules/*' -d "$extracted"; then
-        rm -rf "$work"; rm -f "$archive"
-        echo "ZIP을 임시 검사 폴더에 풀지 못했습니다." >&2
-        exit 20
+    mkdir -p "$extracted" "$normalized" "$work/rollback"
+    extract_restore_archive "$archive" "$extracted"
+
+    # Native backups keep their manifest semantics, but use the same single
+    # extraction/apply path as foreign backups instead of creating another ZIP.
+    if [[ -f "$extracted/.st-launcher-manifest" ]]; then
+        restore_extracted_tree "$extracted" "$file_name"
+        echo "imported_restore=1"
+        return 0
     fi
 
+    write_progress 30 "백업 구조 분석" "한 번 해제한 파일에서 복원할 데이터 구조를 확인하고 있습니다."
     local root="$extracted"
     local -a top_entries=()
     while IFS= read -r -d '' entry; do top_entries+=("$entry"); done < <(find "$extracted" -mindepth 1 -maxdepth 1 -print0)
-    if (( ${#top_entries[@]} == 1 )) && [[ -d "${top_entries[0]}" ]]; then
+    # Keep known data roots intact. A single default-user/data folder is not a
+    # generic archive wrapper; unwrapping it would lose other users/settings.
+    if (( ${#top_entries[@]} == 1 )) && [[ -d "${top_entries[0]}" &&
+        ! -d "$root/data" && ! -d "$root/default-user" && ! -d "$root/characters" && ! -d "$root/chats" ]]; then
         root="${top_entries[0]}"
     fi
 
     local kinds=""
     if valid_full_installation "$root"; then
-        cp -a "$root"/. "$normalized"/
+        # Renaming within the staging filesystem is cheap, even for huge data.
+        rmdir "$normalized"
+        mv "$root" "$normalized"
         kinds="full"
     else
         if [[ -f "$root/package.json" && -f "$root/server.js" && -d "$root/data" ]]; then
             record_activity "Git 설치 정보가 없는 ZIP에서 사용자 데이터·설정·확장 프로그램만 가져옵니다."
         fi
         if [[ -d "$root/data" ]]; then
-            cp -a "$root/data" "$normalized/data"
+            mv "$root/data" "$normalized/data"
             kinds="user_data"
         elif [[ -d "$root/default-user" ]]; then
-            mkdir -p "$normalized/data"
-            cp -a "$root/default-user" "$normalized/data/default-user"
+            mv "$root" "$normalized/data"
+            root="$normalized/data"
             kinds="user_data"
         elif [[ -d "$root/characters" || -d "$root/chats" || -f "$root/settings.json" ]]; then
-            mkdir -p "$normalized/data/default-user"
-            cp -a "$root"/. "$normalized/data/default-user"/
+            mkdir -p "$normalized/data"
+            mv "$root" "$normalized/data/default-user"
+            root="$normalized/data/default-user"
             kinds="user_data"
         fi
         if [[ -f "$root/config.yaml" ]]; then
-            cp -a "$root/config.yaml" "$normalized/config.yaml"
+            mv "$root/config.yaml" "$normalized/config.yaml"
             kinds="${kinds:+$kinds,}config"
         fi
         if [[ -d "$root/public/scripts/extensions/third-party" ]]; then
             mkdir -p "$normalized/public/scripts/extensions"
-            cp -a "$root/public/scripts/extensions/third-party" "$normalized/public/scripts/extensions/third-party"
+            mv "$root/public/scripts/extensions/third-party" "$normalized/public/scripts/extensions/third-party"
             kinds="${kinds:+$kinds,}extensions"
         elif [[ -d "$root/third-party" ]]; then
             mkdir -p "$normalized/public/scripts/extensions"
-            cp -a "$root/third-party" "$normalized/public/scripts/extensions/third-party"
+            mv "$root/third-party" "$normalized/public/scripts/extensions/third-party"
             kinds="${kinds:+$kinds,}extensions"
         fi
     fi
@@ -1482,33 +1471,173 @@ import_backup() {
         "$(date '+%Y-%m-%d %H:%M:%S')" "$kinds" "$include_secrets" \
         "$(version_from_file "$normalized/package.json")" "$LAUNCHER_VERSION" > "$manifest"
 
-    write_progress 68 "안전한 백업으로 변환" "검증된 구조를 런처 복원 형식으로 변환하고 있습니다."
-    if ! (cd "$normalized" && zip -rq "$output" .) >> "$LOG_FILE" 2>&1; then
-        rm -rf "$work"; rm -f "$archive" "$output"
-        echo "가져온 ZIP을 안전한 백업 형식으로 변환하지 못했습니다." >&2
-        exit 18
-    fi
-    local imported_expanded imported_entries
-    imported_expanded="$(archive_expanded_size "$output")"
-    imported_entries="$(unzip -Z1 "$output" 2>/dev/null | grep -Fvx '.st-launcher-manifest' | wc -l | tr -d ' ')"
-    printf 'expanded_bytes=%s\nentry_count=%s\n' "${imported_expanded:-0}" "${imported_entries:-0}" >> "$manifest"
-    # Metadata appended in the same ZIP timestamp interval still must replace
-    # the embedded manifest, so do not use timestamp-based update-only mode.
-    (cd "$normalized" && zip -q "$output" .st-launcher-manifest) >> "$LOG_FILE" 2>&1 || {
-        rm -rf "$work"; rm -f "$archive" "$output"
-        echo "변환 백업 메타데이터를 기록하지 못했습니다." >&2
-        exit 18
-    }
-    if ! unzip -tq "$output" >> "$LOG_FILE" 2>&1; then
-        rm -rf "$work"; rm -f "$archive" "$output"
-        echo "변환된 백업 검증에 실패했습니다." >&2
-        exit 19
-    fi
-    rm -rf "$work"
-    rm -f "$archive"
-    write_progress 100 "백업 가져오기 완료" "일반 ZIP을 검증된 런처 백업으로 변환했습니다." success
-    echo "imported=$(basename "$output")"
+    restore_extracted_tree "$normalized" "$file_name"
+    echo "imported_restore=1"
     echo "items=$kinds"
+}
+
+ensure_import_runtime() {
+    if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 &&
+        command -v git >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+        return 0
+    fi
+    write_progress 5 "가져오기 도구 준비" "기존 설치를 내려받지 않고 Git·Node.js 실행 도구만 준비합니다."
+    refresh_package_indexes || exit 14
+    apt_with_selected_sources install -y git nodejs-lts tar >> "$LOG_FILE" 2>&1 || exit 15
+}
+
+validate_restore_archive() {
+    # Read ZIP metadata without inflating any content. In particular, do not run
+    # unzip -t before extraction: CRC is checked by the one actual extraction.
+    node --input-type=commonjs - "$1" <<'NODE'
+const fs = require('fs');
+const fail = (code, message) => { console.error(message); process.exit(code); };
+try {
+    const fd = fs.openSync(process.argv[2], 'r');
+    const size = fs.fstatSync(fd).size;
+    const read = (offset, length) => {
+        if (!Number.isSafeInteger(offset) || offset < 0 || length < 0 || offset + length > size) throw Error('ZIP bounds');
+        const value = Buffer.alloc(length);
+        if (fs.readSync(fd, value, 0, length, offset) !== length) throw Error('ZIP truncated');
+        return value;
+    };
+    const n64 = (b, o) => {
+        const n = b.readBigUInt64LE(o);
+        if (n > BigInt(Number.MAX_SAFE_INTEGER)) throw Error('ZIP integer overflow');
+        return Number(n);
+    };
+    const tailStart = Math.max(0, size - 65557), tail = read(tailStart, size - tailStart);
+    let end = -1;
+    for (let i = tail.length - 22; i >= 0; i--) {
+        if (tail.readUInt32LE(i) === 0x06054b50 && i + 22 + tail.readUInt16LE(i + 20) === tail.length) { end = i; break; }
+    }
+    if (end < 0 || tail.readUInt16LE(end + 4) !== 0 || tail.readUInt16LE(end + 6) !== 0) throw Error('ZIP end/disk');
+    let count = tail.readUInt16LE(end + 10), centralSize = tail.readUInt32LE(end + 12), cursor = tail.readUInt32LE(end + 16);
+    if (count === 65535 || centralSize === 0xffffffff || cursor === 0xffffffff) {
+        const locator = read(tailStart + end - 20, 20);
+        if (locator.readUInt32LE(0) !== 0x07064b50 || locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) throw Error('ZIP64 locator');
+        const z = read(n64(locator, 8), 56);
+        if (z.readUInt32LE(0) !== 0x06064b50 || z.readUInt32LE(16) !== 0 || z.readUInt32LE(20) !== 0 || n64(z, 24) !== n64(z, 32)) throw Error('ZIP64 disk');
+        count = n64(z, 32); centralSize = n64(z, 40); cursor = n64(z, 48);
+    } else if (tail.readUInt16LE(end + 8) !== count) throw Error('ZIP split');
+    if (!count || count > 500000 || centralSize > 268435456 || cursor + centralSize > tailStart + end) throw Error('ZIP entry limits');
+    const centralStart = cursor, centralEnd = cursor + centralSize, names = new Map(), ranges = [];
+    let expanded = 0;
+    for (let i = 0; i < count; i++) {
+        const h = read(cursor, 46);
+        if (h.readUInt32LE(0) !== 0x02014b50) throw Error('ZIP central directory');
+        const flags = h.readUInt16LE(8), method = h.readUInt16LE(10), nameLength = h.readUInt16LE(28), extraLength = h.readUInt16LE(30);
+        if ((flags & 1) || (method !== 0 && method !== 8)) fail(23, '암호화되었거나 지원하지 않는 압축 방식의 ZIP입니다.');
+        const rawName = read(cursor + 46, nameLength), name = rawName.toString('utf8');
+        const canonical = name.replace(/^(\.\/)+/, '').replace(/\/$/, '');
+        if (!canonical || /[\x00-\x1f\x7f\\:]/.test(name) || name.startsWith('/') || canonical.split('/').some(p => p === '..' || p === '.' || !p)) fail(21, 'ZIP 안에 안전하지 않은 경로가 있습니다.');
+        if (names.has(canonical)) fail(21, 'ZIP 안에 중복되거나 충돌하는 경로가 있습니다.');
+        names.set(canonical, name.endsWith('/'));
+        let compressed = h.readUInt32LE(20), unpacked = h.readUInt32LE(24), offset = h.readUInt32LE(42), disk = h.readUInt16LE(34);
+        const extra = read(cursor + 46 + nameLength, extraLength);
+        for (let e = 0; e < extra.length;) {
+            if (e + 4 > extra.length) throw Error('ZIP extra');
+            const id = extra.readUInt16LE(e), length = extra.readUInt16LE(e + 2); e += 4;
+            if (e + length > extra.length) throw Error('ZIP extra bounds');
+            const value = extra.subarray(e, e + length);
+            if (id === 1) {
+                let z = 0;
+                if (unpacked === 0xffffffff) { unpacked = n64(value, z); z += 8; }
+                if (compressed === 0xffffffff) { compressed = n64(value, z); z += 8; }
+                if (offset === 0xffffffff) { offset = n64(value, z); z += 8; }
+                if (disk === 65535) disk = value.readUInt32LE(z);
+            }
+            // Info-ZIP may prefer the Unicode path over the central name. Only
+            // accept it if it denotes exactly the already-validated UTF-8 name.
+            if (id === 0x7075 && (value.length < 5 || value.subarray(5).toString('utf8') !== name)) fail(21, 'ZIP 파일 이름의 문자 인코딩을 안전하게 확인할 수 없습니다.');
+            e += length;
+        }
+        if (disk !== 0 || compressed === 0xffffffff || unpacked === 0xffffffff || offset === 0xffffffff) throw Error('ZIP64 fields');
+        const type = (h.readUInt32LE(38) >>> 16) & 0xf000;
+        const skipped = canonical.split('/').includes('node_modules');
+        if (!skipped && type !== 0 && type !== 0x4000 && type !== 0x8000) fail(22, '심볼릭 링크 또는 특수 파일이 포함된 ZIP입니다.');
+        if ((type === 0x4000 && !name.endsWith('/')) || (type === 0x8000 && name.endsWith('/'))) throw Error('ZIP entry type mismatch');
+        const local = read(offset, 30);
+        if (local.readUInt32LE(0) !== 0x04034b50 || local.readUInt16LE(6) !== flags || local.readUInt16LE(8) !== method ||
+            !read(offset + 30, local.readUInt16LE(26)).equals(rawName)) throw Error('ZIP local header mismatch');
+        let localCompressed = local.readUInt32LE(18), localUnpacked = local.readUInt32LE(22);
+        const localExtra = read(offset + 30 + local.readUInt16LE(26), local.readUInt16LE(28));
+        for (let e = 0; e < localExtra.length;) {
+            if (e + 4 > localExtra.length) throw Error('ZIP local extra');
+            const id = localExtra.readUInt16LE(e), length = localExtra.readUInt16LE(e + 2); e += 4;
+            if (e + length > localExtra.length) throw Error('ZIP local extra bounds');
+            const value = localExtra.subarray(e, e + length);
+            if (id === 1) {
+                let z = 0;
+                if (localUnpacked === 0xffffffff) { localUnpacked = n64(value, z); z += 8; }
+                if (localCompressed === 0xffffffff) localCompressed = n64(value, z);
+            }
+            if (id === 0x7075 && (value.length < 5 || value.subarray(5).toString('utf8') !== name)) fail(21, 'ZIP 내부 파일 이름이 일치하지 않습니다.');
+            e += length;
+        }
+        if ((localCompressed !== compressed && !((flags & 8) && localCompressed === 0)) ||
+            (localUnpacked !== unpacked && !((flags & 8) && localUnpacked === 0)) ||
+            (!(flags & 8) && local.readUInt32LE(14) !== h.readUInt32LE(16))) throw Error('ZIP local size/CRC mismatch');
+        const dataStart = offset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
+        if (dataStart + compressed > centralStart) throw Error('ZIP entry bounds');
+        ranges.push([offset, dataStart + compressed]);
+        if (!skipped) {
+            expanded += unpacked;
+            if (!Number.isSafeInteger(expanded) || expanded > 1099511627776) fail(29, 'ZIP 해제 크기가 안전 한도를 초과합니다.');
+            if (canonical.endsWith('.st-launcher-manifest') && unpacked > 65536) fail(23, '백업 메타데이터가 너무 큽니다.');
+        }
+        cursor += 46 + nameLength + extraLength + h.readUInt16LE(32);
+        if (cursor > centralEnd) throw Error('ZIP central bounds');
+    }
+    if (cursor !== centralEnd) throw Error('ZIP central length');
+    ranges.sort((a, b) => a[0] - b[0]);
+    for (let i = 1; i < ranges.length; i++) if (ranges[i][0] < ranges[i - 1][1]) fail(21, '서로 겹치는 ZIP 항목은 해제하지 않습니다.');
+    for (const name of names.keys()) {
+        const parts = name.split('/'); parts.pop();
+        while (parts.length) { const parent = parts.join('/'); if (names.has(parent) && !names.get(parent)) fail(21, 'ZIP 파일과 폴더 경로가 충돌합니다.'); parts.pop(); }
+    }
+    fs.closeSync(fd);
+    console.log(expanded);
+} catch (error) { fail(20, 'ZIP 구조가 손상되었거나 안전하게 읽을 수 없습니다.'); }
+NODE
+}
+
+extract_restore_archive() {
+    local archive="$1" extracted="$2" expanded free_bytes required_bytes unzip_pid unzip_start elapsed=0
+    write_progress 8 "ZIP 구조 검사" "압축을 풀기 전에 내부 경로·크기·중복 항목을 검사하고 있습니다."
+    expanded="$(validate_restore_archive "$archive")" || exit $?
+    expanded="$(unsigned_decimal "$expanded")" || exit 20
+    free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
+    required_bytes=$((expanded + 268435456))
+    (( free_bytes >= required_bytes )) || { echo "ZIP을 임시 해제할 저장 공간이 부족합니다." >&2; exit 29; }
+    echo "restore_expanded_bytes=$expanded"
+    write_progress 16 "ZIP 해제" "압축을 한 번만 해제하며 파일 손상(CRC)도 함께 검사합니다."
+    (
+        ulimit -f $(((expanded + 1048576 + 1023) / 1024))
+        unzip -oq "$archive" -x 'node_modules/*' '*/node_modules/*' -d "$extracted"
+    ) >> "$LOG_FILE" 2>&1 &
+    unzip_pid=$!
+    unzip_start="$(process_start_ticks "$unzip_pid")"
+    while kill -0 "$unzip_pid" 2>/dev/null; do
+        sleep 2
+        elapsed=$((elapsed + 2))
+        free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || free_bytes=0
+        if (( free_bytes < 67108864 )); then
+            if [[ -n "$unzip_start" && "$(process_start_ticks "$unzip_pid")" == "$unzip_start" ]]; then
+                signal_descendants "$unzip_pid" "$unzip_start"
+                kill -TERM "$unzip_pid" 2>/dev/null || true
+            fi
+            wait "$unzip_pid" 2>/dev/null || true
+            echo "해제 중 실제 여유 공간이 부족해져 중단했습니다. 기존 데이터는 변경하지 않았습니다." >&2
+            exit 29
+        fi
+        if (( elapsed % 6 == 0 )); then
+            write_progress 22 "ZIP 해제" "ZIP 해제·CRC 검사 중 · ${elapsed}초 경과 (재압축하지 않습니다)"
+        fi
+    done
+    wait "$unzip_pid" || { echo "ZIP 해제 또는 CRC 검사에 실패했습니다. 기존 데이터는 변경하지 않았습니다." >&2; exit 20; }
+    if find "$extracted" -type l -print -quit | grep -q .; then exit 22; fi
+    write_progress 28 "해제 완료" "압축을 한 번 해제했습니다. 데이터 구조와 실제 사용 공간을 확인합니다."
 }
 
 list_user_folders() {
@@ -1519,29 +1648,300 @@ list_user_folders() {
 }
 
 list_st_files() {
-    [[ -d "$ST_HOME" ]] || { echo "SillyTavern 폴더를 찾을 수 없습니다." >&2; exit 8; }
-    local encoded="${1:-}" relative target entry item_relative item_name kind size modified sensitive
-    relative="$(printf '%s' "$encoded" | base64 -d 2>/dev/null || true)"
-    [[ "$relative" != /* && "$relative" != *".."* ]] || { echo "허용되지 않는 폴더 경로입니다." >&2; exit 64; }
-    target="$(realpath -m "$ST_HOME/${relative}")"
-    [[ "$target" == "$ST_HOME" || "$target" == "$ST_HOME/"* ]] || { echo "SillyTavern 바깥의 폴더는 열 수 없습니다." >&2; exit 64; }
-    [[ -d "$target" ]] || { echo "선택한 폴더를 찾을 수 없습니다." >&2; exit 6; }
-    while IFS= read -r -d '' entry; do
-        [[ -L "$entry" ]] && continue
-        item_relative="${entry#"$ST_HOME"/}"
-        item_name="$(basename "$entry")"
-        if [[ -d "$entry" ]]; then kind="D"; size=0; else kind="F"; size="$(stat -c '%s' "$entry" 2>/dev/null || echo 0)"; fi
-        modified="$(date -r "$entry" '+%Y-%m-%d %H:%M' 2>/dev/null || true)"
-        sensitive=0
-        case "$item_name" in
-            secrets.json|config.yaml|.env|*.pem|*.key) sensitive=1 ;;
-        esac
-        printf 'entry\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$kind" \
-            "$(printf '%s' "$item_relative" | base64 -w 0)" \
-            "$(printf '%s' "$item_name" | base64 -w 0)" \
-            "$size" "$modified" "$sensitive"
-    done < <(find "$target" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 2>/dev/null | sort -z -f)
+    st_file_action list "${1:-}" "${2:-0}"
+}
+
+read_st_file() {
+    st_file_action read "${1:-}"
+}
+
+begin_st_file_mutation() {
+    begin_operation "$1"
+    # Check after acquiring the shared lock so another launcher operation cannot
+    # start the server between the check and the file change. A reachable server
+    # also covers installations started outside the launcher without its PID file.
+    if is_running || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+        echo "파일을 변경하려면 먼저 SillyTavern 서버를 종료해 주세요." >&2
+        exit 10
+    fi
+}
+
+write_st_file() {
+    begin_st_file_mutation write-st-file
+    st_file_action write "${1:-}" "${2:-}" "${3:-}"
+    write_progress 100 "파일 저장 완료" "다른 변경 사항과 충돌하지 않는지 확인하고 저장했습니다." success
+}
+
+mkdir_st() {
+    begin_st_file_mutation mkdir-st
+    st_file_action mkdir "${1:-}"
+    write_progress 100 "폴더 생성 완료" "SillyTavern 안에 새 폴더를 만들었습니다." success
+}
+
+rename_st() {
+    begin_st_file_mutation rename-st
+    st_file_action rename "${1:-}" "${2:-}"
+    write_progress 100 "이름 변경 완료" "기존 파일을 덮어쓰지 않고 이름을 변경했습니다." success
+}
+
+delete_st() {
+    begin_st_file_mutation delete-st
+    st_file_action trash "${1:-}"
+    write_progress 100 "휴지통으로 이동" "원본을 Termux의 런처 휴지통에 보관했습니다. 삭제 취소로 되돌릴 수 있습니다." success
+}
+
+restore_st_trash() {
+    begin_st_file_mutation restore-st-trash
+    st_file_action untrash "${1:-}"
+    write_progress 100 "삭제 취소 완료" "휴지통의 항목을 원래 위치로 되돌렸습니다." success
+}
+
+import_st_file() {
+    begin_st_file_mutation import-st-file
+    st_file_action import "${1:-}" "${2:-}"
+    write_progress 100 "파일 가져오기 완료" "선택한 파일을 기존 항목을 덮어쓰지 않고 가져왔습니다." success
+}
+
+st_file_action() {
+    command -v node >/dev/null 2>&1 || { echo "파일 관리에 필요한 Node.js를 찾을 수 없습니다." >&2; return 12; }
+    # Keep the text limit below Linux's per-argument limit after base64 expansion
+    # and below the Termux result transport budget. No text contents enter logs.
+    node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$@" <<'ST_LAUNCHER_FILES_JS'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { execFileSync } = require('child_process');
+const { TextDecoder } = require('util');
+const [rootArgument, launcherArgument, downloadArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
+const MAX_TEXT_BYTES = 65536;
+const fail = (code, message) => { const error = new Error(message); error.fileCode = code; throw error; };
+const exists = filename => { try { fs.lstatSync(filename); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
+const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+const b64 = text => Buffer.from(text, 'utf8').toString('base64');
+function decode(encodedValue) {
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encodedValue)) fail(64, '올바르지 않은 인코딩입니다.');
+    const bytes = Buffer.from(encodedValue, 'base64');
+    if (bytes.toString('base64') !== encodedValue) fail(64, '올바르지 않은 인코딩입니다.');
+    return bytes;
+}
+function utf8(bytes) {
+    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch (_) { fail(41, 'UTF-8 텍스트 파일만 앱에서 편집할 수 있습니다.'); }
+}
+function relativePath(encodedValue, allowRoot = false) {
+    const relative = utf8(decode(encodedValue));
+    if (relative === '' && allowRoot) return '';
+    const components = relative.split('/');
+    if (!relative || relative.startsWith('/') || /[\\\x00-\x1f\x7f]/.test(relative) || components.some(part => !part || part === '.' || part === '..')) {
+        fail(64, '허용되지 않는 파일 경로입니다.');
+    }
+    return relative;
+}
+let root;
+function resolve(relative, allowMissing = false) {
+    let current = root;
+    const components = relative ? relative.split('/') : [];
+    for (let index = 0; index < components.length; index++) {
+        current = path.join(current, components[index]);
+        if (allowMissing && index === components.length - 1 && !exists(current)) return current;
+        const stat = fs.lstatSync(current);
+        if (stat.isSymbolicLink()) fail(44, '심볼릭 링크를 통한 파일 변경이나 탐색은 지원하지 않습니다.');
+        if (index < components.length - 1 && !stat.isDirectory()) fail(6, '상위 폴더를 찾을 수 없습니다.');
+    }
+    return current;
+}
+function writable(relative) {
+    if (!relative || relative.split('/').some(part => part === '.git' || part === 'node_modules')) {
+        fail(44, '설치 루트, Git 정보와 node_modules는 앱에서 변경할 수 없습니다.');
+    }
+}
+function readText(target) {
+    if (!fs.lstatSync(target).isFile()) fail(41, '일반 텍스트 파일을 선택해 주세요.');
+    const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile()) fail(41, '일반 텍스트 파일을 선택해 주세요.');
+        if (stat.size > MAX_TEXT_BYTES) fail(40, '앱 내 텍스트 편집은 64 KiB 이하 파일만 지원합니다.');
+        // Bound the read itself, not just its initial stat: another app could
+        // grow a log/file while this read is in progress.
+        const buffer = Buffer.alloc(MAX_TEXT_BYTES + 1);
+        let length = 0;
+        let count;
+        while (length < buffer.length && (count = fs.readSync(fd, buffer, length, buffer.length - length, null)) > 0) length += count;
+        if (length > MAX_TEXT_BYTES) fail(40, '앱 내 텍스트 편집은 64 KiB 이하 파일만 지원합니다.');
+        const bytes = buffer.subarray(0, length);
+        if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(utf8(bytes))) fail(41, '바이너리 파일은 텍스트로 편집할 수 없습니다.');
+        return { bytes, stat, sha256: hash(bytes) };
+    } finally { fs.closeSync(fd); }
+}
+function moveNoReplace(source, destination) {
+    if (exists(destination)) fail(43, '같은 이름의 항목이 이미 있습니다. 덮어쓰지 않았습니다.');
+    // Termux coreutils uses no-clobber rename on the same filesystem. -T also
+    // prevents an existing directory from being interpreted as a container.
+    execFileSync('mv', ['-T', '-n', '--', source, destination], { stdio: ['ignore', 'ignore', 'pipe'] });
+    if (exists(source)) fail(43, '대상 위치가 변경되어 이동하지 않았습니다.');
+}
+function trashRoot() {
+    const launcher = fs.realpathSync(launcherArgument);
+    const directory = path.join(launcher, 'file-trash');
+    if (!exists(directory)) fs.mkdirSync(directory, { mode: 0o700 });
+    if (fs.lstatSync(directory).isSymbolicLink() || !fs.lstatSync(directory).isDirectory()) fail(44, '안전한 휴지통 경로를 열 수 없습니다.');
+    fs.chmodSync(directory, 0o700);
+    return directory;
+}
+function directoryIdentity(stat) {
+    return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].map(value => value.toString()).join(':');
+}
+try {
+    root = fs.realpathSync(rootArgument);
+    if (!fs.statSync(root).isDirectory()) fail(8, 'SillyTavern 폴더를 찾을 수 없습니다.');
+    if (action === 'untrash') {
+        if (!/^[0-9]+-[a-f0-9-]{36}$/.test(encoded)) fail(64, '올바르지 않은 휴지통 항목입니다.');
+        const container = path.join(trashRoot(), encoded);
+        if (fs.lstatSync(container).isSymbolicLink()) fail(44, '허용되지 않는 휴지통 경로입니다.');
+        const metadataPath = path.join(container, 'metadata.json');
+        if (fs.lstatSync(metadataPath).isSymbolicLink() || fs.statSync(metadataPath).size > 8192) fail(44, '허지통 복원 정보를 확인할 수 없습니다.');
+        const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        if (metadata.root !== root || typeof metadata.relative !== 'string') fail(44, '다른 설치의 휴지통 항목은 복원할 수 없습니다.');
+        const relative = relativePath(b64(metadata.relative));
+        writable(relative);
+        const destination = resolve(relative, true);
+        const source = path.join(container, 'item');
+        if (fs.lstatSync(source).isSymbolicLink()) fail(44, '심볼릭 링크는 복원하지 않습니다.');
+        moveNoReplace(source, destination);
+        fs.unlinkSync(metadataPath);
+        fs.rmdirSync(container);
+        console.log(`restored_b64=${b64(relative)}`);
+    } else {
+        const relative = relativePath(encoded, action === 'list');
+        const target = resolve(relative, action === 'mkdir' || action === 'import');
+        if (action === 'list') {
+            if (!/^(0|[1-9][0-9]{0,9})$/.test(value)) fail(64, '올바르지 않은 목록 페이지입니다.');
+            const before = fs.lstatSync(target, { bigint: true });
+            if (!before.isDirectory()) fail(6, '선택한 폴더를 찾을 수 없습니다.');
+            // Termux halves its 100 KiB result budget when stderr is present.
+            // Keep each complete page under 40 KiB, including protocol metadata.
+            const pageLimit = 40 * 1024;
+            const rowLimit = 16 * 1024;
+            const metadataReserve = 256;
+            const names = fs.readdirSync(target).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+            let cursor = Number(value);
+            if (cursor > names.length) fail(64, '폴더 목록이 변경되었습니다. 다시 열어 주세요.');
+            const listingRevision = hash(Buffer.from(directoryIdentity(before) + '\n' + JSON.stringify(names), 'utf8'));
+            const rows = [];
+            let pageBytes = 0;
+            while (cursor < names.length) {
+                const name = names[cursor];
+                if (/[\\\x00-\x1f\x7f]/.test(name)) { cursor++; continue; }
+                const item = path.join(target, name);
+                let stat;
+                try { stat = fs.lstatSync(item); } catch (error) { if (error.code === 'ENOENT') { cursor++; continue; } throw error; }
+                if (!stat.isDirectory() && !stat.isFile()) { cursor++; continue; }
+                const itemRelative = relative ? `${relative}/${name}` : name;
+                const two = number => String(number).padStart(2, '0');
+                const modified = `${stat.mtime.getFullYear()}-${two(stat.mtime.getMonth() + 1)}-${two(stat.mtime.getDate())} ${two(stat.mtime.getHours())}:${two(stat.mtime.getMinutes())}`;
+                const sensitive = /^(secrets\.json|config\.yaml|\.env(?:\..*)?|.*\.(?:pem|key))$/i.test(name) ? 1 : 0;
+                const row = ['entry', stat.isDirectory() ? 'D' : 'F', b64(itemRelative), b64(name), stat.isDirectory() ? 0 : stat.size, modified, sensitive].join('\t') + '\n';
+                const rowBytes = Buffer.byteLength(row, 'utf8');
+                if (rowBytes > rowLimit) fail(64, '경로가 너무 길어 폴더 목록을 안전하게 표시할 수 없습니다.');
+                if (pageBytes + rowBytes + metadataReserve > pageLimit) break;
+                rows.push(row);
+                pageBytes += rowBytes;
+                cursor++;
+            }
+            if (directoryIdentity(fs.lstatSync(resolve(relative), { bigint: true })) !== directoryIdentity(before)) fail(42, '폴더 목록을 읽는 동안 내용이 바뀌었습니다. 다시 열어 주세요.');
+            process.stdout.write(rows.join('') + `next_cursor=${cursor < names.length ? cursor : ''}\nlisting_revision=${listingRevision}\n`);
+        } else if (action === 'read') {
+            const snapshot = readText(target);
+            console.log(`content_b64=${snapshot.bytes.toString('base64')}\nsha256=${snapshot.sha256}\nsize=${snapshot.bytes.length}`);
+        } else if (action === 'write') {
+            writable(relative);
+            const bytes = decode(value);
+            if (bytes.length > MAX_TEXT_BYTES) fail(40, '앱 내 텍스트 편집은 64 KiB 이하 파일만 지원합니다.');
+            if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(utf8(bytes))) fail(41, '바이너리 내용은 저장할 수 없습니다.');
+            const snapshot = readText(target);
+            if (!/^[a-f0-9]{64}$/.test(revision) || snapshot.sha256 !== revision) fail(42, '파일이 다른 곳에서 변경되었습니다. 다시 열어 확인해 주세요.');
+            const temporary = path.join(path.dirname(target), `.st-launcher-edit-${crypto.randomUUID()}`);
+            let fd;
+            try {
+                fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, snapshot.stat.mode & 0o777);
+                fs.writeFileSync(fd, bytes);
+                fs.fsyncSync(fd);
+                fs.closeSync(fd); fd = undefined;
+                const current = readText(resolve(relative));
+                if (current.sha256 !== revision || current.stat.ino !== snapshot.stat.ino || current.stat.dev !== snapshot.stat.dev) fail(42, '저장 중 원본이 변경되어 덮어쓰지 않았습니다.');
+                fs.renameSync(temporary, target);
+            } finally {
+                if (fd !== undefined) fs.closeSync(fd);
+                if (exists(temporary)) fs.unlinkSync(temporary);
+            }
+            console.log(`saved=1\nsha256=${hash(bytes)}`);
+        } else if (action === 'import') {
+            writable(relative);
+            if (!/^SillyTavern-File-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(value)) fail(64, '허용되지 않는 가져오기 파일입니다.');
+            if (exists(target)) fail(43, '같은 이름의 항목이 이미 있습니다. 덮어쓰지 않았습니다.');
+            const source = path.join(fs.realpathSync(downloadArgument), value);
+            if (fs.lstatSync(source).isSymbolicLink()) fail(44, '심볼릭 링크 파일은 가져오지 않습니다.');
+            if (!fs.lstatSync(source).isFile()) fail(64, '일반 파일만 가져올 수 있습니다.');
+            const input = fs.openSync(source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+            const temporary = path.join(path.dirname(target), `.st-launcher-import-${crypto.randomUUID()}`);
+            let output;
+            try {
+                const before = fs.fstatSync(input);
+                if (!before.isFile()) fail(64, '일반 파일만 가져올 수 있습니다.');
+                if (before.size > 8 * 1024 ** 3) fail(30, '8 GiB보다 큰 파일은 앱에서 가져올 수 없습니다.');
+                const free = fs.statfsSync(path.dirname(target), { bigint: true });
+                if (BigInt(before.size) + 32n * 1024n * 1024n > free.bavail * free.bsize) fail(30, '파일을 안전하게 가져올 저장 공간이 부족합니다.');
+                output = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+                const buffer = Buffer.alloc(64 * 1024);
+                let copied = 0;
+                let count;
+                while ((count = fs.readSync(input, buffer, 0, buffer.length, null)) > 0) {
+                    copied += count;
+                    if (copied > before.size) fail(42, '가져오는 동안 원본 파일이 변경되었습니다. 다시 선택해 주세요.');
+                    let written = 0;
+                    while (written < count) written += fs.writeSync(output, buffer, written, count - written);
+                }
+                const after = fs.fstatSync(input);
+                if (copied !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail(42, '가져오는 동안 원본 파일이 변경되었습니다. 다시 선택해 주세요.');
+                fs.fsyncSync(output);
+                fs.closeSync(output); output = undefined;
+                if (resolve(relative, true) !== target) fail(44, '저장 위치가 변경되어 가져오기를 중단했습니다.');
+                moveNoReplace(temporary, target);
+            } finally {
+                fs.closeSync(input);
+                if (output !== undefined) fs.closeSync(output);
+                if (exists(temporary)) fs.unlinkSync(temporary);
+            }
+            console.log(`imported_b64=${b64(relative)}`);
+        } else if (action === 'mkdir') {
+            writable(relative);
+            if (exists(target)) fail(43, '같은 이름의 항목이 이미 있습니다.');
+            fs.mkdirSync(target, { mode: 0o700 });
+            console.log(`created_b64=${b64(relative)}`);
+        } else if (action === 'rename') {
+            writable(relative);
+            const destinationRelative = relativePath(value);
+            writable(destinationRelative);
+            if (destinationRelative.startsWith(`${relative}/`)) fail(64, '폴더를 자기 하위로 이동할 수 없습니다.');
+            moveNoReplace(target, resolve(destinationRelative, true));
+            console.log(`renamed_b64=${b64(destinationRelative)}`);
+        } else if (action === 'trash') {
+            writable(relative);
+            const id = `${Date.now()}-${crypto.randomUUID()}`;
+            const container = path.join(trashRoot(), id);
+            fs.mkdirSync(container, { mode: 0o700 });
+            fs.writeFileSync(path.join(container, 'metadata.json'), JSON.stringify({ root, relative, deleted_at: Date.now() }), { flag: 'wx', mode: 0o600 });
+            moveNoReplace(target, path.join(container, 'item'));
+            console.log(`trash_id=${id}`);
+        } else fail(64, '지원하지 않는 파일 작업입니다.');
+    }
+} catch (error) {
+    const code = error.fileCode || ({ ENOENT: 6, ENOTDIR: 6, EEXIST: 43, ELOOP: 44, ENOSPC: 30 }[error.code]) || 45;
+    console.error(error.fileCode ? error.message : `파일 작업을 완료하지 못했습니다 (${error.code || 'IO_ERROR'}).`);
+    process.exitCode = code;
+}
+ST_LAUNCHER_FILES_JS
 }
 
 backup_storage_status() {
@@ -1620,9 +2020,148 @@ valid_full_installation() {
     local root="$1" git_root
     [[ -d "$root/.git" && ! -L "$root/.git" && -f "$root/package.json" &&
        -f "$root/server.js" && -f "$root/start.sh" && -d "$root/data" ]] || return 1
-    git_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    # A linked worktree/object database could consult files outside the supplied
+    # tree. Imported installations must be self-contained repositories.
+    [[ ! -e "$root/.git/commondir" && ! -e "$root/.git/objects/info/alternates" && ! -e "$root/.git/objects/info/http-alternates" ]] || return 1
+    git_root="$(git -c safe.directory="$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$root" rev-parse --show-toplevel 2>/dev/null)" || return 1
     [[ "$git_root" -ef "$root" ]] || return 1
-    git -C "$root" cat-file -e 'HEAD^{commit}' 2>/dev/null
+    git -c safe.directory="$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$root" cat-file -e 'HEAD^{commit}' 2>/dev/null
+}
+
+sanitize_imported_git() {
+    local root="$1" origin branch
+    origin="$(git config --file "$root/.git/config" --no-includes --get remote.origin.url 2>/dev/null || true)"
+    if [[ ! "$origin" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        origin="https://github.com/SillyTavern/SillyTavern.git"
+    fi
+    branch="$(git -c safe.directory="$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$root" symbolic-ref --short HEAD 2>/dev/null || true)"
+    # Never carry executable hooks, SSH commands, filters, fsmonitor, included
+    # config, or arbitrary npm cache/script configuration into the new install.
+    rm -rf -- "$root/.git/hooks"
+    rm -f -- "$root/.git/config" "$root/.npmrc"
+    git config --file "$root/.git/config" core.repositoryformatversion 0 || return 1
+    git config --file "$root/.git/config" core.bare false || return 1
+    git config --file "$root/.git/config" core.filemode false || return 1
+    git config --file "$root/.git/config" core.hooksPath /dev/null || return 1
+    git config --file "$root/.git/config" core.fsmonitor false || return 1
+    git config --file "$root/.git/config" remote.origin.url "$origin" || return 1
+    git config --file "$root/.git/config" remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || return 1
+    if [[ "$branch" == release || "$branch" == staging ]]; then
+        git config --file "$root/.git/config" "branch.$branch.remote" origin || return 1
+        git config --file "$root/.git/config" "branch.$branch.merge" "refs/heads/$branch" || return 1
+    fi
+}
+
+resolve_install_source() {
+    local encoded="${1:-}" source resolved destination
+    [[ "$encoded" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 50
+    source="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || return 50
+    [[ "$(printf '%s' "$source" | base64 -w 0)" == "$encoded" && "$source" == /* &&
+        "$source" != *$'\n'* && "$source" != *$'\r'* && "$source" != *$'\t'* && ! -L "$source" ]] || return 50
+    resolved="$(realpath -e -- "$source" 2>/dev/null)" || return 50
+    [[ -d "$resolved" && -r "$resolved" && "$resolved" != / && "$resolved" != /data &&
+        "$resolved" != /storage/emulated/0 && "$resolved" != "$(realpath -m "$HOME")" ]] || return 50
+    destination="$(realpath -m "$ST_HOME")" || return 50
+    if [[ "$resolved" != "$destination" && ( "$resolved" == "$destination/"* || "$destination" == "$resolved/"* ) ]]; then return 51; fi
+    [[ "$resolved" != "$(realpath -m "$LAUNCHER_HOME")" && "$resolved" != "$(realpath -m "$LAUNCHER_HOME")/"* ]] || return 51
+    printf '%s\n' "$resolved"
+}
+
+validate_install_tree() {
+    local source="$1" invalid
+    invalid="$(find "$source" -name node_modules -prune -o ! -type f ! -type d -print -quit 2>/dev/null)" || return 53
+    [[ -z "$invalid" ]] || { echo "설치 폴더에 심볼릭 링크 또는 특수 파일이 있습니다." >&2; return 53; }
+    valid_full_installation "$source" || { echo "정상적인 SillyTavern Git 설치(.git, package.json, server.js, start.sh, data)를 찾지 못했습니다." >&2; return 52; }
+}
+
+install_source_snapshot() {
+    # Include ignored dependencies too: cleanup must preserve the original if
+    # another launcher writes anywhere in it while the copy is being prepared.
+    find "$1" -printf '%y %i %s %T@ %p\0' | LC_ALL=C sort -z | sha256sum | awk '{print $1}'
+}
+
+inspect_install() {
+    local source destination bytes invalid same=0 tools_ready=1
+    source="$(resolve_install_source "${1:-}")" || exit $?
+    if command -v git >/dev/null 2>&1; then
+        validate_install_tree "$source" || exit $?
+    else
+        # Inspection stays read-only on a fresh Termux. A structural preview is
+        # enough for confirmation; import installs tools and validates Git before
+        # copying or changing either installation.
+        tools_ready=0
+        [[ -d "$source/.git" && -f "$source/package.json" && -f "$source/server.js" &&
+            -f "$source/start.sh" && -d "$source/data" ]] || exit 52
+        invalid="$(find "$source" -name node_modules -prune -o ! -type f ! -type d -print -quit 2>/dev/null)" || exit 53
+        [[ -z "$invalid" ]] || exit 53
+    fi
+    destination="$(realpath -m "$ST_HOME")"
+    [[ "$source" == "$destination" ]] && same=1
+    bytes="$(du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')"
+    echo "source_path_b64=$(printf '%s' "$source" | base64 -w 0)"
+    echo "source_version_b64=$(printf '%s' "$(version_from_file "$source/package.json")" | base64 -w 0)"
+    echo "source_bytes=$bytes"
+    echo "destination_path_b64=$(printf '%s' "$destination" | base64 -w 0)"
+    echo "same_installation=$same"
+    echo "tools_ready=$tools_ready"
+}
+
+import_install() {
+    local source destination identity snapshot after_snapshot bytes free_bytes work extracted
+    source="$(resolve_install_source "${1:-}")" || exit $?
+    if is_running; then echo "설치 폴더를 옮기기 전에 SillyTavern 서버를 종료해 주세요." >&2; exit 10; fi
+    begin_operation "import-install"
+    ensure_import_runtime
+    validate_install_tree "$source" || exit $?
+    destination="$(realpath -m "$ST_HOME")"
+    if [[ "$source" == "$destination" ]]; then
+        write_progress 100 "설치 확인 완료" "이미 런처의 설치 위치에 있는 SillyTavern입니다. 폴더를 이동하지 않았습니다." success
+        echo "imported_installation=1"
+        echo "same_installation=1"
+        echo "source_removed=0"
+        return 0
+    fi
+    [[ ! -L "$ST_HOME" ]] || exit 51
+    identity="$(stat -c '%d:%i' -- "$source")" || exit 50
+    snapshot="$(install_source_snapshot "$source")" || exit 53
+    bytes="$(unsigned_decimal "$(du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
+    free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 54
+    (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 옮길 저장 공간이 부족합니다." >&2; exit 54; }
+    work="$BACKUP_DIR/install-import-work-$$"
+    track_current_work_dir "$work"
+    extracted="$work/extracted"
+    mkdir -p "$extracted" "$work/rollback"
+    write_progress 15 "기존 설치 준비" "원본을 유지한 채 설치와 데이터를 임시 위치에 준비합니다. Node 모듈은 기기에 맞게 다시 구성합니다."
+    if ! (set -o pipefail; tar --exclude=node_modules --exclude='*/node_modules' -C "$source" -cf - . | tar -C "$extracted" -xf -); then
+        echo "기존 설치 복사에 실패했습니다. 원본은 변경하지 않았습니다." >&2
+        exit 55
+    fi
+    validate_install_tree "$extracted" || exit $?
+    after_snapshot="$(install_source_snapshot "$source")" || exit 55
+    [[ "$snapshot" == "$after_snapshot" && "$(stat -c '%d:%i' -- "$source")" == "$identity" ]] || {
+        echo "작업 중 원본 설치가 변경되었습니다. 다른 런처·서버를 종료한 뒤 다시 시도해 주세요. 원본은 유지했습니다." >&2
+        exit 55
+    }
+    printf 'format=st-launcher-backup-v1\nitems=full\ncustom=\nsecrets=1\n' > "$extracted/.st-launcher-manifest"
+    restore_extracted_tree "$extracted" "existing-installation"
+    # Destination is now complete and the rollback transaction has committed.
+    # A late source change or cleanup failure does not invalidate that success.
+    if [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
+        "$(stat -c '%d:%i' -- "$source" 2>/dev/null || true)" == "$identity" &&
+        "$(install_source_snapshot "$source" 2>/dev/null || true)" == "$snapshot" ]]; then
+        if rm -rf -- "$source" && [[ ! -e "$source" && ! -L "$source" ]]; then
+            echo "source_removed=1"
+            write_progress 100 "설치 이동 완료" "기존 설치를 런처 위치로 옮겼습니다. 검증된 원본 폴더를 정리했습니다." success
+        else
+            echo "source_cleanup_failed=1"
+            write_progress 100 "설치 이동 완료 · 원본 정리 필요" "새 설치는 정상입니다. 원본 폴더 정리는 완료하지 못했습니다." success
+        fi
+    else
+        echo "source_cleanup_failed=1"
+        write_progress 100 "설치 이동 완료 · 원본 유지" "새 설치는 정상입니다. 작업 중 원본이 변경되어 원본 폴더를 지우지 않았습니다." success
+    fi
+    echo "imported_installation=1"
+    echo "same_installation=0"
 }
 
 array_contains() {
@@ -1728,34 +2267,27 @@ restore_backup() {
     local file_name="${1:-}"
     [[ "$file_name" =~ ^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}\.zip$ ]] || { echo "허용되지 않는 백업 파일 이름입니다." >&2; exit 64; }
     local archive="$DOWNLOAD_DIR/$file_name"
-    [[ -f "$archive" ]] || { echo "선택한 백업 파일을 찾을 수 없습니다." >&2; exit 6; }
+    [[ -f "$archive" && ! -L "$archive" ]] || { echo "선택한 백업 파일을 찾을 수 없습니다." >&2; exit 6; }
     if is_running; then
         echo "복원 전에 SillyTavern 서버를 종료해 주세요." >&2
         exit 10
     fi
 
     begin_operation "restore"
+    ensure_import_runtime
     ensure_archive_tools
-    write_progress 8 "백업 검사" "ZIP 손상 여부와 내부 경로를 확인하고 있습니다."
-    unzip -tq "$archive" >> "$LOG_FILE" 2>&1 || { echo "ZIP 파일이 손상되었습니다." >&2; exit 20; }
-    if unzip -Z1 "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$)|\\)'; then
-        echo "ZIP 안에 안전하지 않은 경로가 있습니다." >&2
-        exit 21
-    fi
-    if zipinfo -l "$archive" 2>/dev/null | awk '$1 ~ /^l/ {found=1} END {exit !found}'; then
-        echo "심볼릭 링크가 포함된 백업은 복원할 수 없습니다." >&2
-        exit 22
-    fi
-
-    write_progress 14 "복원 공간 확인" "백업 해제와 롤백 사본에 필요한 저장 공간을 확인하고 있습니다."
-    ensure_restore_space "$archive" || exit $?
-
     local work="$BACKUP_DIR/restore-work-$$"
     track_current_work_dir "$work"
     local extracted="$work/extracted"
-    local rollback="$work/rollback"
-    mkdir -p "$extracted" "$rollback"
-    unzip -q "$archive" -d "$extracted"
+    mkdir -p "$extracted" "$work/rollback"
+    extract_restore_archive "$archive" "$extracted"
+    restore_extracted_tree "$extracted" "$file_name"
+}
+
+restore_extracted_tree() {
+    local extracted="$1" file_name="$2"
+    local work="$CURRENT_WORK_DIR" rollback="$CURRENT_WORK_DIR/rollback"
+    [[ ! -L "$ST_HOME" ]] || { echo "설치 경로가 심볼릭 링크입니다. 원본 폴더를 직접 선택해 가져와 주세요." >&2; exit 24; }
     local manifest="$extracted/.st-launcher-manifest"
     backup_metadata_valid "$(cat "$manifest" 2>/dev/null || true)" || { echo "호환되지 않거나 메타데이터가 손상된 백업입니다." >&2; exit 23; }
     local kinds custom_folders include_secrets
@@ -1770,7 +2302,7 @@ restore_backup() {
         exit 23
     fi
 
-    write_progress 24 "임시 복원" "실제 데이터에 적용하기 전에 임시 폴더에서 내용을 검증하고 있습니다."
+    write_progress 32 "임시 복원 검사" "실제 데이터에 적용하기 전에 임시 폴더에서 내용을 검증하고 있습니다."
     if [[ ",$kinds," == *,full,* ]]; then
         valid_full_installation "$extracted" || {
             echo "전체 설치 백업에 정상적인 Git 저장소(.git) 또는 필수 실행 파일이 없습니다. 기존 설치는 변경하지 않았습니다. 사용자 데이터·설정 백업으로 가져와 주세요." >&2
@@ -1779,10 +2311,46 @@ restore_backup() {
     elif [[ ",$kinds," == *,user_data,* && ! -d "$extracted/data" ]]; then
         echo "사용자 데이터 폴더가 없는 백업입니다." >&2; rm -rf "$work"; exit 24
     fi
+    if [[ ",$kinds," != *,full,* && (! -f "$ST_HOME/package.json" || ! -f "$ST_HOME/server.js") ]]; then
+        echo "데이터·설정만 있는 백업은 기존 SillyTavern 설치가 필요합니다. 먼저 설치하거나 정상적인 전체 설치 폴더를 가져와 주세요." >&2
+        exit 24
+    fi
+    if [[ ",$kinds," != *,full,* ]]; then
+        if [[ ",$kinds," == *,config,* && ! -f "$extracted/config.yaml" ]]; then
+            echo "설정 복원을 요청한 백업에 config.yaml이 없습니다." >&2; exit 24
+        fi
+        if [[ ",$kinds," == *,extensions,* && ! -d "$extracted/public/scripts/extensions/third-party" ]] &&
+            ! find "$extracted/data" -mindepth 2 -maxdepth 2 -type d -name extensions -print -quit 2>/dev/null | grep -q .; then
+            echo "확장 프로그램 복원을 요청한 백업에 해당 폴더가 없습니다." >&2; exit 24
+        fi
+        if [[ ",$kinds," == *,custom,* && ",$kinds," != *,user_data,* ]]; then
+            local custom
+            local -a requested_custom=()
+            IFS=',' read -ra requested_custom <<< "$custom_folders"
+            (( ${#requested_custom[@]} > 0 )) || exit 23
+            for custom in "${requested_custom[@]}"; do
+                [[ "$custom" =~ ^[A-Za-z0-9_[:space:]-]+$ && -d "$extracted/data/default-user/$custom" ]] || {
+                    echo "사용자 지정 복원 폴더 정보가 올바르지 않습니다." >&2; exit 24
+                }
+            done
+        fi
+    fi
+    local incoming_bytes current_bytes free_bytes required_bytes
+    incoming_bytes="$(du -sk "$extracted" | awk '{printf "%.0f", $1 * 1024}')"
+    current_bytes=0
+    if [[ ",$kinds," != *,full,* && -d "$ST_HOME" ]]; then
+        current_bytes="$(du -sk --exclude=node_modules --exclude=.git "$ST_HOME" | awk '{printf "%.0f", $1 * 1024}')"
+    fi
+    free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
+    incoming_bytes="$(unsigned_decimal "$incoming_bytes")" || exit 29
+    current_bytes="$(unsigned_decimal "$current_bytes")" || exit 29
+    required_bytes=$((incoming_bytes + current_bytes + 268435456))
+    (( free_bytes >= required_bytes )) || { echo "기존 데이터 보호와 복원 적용에 필요한 저장 공간이 부족합니다." >&2; exit 29; }
 
     write_progress 38 "현재 상태 보호" "문제가 생기면 되돌릴 수 있도록 현재 데이터를 임시 보관하고 있습니다."
     local -a affected=()
     if [[ ",$kinds," == *,full,* ]]; then
+        sanitize_imported_git "$extracted" || { echo "가져온 Git 설정을 안전하게 구성하지 못했습니다." >&2; exit 24; }
         prepare_restore_transaction "full" "$rollback"
         if [[ -e "$ST_HOME" || -L "$ST_HOME" ]]; then RESTORE_HAD_INSTALLATION=1; fi
         if [[ -f "$DEPENDENCY_HASH_FILE" ]]; then
@@ -1888,6 +2456,7 @@ restore_backup() {
     fi
     RESTORE_TRANSACTION_ACTIVE=0
     rm -rf "$work"
+    if [[ -n "$CURRENT_IMPORT_ARCHIVE" ]]; then rm -f -- "$CURRENT_IMPORT_ARCHIVE"; CURRENT_IMPORT_ARCHIVE=""; fi
     write_progress 100 "복원 완료" "선택한 백업을 안전하게 복원했습니다." success
     echo "restored=$file_name"
 }
@@ -2340,8 +2909,17 @@ case "${1:-doctor}" in
     backup-select) backup_selected "${2:-}" "${3:-0}" "${4:-}" ;;
     list-backups) list_backups ;;
     import-backup) import_backup "${2:-}" ;;
+    inspect-install) inspect_install "${2:-}" ;;
+    import-install) import_install "${2:-}" ;;
     list-user-folders) list_user_folders ;;
-    list-st-files) list_st_files "${2:-}" ;;
+    list-st-files) list_st_files "${2:-}" "${3:-0}" ;;
+    read-st-file) read_st_file "${2:-}" ;;
+    write-st-file) write_st_file "${2:-}" "${3:-}" "${4:-}" ;;
+    import-st-file) import_st_file "${2:-}" "${3:-}" ;;
+    mkdir-st) mkdir_st "${2:-}" ;;
+    rename-st) rename_st "${2:-}" "${3:-}" ;;
+    delete-st) delete_st "${2:-}" ;;
+    restore-st-trash) restore_st_trash "${2:-}" ;;
     backup-storage-status) backup_storage_status ;;
     delete-backup) delete_backup "${2:-}" ;;
     delete-backups) delete_backups "${2:-}" ;;

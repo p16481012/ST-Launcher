@@ -6,6 +6,21 @@ import org.junit.Test
 
 class TermuxCommandResultTest {
     @Test
+    fun `truncated protocol output is distinguishable from complete or legacy output`() {
+        val result = TermuxCommandResult("test", "tail", "", 0, -1, "")
+        assertFalse(result.stdoutTruncated)
+        assertFalse(result.copy(stdoutOriginalLength = 4).stdoutTruncated)
+        assertTrue(result.copy(stdoutOriginalLength = 100_000).stdoutTruncated)
+    }
+
+    @Test
+    fun `file conflict and installation overlap retain typed errors`() {
+        val result = TermuxCommandResult("test", "", "", 42, -1, "")
+        assertTrue(result.readableError().startsWith("[FILE_EDIT_CONFLICT]"))
+        assertTrue(result.copy(exitCode = 51).readableError().startsWith("[INSTALL_IMPORT_OVERLAP]"))
+    }
+
+    @Test
     fun `android result ok minus one and shell exit zero is success`() {
         val result = TermuxCommandResult(
             callbackId = "test",

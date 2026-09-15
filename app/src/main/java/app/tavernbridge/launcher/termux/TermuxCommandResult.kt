@@ -9,8 +9,10 @@ data class TermuxCommandResult(
     val exitCode: Int,
     val errorCode: Int,
     val errorMessage: String,
+    val stdoutOriginalLength: Int = -1,
 ) {
     val isSuccess: Boolean get() = errorCode == Activity.RESULT_OK && exitCode == 0
+    val stdoutTruncated: Boolean get() = stdoutOriginalLength > stdout.length
 
     val stableErrorCode: String
         get() = LauncherErrorCode.resolve(stdout, stderr, exitCode, errorCode)

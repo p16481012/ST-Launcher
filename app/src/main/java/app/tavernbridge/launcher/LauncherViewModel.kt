@@ -22,6 +22,9 @@ import app.tavernbridge.launcher.model.RecoveredOperationStatus
 import app.tavernbridge.launcher.model.recoveredOperationStatus
 import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
 import app.tavernbridge.launcher.model.retryActionAfterFailure
+import app.tavernbridge.launcher.model.ExistingInstallation
+import app.tavernbridge.launcher.model.canModifyTavernFiles
+import app.tavernbridge.launcher.model.validTavernEntryName
 import app.tavernbridge.launcher.termux.TermuxCommandResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -52,6 +55,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var detachedOperationMonitor: Job? = null
     private var logRefreshJob: Job? = null
     private var refreshJob: Job? = null
+    private var fileBrowserJob: Job? = null
     @Volatile private var operationCancellationRequested = false
     @Volatile private var appInForeground = false
 
@@ -714,13 +718,81 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
         perform(
             operation = "import-backup",
-            label = "백업 파일 가져오는 중",
-            successMessage = "선택한 ZIP을 검사해 복원 가능한 백업으로 등록했습니다.",
+            label = "ZIP에서 바로 복원 중",
+            successMessage = "선택한 ZIP의 복원을 완료했습니다. 원본 ZIP은 변경하지 않았습니다.",
         ) {
             val result = repository.importBackup(uri)
             if (result.isSuccess) refreshBackupListAfterOperation()
             result
         }
+    }
+
+    fun inspectExistingInstallation(path: String) {
+        if (path.isBlank()) {
+            mutableState.update { it.copy(error = "가져올 SillyTavern 폴더 경로를 입력해 주세요.") }
+            return
+        }
+        inspectInstallation { repository.inspectExistingInstallation(path.trim()) }
+    }
+
+    fun inspectSharedInstallation(uri: Uri) {
+        inspectInstallation { repository.stageInstallationFolder(uri) }
+    }
+
+    private fun inspectInstallation(block: suspend () -> ExistingInstallation) {
+        if (state.value.isWorking || state.value.environment.operationActive) return
+        if (state.value.environment.processRunning) {
+            mutableState.update { it.copy(error = "기존 설치를 가져오려면 먼저 서버를 종료해 주세요.") }
+            return
+        }
+        mutableState.update {
+            it.copy(isWorking = true, workingLabel = "기존 설치 폴더 검사 중", workProgress = null,
+                pendingInstallation = null)
+        }
+        viewModelScope.launch {
+            try {
+                val candidate = block()
+                mutableState.update { it.copy(pendingInstallation = candidate) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                mutableState.update { it.copy(error = error.userMessage()) }
+            } finally {
+                mutableState.update { it.copy(isWorking = false, workingLabel = "", workProgress = null) }
+            }
+        }
+    }
+
+    fun dismissInstallationImport() {
+        val source = state.value.pendingInstallation?.sourcePath
+        mutableState.update { it.copy(pendingInstallation = null) }
+        if (source != null) viewModelScope.launch {
+            try { repository.discardInstallationImport(source)
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { /* Cancelling selection must never change the source folder. */ }
+        }
+    }
+
+    fun confirmInstallationImport() {
+        val candidate = state.value.pendingInstallation ?: return
+        if (state.value.isWorking || state.value.environment.processRunning) return
+        mutableState.update { it.copy(pendingInstallation = null) }
+        perform(
+            operation = "import-install",
+            label = "기존 설치 이동 중",
+            successMessage = if (candidate.sameInstallation) "현재 SillyTavern 설치를 확인했습니다. 기존 폴더를 그대로 사용합니다."
+                else "기존 설치를 안전하게 이동했습니다.",
+            successMessageForResult = { result ->
+                when {
+                    candidate.sameInstallation -> "현재 SillyTavern 설치를 확인했습니다. 기존 폴더를 그대로 사용합니다."
+                    result.stdout.lineSequence().any { it == "source_cleanup_failed=1" } ->
+                        "설치는 가져왔지만 원본 폴더를 정리하지 못했습니다. 새 설치를 확인한 뒤 원본을 직접 정리해 주세요."
+                    result.stdout.lineSequence().any { it == "source_removed=1" } ->
+                        "기존 설치를 이동했습니다. 검증 완료 후 원본 폴더를 정리했습니다."
+                    else -> "기존 설치를 가져왔습니다. 원본 정리 여부는 작업 기록을 확인해 주세요."
+                }
+            },
+        ) { repository.importExistingInstallation(candidate.sourcePath) }
     }
 
     fun createBackup(
@@ -1011,13 +1083,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun loadSillyTavernFolder(relativePath: String) {
-        viewModelScope.launch {
+        if (state.value.fileBrowserMutating) return
+        fileBrowserJob?.cancel()
+        fileBrowserJob = viewModelScope.launch {
             mutableState.update {
                 it.copy(
                     fileBrowserOpen = true,
                     fileBrowserPath = relativePath,
                     fileBrowserLoading = true,
                     fileBrowserError = "",
+                    fileBrowserEntries = emptyList(),
                 )
             }
             try {
@@ -1025,6 +1100,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 mutableState.update {
                     it.copy(fileBrowserEntries = entries, fileBrowserLoading = false)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 mutableState.update {
                     it.copy(fileBrowserEntries = emptyList(), fileBrowserLoading = false, fileBrowserError = error.userMessage())
@@ -1034,12 +1111,142 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun closeSillyTavernFolder() {
-        mutableState.update { it.copy(fileBrowserOpen = false, fileBrowserEntries = emptyList(), fileBrowserError = "") }
+        if (state.value.fileBrowserMutating) return
+        fileBrowserJob?.cancel()
+        mutableState.update { it.copy(fileBrowserOpen = false, fileBrowserEntries = emptyList(),
+            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null) }
+    }
+
+    fun openSillyTavernDirectory() {
+        if (!repository.openSillyTavernDirectory()) {
+            val message = "시스템 파일 화면을 열지 못했습니다. 이 기기의 파일 앱이 Termux 폴더 연결을 지원하는지 확인해 주세요."
+            mutableState.update { if (it.fileBrowserOpen) it.copy(fileBrowserError = message) else it.copy(error = message) }
+        }
+    }
+
+    fun readSillyTavernTextFile(relativePath: String) {
+        if (state.value.fileBrowserLoading || state.value.fileBrowserMutating) return
+        mutableState.update { it.copy(fileBrowserLoading = true, fileBrowserError = "") }
+        fileBrowserJob?.cancel()
+        fileBrowserJob = viewModelScope.launch {
+            try {
+                val file = repository.readSillyTavernTextFile(relativePath)
+                mutableState.update { it.copy(editingFile = file, fileBrowserLoading = false) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                mutableState.update { it.copy(fileBrowserLoading = false, fileBrowserError = error.userMessage()) }
+            }
+        }
+    }
+
+    fun closeTextEditor() {
+        if (!state.value.fileBrowserMutating) mutableState.update { it.copy(editingFile = null) }
+    }
+
+    fun saveSillyTavernTextFile(content: String) {
+        val file = state.value.editingFile ?: return
+        mutateTavernFiles("write-st-file", "파일 저장", "파일을 저장했습니다.") {
+            repository.saveSillyTavernTextFile(file, content).also { result ->
+                if (result.isSuccess) mutableState.update { it.copy(editingFile = null) }
+            }
+        }
+    }
+
+    fun createSillyTavernFolder(name: String) {
+        if (!checkEntryName(name)) return
+        val parent = state.value.fileBrowserPath
+        mutateTavernFiles("mkdir-st", "폴더 만들기", "폴더를 만들었습니다.") {
+            repository.createSillyTavernFolder(parent, name)
+        }
+    }
+
+    fun renameSillyTavernEntry(relativePath: String, newName: String) {
+        if (!checkEntryName(newName)) return
+        mutateTavernFiles("rename-st", "이름 변경", "이름을 변경했습니다.") {
+            repository.renameSillyTavernEntry(relativePath, newName)
+        }
+    }
+
+    fun trashSillyTavernEntry(relativePath: String) =
+        mutateTavernFiles("delete-st", "휴지통으로 이동", "휴지통으로 이동했습니다. 원본을 복구할 수 있도록 Termux에 보관했습니다.") {
+            repository.trashSillyTavernEntry(relativePath).also { result ->
+                if (result.isSuccess) {
+                    val id = result.stdout.lineSequence().firstOrNull { it.startsWith("trash_id=") }?.substringAfter('=').orEmpty()
+                    mutableState.update { it.copy(lastTrashedEntryId = id) }
+                }
+            }
+        }
+
+    fun undoLastTrashedEntry() {
+        val id = state.value.lastTrashedEntryId.takeIf(String::isNotBlank) ?: return
+        mutateTavernFiles("restore-st-trash", "휴지통 항목 복구", "휴지통의 항목을 원래 위치로 복구했습니다.") {
+            repository.restoreSillyTavernEntry(id).also { result ->
+                if (result.isSuccess) mutableState.update { it.copy(lastTrashedEntryId = "") }
+            }
+        }
+    }
+
+    fun importSillyTavernFile(uri: Uri) {
+        val parent = state.value.fileBrowserPath
+        mutateTavernFiles("import-st-file", "파일 가져오기", "파일을 가져왔습니다. 같은 이름의 기존 파일은 덮어쓰지 않습니다.") {
+            repository.importSillyTavernFile(parent, uri)
+        }
+    }
+
+    private fun checkEntryName(name: String): Boolean {
+        if (validTavernEntryName(name)) return true
+        mutableState.update { it.copy(fileBrowserError = "빈 이름, . 또는 .., 경로 구분자와 제어 문자는 사용할 수 없습니다.") }
+        return false
+    }
+
+    private fun mutateTavernFiles(operation: String, label: String, success: String, block: suspend () -> TermuxCommandResult) {
+        if (!state.value.canModifyTavernFiles()) {
+            mutableState.update { it.copy(fileBrowserError = "파일을 변경하려면 서버와 다른 작업을 먼저 종료해 주세요.") }
+            return
+        }
+        mutableState.update { it.copy(fileBrowserMutating = true, isWorking = true, workingLabel = label,
+            fileBrowserError = "", fileBrowserNotice = "") }
+        viewModelScope.launch {
+            val started = System.currentTimeMillis()
+            var reconnecting = false
+            try {
+                block().requireSuccess()
+                mutableState.update { it.copy(fileBrowserNotice = success,
+                    lastOperationResult = operationSummary(operation, label, success, true, started)) }
+                try {
+                    val entries = repository.listSillyTavernFiles(state.value.fileBrowserPath)
+                    mutableState.update { it.copy(fileBrowserEntries = entries) }
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (_: Exception) {
+                    mutableState.update { it.copy(fileBrowserNotice = "$success 목록을 새로고침해 주세요.") }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) {
+                val detail = error.userMessage()
+                if (errorCodeFrom(detail) == "TERMUX_TIMEOUT") {
+                    try {
+                        val environment = repository.inspect()
+                        reconnecting = environment.operationActive
+                        mutableState.update { it.copy(environment = environment) }
+                    } catch (cancelled: CancellationException) { throw cancelled
+                    } catch (_: Exception) { /* The backend also guards against concurrent writes. */ }
+                }
+                mutableState.update { it.copy(fileBrowserError = detail,
+                    lastOperationResult = operationSummary(operation, label, detail, false, started,
+                        errorCode = errorCodeFrom(detail))) }
+            } finally {
+                mutableState.update { it.copy(fileBrowserMutating = false, isWorking = reconnecting,
+                    workingLabel = if (reconnecting) "진행 중인 파일 작업에 다시 연결 중" else "") }
+                if (reconnecting) resumeDetachedOperation()
+            }
+        }
     }
 
     fun openSillyTavernFile(relativePath: String) {
         if (!repository.openSillyTavernFile(relativePath)) {
-            mutableState.update { it.copy(error = "이 파일을 열 수 있는 앱을 찾지 못했습니다.") }
+            val message = "이 파일을 열 수 있는 앱을 찾지 못했습니다."
+            mutableState.update { if (it.fileBrowserOpen) it.copy(fileBrowserError = message) else it.copy(error = message) }
         }
     }
 
@@ -1265,7 +1472,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "update", "update-preflight" -> "SillyTavern 업데이트"
         "switch-branch" -> "브랜치 변경"
         "backup" -> "백업 생성"
-        "import-backup" -> "백업 가져오기"
+        "import-backup" -> "ZIP에서 바로 복원"
+        "import-install" -> "기존 설치 이동"
+        "write-st-file" -> "파일 저장"
+        "mkdir-st" -> "폴더 만들기"
+        "rename-st" -> "이름 변경"
+        "delete-st" -> "휴지통으로 이동"
+        "import-st-file" -> "파일 가져오기"
+        "restore-st-trash" -> "휴지통 항목 복구"
         "restore" -> "백업 복원"
         "delete-backup" -> "백업 삭제"
         "repair" -> "설치 점검·복구"

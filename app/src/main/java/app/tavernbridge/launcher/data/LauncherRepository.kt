@@ -2,16 +2,13 @@ package app.tavernbridge.launcher.data
 
 import android.content.Context
 import android.content.ActivityNotFoundException
-import android.content.ContentValues
 import android.content.Intent
 import android.content.ClipData
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.Settings
 import android.provider.DocumentsContract
-import android.provider.MediaStore
 import android.os.PowerManager
 import android.util.Base64
 import android.webkit.MimeTypeMap
@@ -31,6 +28,8 @@ import app.tavernbridge.launcher.model.WorkProgress
 import app.tavernbridge.launcher.model.UpdatePreflight
 import app.tavernbridge.launcher.model.UpdateRecord
 import app.tavernbridge.launcher.model.TavernFileEntry
+import app.tavernbridge.launcher.model.ExistingInstallation
+import app.tavernbridge.launcher.model.TavernTextFile
 import app.tavernbridge.launcher.termux.TermuxCommandExecutor
 import app.tavernbridge.launcher.termux.TermuxCommandResult
 import app.tavernbridge.launcher.termux.TermuxContract
@@ -49,6 +48,7 @@ import kotlinx.coroutines.withContext
 class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
     private val preferences = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
+    private val importStaging = SharedImportStaging(context)
 
     companion object {
         private const val SYSTEM_URL_HANDLER = "@android-system"
@@ -106,10 +106,12 @@ class LauncherRepository(private val context: Context) {
         if (!result.isSuccess) {
             throw IllegalStateException(result.readableError())
         }
-        return DoctorOutputParser.parse(result.stdout).copy(
+        val status = DoctorOutputParser.parse(result.stdout).copy(
             serverReachable = serverReachable,
             termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
         )
+        if (!status.operationActive) importStaging.cleanAbandoned()
+        return status
     }
 
     suspend fun connectManager(): TermuxCommandResult {
@@ -243,22 +245,119 @@ class LauncherRepository(private val context: Context) {
 
     suspend fun listSillyTavernFiles(relativePath: String): List<TavernFileEntry> {
         val encoded = Base64.encodeToString(relativePath.toByteArray(), Base64.NO_WRAP)
-        val result = runManager("list-st-files ${shellQuote(encoded)}", timeoutMillis = 30_000)
-        if (!result.isSuccess) throw IllegalStateException(result.readableError())
-        return result.stdout.lineSequence().mapNotNull { line ->
-            val fields = line.split('\t')
-            if (fields.size != 7 || fields[0] != "entry") return@mapNotNull null
-            runCatching {
-                TavernFileEntry(
-                    relativePath = String(Base64.decode(fields[2], Base64.DEFAULT)),
-                    name = String(Base64.decode(fields[3], Base64.DEFAULT)),
+        val entries = mutableListOf<TavernFileEntry>()
+        var cursor = 0
+        var revision: String? = null
+        do {
+            val arguments = "list-st-files ${shellQuote(encoded)} $cursor"
+            val result = if (cursor == 0) runManager(arguments, 30_000) else runExistingManager(arguments, 30_000)
+            if (!result.isSuccess) throw IllegalStateException(result.readableError())
+            check(!result.stdoutTruncated) { "폴더 목록이 통신 중 잘렸습니다. 다시 열어 주세요." }
+            val lines = result.stdout.lines()
+            val pageRevision = lines.firstOrNull { it.startsWith("listing_revision=") }?.substringAfter('=')
+            check(pageRevision != null && pageRevision.matches(Regex("[0-9a-f]{64}"))) { "폴더 목록 검증 정보를 읽지 못했습니다." }
+            check(revision == null || revision == pageRevision) { "목록을 읽는 동안 폴더가 변경되었습니다. 새로고침해 주세요." }
+            revision = pageRevision
+            for (line in lines.filter { it.startsWith("entry\t") }) {
+                val fields = line.split('\t')
+                check(fields.size == 7) { "폴더 목록 응답이 올바르지 않습니다." }
+                entries += TavernFileEntry(
+                    relativePath = String(Base64.decode(fields[2], Base64.DEFAULT), Charsets.UTF_8),
+                    name = String(Base64.decode(fields[3], Base64.DEFAULT), Charsets.UTF_8),
                     isDirectory = fields[1] == "D",
-                    sizeBytes = fields[4].toLongOrNull() ?: 0,
+                    sizeBytes = fields[4].toLong(),
                     modifiedAt = fields[5],
                     sensitive = fields[6] == "1",
                 )
-            }.getOrNull()
-        }.sortedWith(compareByDescending<TavernFileEntry> { it.isDirectory }.thenBy { it.name.lowercase() }).toList()
+            }
+            val next = lines.firstOrNull { it.startsWith("next_cursor=") }?.substringAfter('=')
+                ?: error("폴더 목록의 다음 페이지 정보를 읽지 못했습니다.")
+            if (next.isEmpty()) break
+            val nextCursor = next.toIntOrNull() ?: error("폴더 목록 페이지가 올바르지 않습니다.")
+            check(nextCursor > cursor && nextCursor <= 500_000) { "폴더 항목이 너무 많습니다. 하위 폴더를 선택해 주세요." }
+            cursor = nextCursor
+        } while (true)
+        return entries.sortedWith(compareByDescending<TavernFileEntry> { it.isDirectory }.thenBy { it.name.lowercase() })
+    }
+
+    suspend fun inspectExistingInstallation(path: String): ExistingInstallation {
+        val trimmed = path.trim()
+        val absolute = if (trimmed.startsWith("~/")) TermuxContract.HOME_PATH + trimmed.removePrefix("~") else trimmed
+        require(absolute.startsWith('/') && absolute.none { it.isISOControl() }) { "설치 폴더의 전체 경로를 입력해 주세요." }
+        val result = runManager("inspect-install ${shellQuote(encodeFileArgument(absolute))}", 5 * 60_000L)
+        if (!result.isSuccess) throw IllegalStateException(result.readableError())
+        return FileManagementProtocol.installation(result.stdout)
+    }
+
+    /** Resolve the selected local folder directly: no duplicate SAF staging tree is created. */
+    suspend fun stageInstallationFolder(uri: Uri): ExistingInstallation {
+        require(uri.scheme == "content" && DocumentsContract.isTreeUri(uri)) { "설치 폴더를 선택해 주세요." }
+        return inspectExistingInstallation(installationPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri)))
+    }
+
+    suspend fun importExistingInstallation(path: String): TermuxCommandResult =
+        runManager("import-install ${shellQuote(encodeFileArgument(path))}", 45 * 60_000L)
+
+    // Cancelling the selection must never delete the selected original installation.
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun discardInstallationImport(sourcePath: String) = Unit
+
+    suspend fun readSillyTavernTextFile(relativePath: String): TavernTextFile {
+        val result = runManager("read-st-file ${shellQuote(encodeFileArgument(relativePath))}", 30_000)
+        if (!result.isSuccess) throw IllegalStateException(result.readableError())
+        check(!result.stdoutTruncated) { "파일 내용이 통신 중 잘렸습니다. 다시 열거나 외부 폴더에서 확인해 주세요." }
+        return FileManagementProtocol.textFile(relativePath, result.stdout)
+    }
+
+    suspend fun saveSillyTavernTextFile(file: TavernTextFile, content: String): TermuxCommandResult {
+        require(content.toByteArray(Charsets.UTF_8).size <= TEXT_EDIT_LIMIT) { "앱 안에서는 64 KiB 이하의 텍스트만 수정할 수 있습니다." }
+        require(file.revision.matches(Regex("[0-9a-f]{64}"))) { "파일을 다시 열어 주세요." }
+        // The script bootstrap plus 64 KiB content could exceed Linux's per-argument limit.
+        val connected = connectManager()
+        if (!connected.isSuccess) return connected
+        return runExistingManager(
+            "write-st-file ${shellQuote(encodeFileArgument(file.relativePath))} ${shellQuote(encodeFileArgument(content))} ${shellQuote(file.revision)}",
+            30_000,
+        )
+    }
+
+    suspend fun createSillyTavernFolder(parent: String, name: String): TermuxCommandResult =
+        runManager("mkdir-st ${shellQuote(encodeFileArgument(fileChildPath(parent, name)))}", 30_000)
+
+    suspend fun renameSillyTavernEntry(relativePath: String, newName: String): TermuxCommandResult =
+        runManager("rename-st ${shellQuote(encodeFileArgument(relativePath))} ${shellQuote(encodeFileArgument(fileChildPath(relativePath.substringBeforeLast('/', ""), newName)))}", 30_000)
+
+    suspend fun trashSillyTavernEntry(relativePath: String): TermuxCommandResult =
+        runManager("delete-st ${shellQuote(encodeFileArgument(relativePath))}", 30_000)
+
+    suspend fun restoreSillyTavernEntry(trashId: String): TermuxCommandResult =
+        runManager("restore-st-trash ${shellQuote(trashId)}", 30_000)
+
+    suspend fun importSillyTavernFile(parent: String, uri: Uri): TermuxCommandResult {
+        val destination = withContext(Dispatchers.IO) { fileChildPath(parent, importStaging.displayName(uri)) }
+        val transfer = importStaging.copy(uri, backup = false)
+        // On timeout/process death the manager may still be reading; idle cleanup handles those later.
+        val result = runManager("import-st-file ${shellQuote(encodeFileArgument(destination))} ${shellQuote(transfer.name)}", 15 * 60_000L)
+        importStaging.remove(transfer)
+        return result
+    }
+
+    fun openSillyTavernDirectory(): Boolean {
+        val authority = "${TermuxContract.PACKAGE}.documents"
+        val root = DocumentsContract.buildRootUri(authority, TermuxContract.HOME_PATH)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(root, DocumentsContract.Root.MIME_TYPE_ITEM)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        // Termux has no findDocumentPath(), so a document deep link silently falls back to
+        // Downloads. Open its actual writable root instead; the user selects SillyTavern.
+        // DocumentsUI owns MANAGE_DOCUMENTS. Do not forge grants for another app's provider.
+        val handler = context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            .firstOrNull { context.packageManager.checkPermission(
+                "android.permission.MANAGE_DOCUMENTS", it.activityInfo.packageName,
+            ) == PackageManager.PERMISSION_GRANTED } ?: return false
+        intent.setClassName(handler.activityInfo.packageName, handler.activityInfo.name)
+        return runCatching { context.startActivity(intent); true }.getOrDefault(false)
     }
 
     fun openSillyTavernFile(relativePath: String): Boolean {
@@ -300,8 +399,10 @@ class LauncherRepository(private val context: Context) {
         runManager("restore ${shellQuote(fileName)}", timeoutMillis = 45 * 60_000L)
 
     suspend fun importBackup(uri: Uri): TermuxCommandResult {
-        val importedName = copyBackupToDownloads(uri)
-        return runManager("import-backup ${shellQuote(importedName)}", timeoutMillis = 45 * 60_000L)
+        val transfer = importStaging.copy(uri, backup = true)
+        val result = runManager("import-backup ${shellQuote(transfer.name)}", timeoutMillis = 45 * 60_000L)
+        importStaging.remove(transfer)
+        return result
     }
 
     suspend fun repair(): TermuxCommandResult =
@@ -717,38 +818,6 @@ class LauncherRepository(private val context: Context) {
                 data = Uri.parse("package:$packageName")
             },
         )
-    }
-
-    private suspend fun copyBackupToDownloads(source: Uri): String = withContext(Dispatchers.IO) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            throw IllegalStateException("백업 파일 가져오기는 Android 10 이상에서 지원합니다.")
-        }
-        val resolver = context.contentResolver
-        val fileName = "SillyTavern-Import-${UUID.randomUUID()}.zip"
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(MediaStore.Downloads.MIME_TYPE, "application/zip")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val target = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: throw IllegalStateException("Download 폴더에 가져올 ZIP을 만들지 못했습니다.")
-        try {
-            resolver.openInputStream(source)?.use { input ->
-                resolver.openOutputStream(target, "w")?.use { output -> input.copyTo(output) }
-                    ?: throw IllegalStateException("가져올 ZIP을 Download 폴더에 쓸 수 없습니다.")
-            } ?: throw IllegalStateException("선택한 ZIP 파일을 읽을 수 없습니다.")
-            resolver.update(
-                target,
-                ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) },
-                null,
-                null,
-            )
-            fileName
-        } catch (error: Exception) {
-            resolver.delete(target, null, null)
-            throw error
-        }
     }
 
     private fun startSettingsIntent(intent: Intent, fallbackPackage: String? = null) {

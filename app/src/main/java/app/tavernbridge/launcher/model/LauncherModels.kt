@@ -136,4 +136,9 @@ data class LauncherUiState(
     val fileBrowserEntries: List<TavernFileEntry> = emptyList(),
     val fileBrowserLoading: Boolean = false,
     val fileBrowserError: String = "",
+    val fileBrowserMutating: Boolean = false,
+    val fileBrowserNotice: String = "",
+    val lastTrashedEntryId: String = "",
+    val editingFile: TavernTextFile? = null,
+    val pendingInstallation: ExistingInstallation? = null,
 )

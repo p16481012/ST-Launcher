@@ -45,7 +45,6 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.HealthAndSafety
 import androidx.compose.material.icons.outlined.InstallMobile
-import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Launch
@@ -144,7 +143,6 @@ import app.tavernbridge.launcher.model.ManagementPanel
 import app.tavernbridge.launcher.model.SettingsPanel
 import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
-import app.tavernbridge.launcher.model.TavernFileEntry
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
@@ -267,8 +265,32 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            result.data?.data?.let(viewModel::importBackup)
+            result.data?.data?.let { uri ->
+                confirmation = Confirmation(
+                    title = "이 ZIP에서 바로 복원할까요?",
+                    description = "압축을 한 번만 풀어 구조와 용량을 검사한 뒤 복원합니다. 같은 항목의 현재 데이터는 백업 내용으로 교체되며, 교체 전 현재 상태를 안전 보관합니다. 원본 ZIP은 변경하지 않습니다. 서버를 먼저 종료해 주세요.",
+                    confirmLabel = "검사 후 복원",
+                    action = { viewModel.importBackup(uri) },
+                )
+            }
         }
+    }
+
+    val installationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let(viewModel::inspectSharedInstallation)
+    }
+    val fileImportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(viewModel::importSillyTavernFile)
+    }
+    val pickInstallation = {
+        runCatching { installationPicker.launch(null) }
+            .onFailure { viewModel.showMessage("폴더 선택 화면을 열 수 없습니다. Termux 폴더 경로 입력을 사용해 주세요.") }
+        Unit
+    }
+    val pickBackup = {
+        runCatching { backupPicker.launch(backupPickerIntent()) }
+            .onFailure { viewModel.showMessage("파일 선택 화면을 열 수 없습니다. 잠시 후 다시 시도해 주세요.") }
+        Unit
     }
 
     LaunchedEffect(state.message, state.error, state.lastOperationResult) {
@@ -299,6 +321,15 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             dismissButton = {
                 TextButton(onClick = { confirmation = null }) { Text("취소") }
             },
+        )
+    }
+
+    state.pendingInstallation?.let { candidate ->
+        InstallationImportConfirmation(
+            installation = candidate,
+            destinationExists = state.environment.sillyTavernInstalled,
+            onConfirm = viewModel::confirmInstallationImport,
+            onDismiss = viewModel::dismissInstallationImport,
         )
     }
 
@@ -469,10 +500,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onCreateBackup = viewModel::createBackup,
                             onRefreshBackups = viewModel::loadBackups,
                             onOpenBackupFolder = viewModel::openDownloadsFolder,
-                            onImportBackup = {
-                                runCatching { backupPicker.launch(backupPickerIntent()) }
-                                    .onFailure { viewModel.showMessage("파일 선택 화면을 열 수 없습니다. 잠시 후 다시 시도해 주세요.") }
-                            },
+                            onImportBackup = pickBackup,
+                            onPickInstallation = pickInstallation,
+                            onInspectInstallation = viewModel::inspectExistingInstallation,
                             storageSetupCommand = viewModel.storageSetupCommand,
                             onOpenTermux = viewModel::openTermux,
                             onStorageCommandCopied = { viewModel.showMessage("명령을 복사하고 Termux를 열었습니다.") },
@@ -546,6 +576,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             },
                             onSwitchBranch = viewModel::switchBranch,
                             onBackup = viewModel::backup,
+                            onPickInstallation = pickInstallation,
+                            onInspectInstallation = viewModel::inspectExistingInstallation,
+                            onImportBackup = pickBackup,
                             onCopied = { viewModel.showMessage("명령을 복사하고 Termux를 열었습니다.") },
                         )
                     }
@@ -569,6 +602,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onTheme = viewModel::selectTheme,
                         onSaveServerConnection = viewModel::saveServerConnection,
                         onOpenSillyTavernFolder = viewModel::openSillyTavernFolder,
+                        onOpenSillyTavernDirectory = viewModel::openSillyTavernDirectory,
                         onWakeLockChange = viewModel::setWakeLockEnabled,
                         onOpenDeviceBatterySettings = viewModel::openDeviceBatterySettings,
                         onOpenTermuxAppSettings = viewModel::openTermuxAppSettings,
@@ -587,10 +621,22 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 )
             }
             if (state.fileBrowserOpen) {
-                TavernFileBrowserDialog(
+                TavernFileManagerDialog(
                     state = state,
                     onNavigate = viewModel::loadSillyTavernFolder,
                     onOpenFile = viewModel::openSillyTavernFile,
+                    onOpenDirectory = viewModel::openSillyTavernDirectory,
+                    onEdit = viewModel::readSillyTavernTextFile,
+                    onSave = viewModel::saveSillyTavernTextFile,
+                    onCloseEditor = viewModel::closeTextEditor,
+                    onCreateFolder = viewModel::createSillyTavernFolder,
+                    onRename = viewModel::renameSillyTavernEntry,
+                    onTrash = viewModel::trashSillyTavernEntry,
+                    onUndoTrash = viewModel::undoLastTrashedEntry,
+                    onImport = {
+                        runCatching { fileImportPicker.launch(arrayOf("*/*")) }
+                            .onFailure { viewModel.showMessage("파일 선택 화면을 열 수 없습니다.") }
+                    },
                     onClose = viewModel::closeSillyTavernFolder,
                 )
             }
@@ -1271,6 +1317,8 @@ private fun ManagementScreen(
     onRefreshBackups: () -> Unit,
     onOpenBackupFolder: () -> Unit,
     onImportBackup: () -> Unit,
+    onPickInstallation: () -> Unit,
+    onInspectInstallation: (String) -> Unit,
     storageSetupCommand: String,
     onOpenTermux: () -> Unit,
     onStorageCommandCopied: () -> Unit,
@@ -1320,6 +1368,13 @@ private fun ManagementScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             if (selectedPanel == ManagementPanel.INSTALL) {
+        item {
+            ExistingInstallationImportCard(
+                enabled = !state.isWorking && !environment.processRunning && !environment.operationActive,
+                onPickFolder = onPickInstallation,
+                onInspectPath = onInspectInstallation,
+            )
+        }
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -1655,7 +1710,7 @@ private fun ManagementScreen(
                 ) {
                     Icon(Icons.Outlined.CloudDownload, null)
                     Spacer(Modifier.width(6.dp))
-                    Text("ZIP 가져오기")
+                    Text("ZIP에서 바로 복원")
                 }
                 if (environment.processRunning) {
                     Text(
@@ -1665,7 +1720,7 @@ private fun ManagementScreen(
                     )
                 } else {
                     Text(
-                        "런처 백업 또는 구조를 판별할 수 있는 일반 SillyTavern ZIP을 가져올 수 있습니다. secrets.json이 들어 있으면 비밀 설정 포함 백업으로 표시됩니다.",
+                        "런처 백업과 일반 SillyTavern ZIP을 검사한 뒤 바로 복원합니다. 변환용 ZIP을 새로 만들지 않으며, secrets.json이 포함되어 있으면 비밀 설정도 복원될 수 있습니다.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -1724,6 +1779,9 @@ private fun SetupScreen(
     onSwitchBranch: (SillyBranch) -> Unit,
     onBackup: () -> Unit,
     onCopied: () -> Unit,
+    onPickInstallation: () -> Unit,
+    onInspectInstallation: (String) -> Unit,
+    onImportBackup: () -> Unit,
 ) {
     val env = state.environment
     val clipboard = LocalClipboardManager.current
@@ -1885,7 +1943,14 @@ private fun SetupScreen(
                     if (env.sillyTavernInstalled) {
                         ExistingInstallCard(env, onSwitchBranch, onBackup)
                     } else {
+                        ExistingInstallationImportCard(
+                            enabled = !state.isWorking && env.managerConnected && !env.processRunning,
+                            onPickFolder = onPickInstallation,
+                            onInspectPath = onInspectInstallation,
+                        )
                         InstallBranchCard(state.selectedInstallBranch, onSelectBranch, onInstall)
+                        OutlinedButton(onClick = onImportBackup, enabled = !state.isWorking && env.managerConnected,
+                            modifier = Modifier.fillMaxWidth()) { Text("전체 설치 ZIP에서 복원") }
                     }
                 }
             }
@@ -2300,6 +2365,7 @@ private fun SettingsScreen(
     onTheme: (AppTheme) -> Unit,
     onSaveServerConnection: (Int, Boolean, String) -> Unit,
     onOpenSillyTavernFolder: () -> Unit,
+    onOpenSillyTavernDirectory: () -> Unit,
     onWakeLockChange: (Boolean) -> Unit,
     onOpenDeviceBatterySettings: () -> Unit,
     onOpenTermuxAppSettings: () -> Unit,
@@ -2568,7 +2634,7 @@ private fun SettingsScreen(
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("SillyTavern 폴더", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "런처 안에서 설치 폴더를 읽기 전용으로 확인합니다. 파일을 누르면 열 앱을 직접 선택할 수 있습니다.",
+                        "실제 설치 폴더를 탐색하고 파일과 폴더를 관리합니다. 변경 작업은 서버를 종료한 뒤 사용할 수 있습니다.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -2579,8 +2645,14 @@ private fun SettingsScreen(
                     ) {
                         Icon(Icons.Outlined.FolderOpen, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("SillyTavern 폴더 열기")
+                        Text("SillyTavern 폴더 관리")
                     }
+                    OutlinedButton(onClick = onOpenSillyTavernDirectory, modifier = Modifier.fillMaxWidth(),
+                        enabled = state.environment.sillyTavernInstalled && !state.isWorking) {
+                        Text("외부에서 폴더 열기")
+                    }
+                    Text("Android 파일 화면의 Termux 위치가 열립니다. SillyTavern 폴더를 선택하세요.",
+                        style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -2605,146 +2677,6 @@ private fun SettingsScreen(
     }
 }
 
-@Composable
-private fun TavernFileBrowserDialog(
-    state: LauncherUiState,
-    onNavigate: (String) -> Unit,
-    onOpenFile: (String) -> Unit,
-    onClose: () -> Unit,
-) {
-    var sensitiveFile by remember { mutableStateOf<TavernFileEntry?>(null) }
-    sensitiveFile?.let { file ->
-        AlertDialog(
-            onDismissRequest = { sensitiveFile = null },
-            title = { Text("민감한 설정 파일을 열까요?") },
-            text = { Text("${file.name}에는 API 키, 접속 설정 또는 인증 정보가 들어 있을 수 있습니다. 신뢰하는 앱으로만 열어 주세요.") },
-            confirmButton = {
-                Button(onClick = {
-                    sensitiveFile = null
-                    onOpenFile(file.relativePath)
-                }) { Text("앱을 선택해 열기") }
-            },
-            dismissButton = { TextButton(onClick = { sensitiveFile = null }) { Text("취소") } },
-        )
-    }
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(12.dp),
-            shape = RoundedCornerShape(24.dp),
-            tonalElevation = 6.dp,
-        ) {
-            Column(Modifier.fillMaxSize()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = {
-                            val parent = state.fileBrowserPath.substringBeforeLast('/', "")
-                            onNavigate(parent)
-                        },
-                        enabled = state.fileBrowserPath.isNotBlank() && !state.fileBrowserLoading,
-                    ) { Icon(Icons.Outlined.ArrowBack, contentDescription = "상위 폴더") }
-                    Column(Modifier.weight(1f)) {
-                        Text("SillyTavern 파일", style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            "~/${listOf("SillyTavern", state.fileBrowserPath).filter(String::isNotBlank).joinToString("/")}",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 2,
-                        )
-                    }
-                    IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, contentDescription = "닫기") }
-                }
-                Surface(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text(
-                        "읽기 전용 탐색기입니다. 폴더는 여기서 확인하고, 파일은 설치된 호환 앱을 선택해 열 수 있습니다.",
-                        modifier = Modifier.padding(12.dp),
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                when {
-                    state.fileBrowserLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            DirectSpinner(Modifier.size(28.dp), 3.dp)
-                            Spacer(Modifier.height(12.dp))
-                            Text("폴더 내용을 불러오고 있습니다.")
-                        }
-                    }
-                    state.fileBrowserError.isNotBlank() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            state.fileBrowserError,
-                            modifier = Modifier.padding(24.dp),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                    else -> LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (state.fileBrowserEntries.isEmpty()) {
-                            item { Text("이 폴더는 비어 있습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        }
-                        items(state.fileBrowserEntries, key = { it.relativePath }) { entry ->
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (entry.isDirectory) onNavigate(entry.relativePath)
-                                        else if (entry.sensitive) sensitiveFile = entry
-                                        else onOpenFile(entry.relativePath)
-                                    },
-                                color = if (entry.sensitive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainer,
-                                shape = RoundedCornerShape(16.dp),
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(
-                                        if (entry.isDirectory) Icons.Outlined.FolderOpen else Icons.Outlined.InsertDriveFile,
-                                        contentDescription = null,
-                                        tint = if (entry.sensitive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(entry.name, fontWeight = FontWeight.SemiBold, maxLines = 2)
-                                        Text(
-                                            if (entry.isDirectory) "폴더 · ${entry.modifiedAt}" else "${formatBackupBytes(entry.sizeBytes)} · ${entry.modifiedAt}",
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            style = MaterialTheme.typography.bodySmall,
-                                        )
-                                        if (entry.sensitive) Text(
-                                            "민감한 정보가 포함될 수 있음",
-                                            color = MaterialTheme.colorScheme.error,
-                                            style = MaterialTheme.typography.labelMedium,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun WorkingOverlay(
