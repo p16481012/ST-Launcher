@@ -20,7 +20,9 @@ internal class SharedImportStaging(private val context: Context) {
     private val pending = context.getSharedPreferences("pending_import_transfers", Context.MODE_PRIVATE)
 
     suspend fun copy(source: Uri, backup: Boolean): Transfer = withContext(Dispatchers.IO) {
-        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "파일 가져오기는 Android 10 이상에서 지원합니다." }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            throw IllegalStateException("파일 가져오기는 Android 10 이상에서 지원합니다.")
+        }
         require(source.scheme == "content") { "파일 선택 화면에서 가져올 파일을 선택해 주세요." }
         val resolver = context.contentResolver
         val declaredSize = resolver.query(source, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
