@@ -145,10 +145,10 @@ import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
+import app.tavernbridge.launcher.ui.components.WorkProgressDetails
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import kotlinx.coroutines.delay
 import java.util.Locale
-import kotlin.math.roundToInt
 
 private data class Confirmation(
     val title: String,
@@ -2689,22 +2689,13 @@ private fun WorkingOverlay(
     var collapsed by remember { mutableStateOf(false) }
     var cancelConfirmation by remember { mutableStateOf(false) }
     var elapsedSeconds by remember(progress?.operation, label) { mutableStateOf(0L) }
-    var displayedPercent by remember { mutableFloatStateOf(0f) }
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var spinnerRotation by remember { mutableFloatStateOf(0f) }
-    val reportedPercent = progress?.percent?.coerceIn(0, 100) ?: 0
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
-    val finalizing = reportedPercent == 100 && !finalConfirmation
+    val finalizing = progress?.status == "success" && !finalConfirmation
+    val measuredPercent = progress?.measuredPercent.takeUnless { finalizing }
     val cancellable = progress?.operation in setOf("install", "start") &&
         progress?.status == "running" && !finalizing
-    val targetPercent = if (finalizing) 99 else reportedPercent
-    LaunchedEffect(targetPercent) {
-        if (targetPercent < displayedPercent) displayedPercent = targetPercent.toFloat()
-        val step = if (targetPercent == 100) 0.8f else 0.4f
-        while (displayedPercent < targetPercent) {
-            delay(16)
-            displayedPercent = (displayedPercent + step).coerceAtMost(targetPercent.toFloat())
-        }
-    }
     LaunchedEffect(Unit) {
         while (true) {
             delay(16)
@@ -2716,6 +2707,7 @@ private fun WorkingOverlay(
         while (true) {
             delay(1_000)
             elapsedSeconds += 1
+            nowMillis = System.currentTimeMillis()
         }
     }
     val recentLog = progress?.logText
@@ -2788,7 +2780,9 @@ private fun WorkingOverlay(
             tonalElevation = 6.dp,
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 22.dp, vertical = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2801,6 +2795,13 @@ private fun WorkingOverlay(
                     )
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
+                        if (progress != null && !finalizing && progress.status != "success") {
+                            Text(
+                                "현재 단계",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                         Text(
                             if (finalizing) "마무리 확인 중" else progress?.phase?.ifBlank { label }
                                 ?: label.ifBlank { "처리 중" },
@@ -2808,7 +2809,7 @@ private fun WorkingOverlay(
                         )
                         if (finalizing) {
                             Text(
-                                "설치 상태와 서버 응답을 최종 확인하고 있습니다.",
+                                "작업 결과를 최종 확인하고 있습니다.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall,
                             )
@@ -2825,26 +2826,29 @@ private fun WorkingOverlay(
                             style = MaterialTheme.typography.labelMedium,
                         )
                     }
-                    if (progress != null) {
-                        Text("${displayedPercent.roundToInt()}%", fontWeight = FontWeight.Bold)
+                    if (measuredPercent != null) {
+                        Text("${measuredPercent}%", fontWeight = FontWeight.Bold)
                     }
                     IconButton(onClick = { collapsed = true }) {
                         Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "진행창 접기")
                     }
                 }
-                if (progress != null) {
+                if (measuredPercent != null) {
                     LinearProgressIndicator(
-                        progress = { displayedPercent / 100f },
+                        progress = { measuredPercent / 100f },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 } else {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Text(
-                        "Termux의 응답을 기다리고 있습니다. 다른 앱을 사용해도 작업은 계속됩니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    if (progress == null) {
+                        Text(
+                            "Termux의 응답을 기다리고 있습니다.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
+                if (progress != null && !finalizing) WorkProgressDetails(progress, nowMillis)
                 Text(
                     "설치 위치  ~/SillyTavern",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2860,7 +2864,7 @@ private fun WorkingOverlay(
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         Text(
-                            "첫 설치, 네트워크 상태 또는 기본 콘텐츠 초기화 때문에 오래 걸릴 수 있습니다. 아래 상세 로그가 계속 바뀌면 정상 진행 중입니다.",
+                            "첫 설치, 네트워크 상태 또는 기본 콘텐츠 초기화 때문에 오래 걸릴 수 있습니다. 마지막 처리·출력 변화 시간과 상세 로그를 함께 확인하세요.",
                             modifier = Modifier.padding(12.dp),
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             style = MaterialTheme.typography.bodySmall,

@@ -25,6 +25,7 @@ import app.tavernbridge.launcher.model.DiagnosticReport
 import app.tavernbridge.launcher.model.DiagnosticStatus
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.WorkProgress
+import app.tavernbridge.launcher.model.LocalProgressJournal
 import app.tavernbridge.launcher.model.UpdatePreflight
 import app.tavernbridge.launcher.model.UpdateRecord
 import app.tavernbridge.launcher.model.TavernFileEntry
@@ -49,6 +50,7 @@ class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
     private val preferences = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
     private val importStaging = SharedImportStaging(context)
+    @Volatile private var localOperationProgress: WorkProgress? = null
 
     companion object {
         private const val SYSTEM_URL_HANDLER = "@android-system"
@@ -95,13 +97,20 @@ class LauncherRepository(private val context: Context) {
         )
     }
 
-    suspend fun inspect(): EnvironmentStatus {
+    suspend fun inspect(onProgress: ((WorkProgress) -> Unit)? = null, progressOperation: String = "refresh"): EnvironmentStatus {
+        val progress = onProgress?.let { LocalProgressJournal(progressOperation, it) }
+        progress?.phase("환경 확인", "Android 권한, 서버 응답, Termux 설치 상태를 차례로 확인합니다.", 3)
         val base = baseStatus()
+        progress?.completedItem("Android 권한·설정 확인")
+        progress?.item("서버 응답 확인", "설정된 로컬 서버의 HTTP 응답을 기다립니다.")
         val serverReachable = pingServer(base.port)
+        progress?.completedItem("서버 응답 확인")
         if (!base.termuxInstalled || !base.commandPermissionGranted) {
+            progress?.completedItem("Termux 미설치 또는 명령 권한 없음 확인 · 명령 검사 생략")
             return base.copy(serverReachable = serverReachable)
         }
 
+        progress?.item("Termux 환경 검사", "명령 응답을 기다립니다. 설치 폴더·실행 상태·도구를 확인합니다.")
         val result = runManager("doctor", timeoutMillis = 20_000)
         if (!result.isSuccess) {
             throw IllegalStateException(result.readableError())
@@ -110,23 +119,30 @@ class LauncherRepository(private val context: Context) {
             serverReachable = serverReachable,
             termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
         )
+        progress?.completedItem("Termux 설치·프로세스·도구 검사")
         if (!status.operationActive) importStaging.cleanAbandoned()
         return status
     }
 
-    suspend fun connectManager(): TermuxCommandResult {
-        val command = buildString {
-            append(managerBootstrapCommand())
-            append(" && ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ")
-            append(shellQuote(TermuxContract.MANAGER_PATH))
-            append(" doctor")
-        }
-        return runBash(
-            command = command,
-            label = "실리태번 런처 연결",
-            description = "관리 스크립트를 설치하고 환경을 확인합니다.",
-            timeoutMillis = 30_000,
-        )
+    suspend fun connectManager(progressOperation: String = "connect-manager"): TermuxCommandResult {
+        val progress = LocalProgressJournal(progressOperation, { localOperationProgress = it })
+        progress.phase("런처 연결 준비", "관리 스크립트 묶음을 준비하고 있습니다.")
+        try {
+            val command = buildString {
+                append(managerBootstrapCommand())
+                append(" && ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ")
+                append(shellQuote(TermuxContract.MANAGER_PATH))
+                append(" doctor")
+            }
+            progress.completedItem("관리 스크립트 묶음 준비")
+            progress.phase("Termux 연결 확인", "관리 스크립트를 전달하고 Termux 환경 검사 응답을 기다립니다.")
+            return runBash(
+                command = command,
+                label = "실리태번 런처 연결",
+                description = "관리 스크립트를 설치하고 환경을 확인합니다.",
+                timeoutMillis = 30_000,
+            ).also { if (it.isSuccess) progress.completedItem("관리 스크립트 전달·연결 확인") }
+        } finally { localOperationProgress = null }
     }
 
     suspend fun install(branch: SillyBranch): TermuxCommandResult =
@@ -284,9 +300,16 @@ class LauncherRepository(private val context: Context) {
         val trimmed = path.trim()
         val absolute = if (trimmed.startsWith("~/")) TermuxContract.HOME_PATH + trimmed.removePrefix("~") else trimmed
         require(absolute.startsWith('/') && absolute.none { it.isISOControl() }) { "설치 폴더의 전체 경로를 입력해 주세요." }
-        val result = runManager("inspect-install ${shellQuote(encodeFileArgument(absolute))}", 5 * 60_000L)
-        if (!result.isSuccess) throw IllegalStateException(result.readableError())
-        return FileManagementProtocol.installation(result.stdout)
+        val progress = LocalProgressJournal("inspect-install", { localOperationProgress = it })
+        progress.phase("기존 설치 검사", "폴더 구조·Git 정보·용량을 확인합니다. 이 단계에서는 원본을 변경하지 않습니다.")
+        progress.item(absolute, "Termux 검사 응답을 기다립니다. 파일이 많으면 폴더 용량 계산에 시간이 걸릴 수 있습니다.")
+        try {
+            val result = runManager("inspect-install ${shellQuote(encodeFileArgument(absolute))}", 5 * 60_000L)
+            if (!result.isSuccess) throw IllegalStateException(result.readableError())
+            return FileManagementProtocol.installation(result.stdout).also {
+                progress.completedItem("설치 구조·버전·폴더 용량 확인")
+            }
+        } finally { localOperationProgress = null }
     }
 
     /** Resolve the selected local folder directly: no duplicate SAF staging tree is created. */
@@ -313,7 +336,7 @@ class LauncherRepository(private val context: Context) {
         require(content.toByteArray(Charsets.UTF_8).size <= TEXT_EDIT_LIMIT) { "앱 안에서는 64 KiB 이하의 텍스트만 수정할 수 있습니다." }
         require(file.revision.matches(Regex("[0-9a-f]{64}"))) { "파일을 다시 열어 주세요." }
         // The script bootstrap plus 64 KiB content could exceed Linux's per-argument limit.
-        val connected = connectManager()
+        val connected = connectManager("write-st-file")
         if (!connected.isSuccess) return connected
         return runExistingManager(
             "write-st-file ${shellQuote(encodeFileArgument(file.relativePath))} ${shellQuote(encodeFileArgument(content))} ${shellQuote(file.revision)}",
@@ -350,7 +373,7 @@ class LauncherRepository(private val context: Context) {
 
     suspend fun importSillyTavernFile(parent: String, uri: Uri): TermuxCommandResult {
         val destination = withContext(Dispatchers.IO) { fileChildPath(parent, importStaging.displayName(uri)) }
-        val transfer = importStaging.copy(uri, backup = false)
+        val transfer = stageTransfer(uri, backup = false)
         // On timeout/process death the manager may still be reading; idle cleanup handles those later.
         val result = runManager("import-st-file ${shellQuote(encodeFileArgument(destination))} ${shellQuote(transfer.name)}", 15 * 60_000L)
         importStaging.remove(transfer)
@@ -414,7 +437,7 @@ class LauncherRepository(private val context: Context) {
         runManager("restore ${shellQuote(fileName)}", timeoutMillis = 45 * 60_000L)
 
     suspend fun importBackup(uri: Uri): TermuxCommandResult {
-        val transfer = importStaging.copy(uri, backup = true)
+        val transfer = stageTransfer(uri, backup = true)
         val result = runManager("import-backup ${shellQuote(transfer.name)}", timeoutMillis = 45 * 60_000L)
         importStaging.remove(transfer)
         return result
@@ -433,9 +456,17 @@ class LauncherRepository(private val context: Context) {
         runExistingManager("history 300", timeoutMillis = 20_000)
 
     suspend fun diagnose(): DiagnosticReport {
+        val progress = LocalProgressJournal("diagnose", { localOperationProgress = it })
+        progress.phase("Android 설정 검사", "Termux 설치·명령 권한·배터리 설정을 확인합니다.", 3)
+        return try { diagnoseWithProgress(progress) } finally { localOperationProgress = null }
+    }
+
+    private suspend fun diagnoseWithProgress(progress: LocalProgressJournal): DiagnosticReport {
         val items = mutableListOf<DiagnosticItem>()
         val termuxInstalled = executor.isTermuxInstalled()
+        progress.completedItem("Termux 설치 확인")
         val permissionGranted = executor.hasRunCommandPermission()
+        progress.completedItem("외부 명령 실행 권한 확인")
         items += DiagnosticItem(
             id = "launcher_version",
             title = "런처 버전",
@@ -471,13 +502,18 @@ class LauncherRepository(private val context: Context) {
                 status = if (excluded) DiagnosticStatus.OK else DiagnosticStatus.WARNING,
                 recommendation = if (excluded) "" else "Termux 배터리 설정을 ‘제한 없음’으로 바꾸고 제조사 절전 목록에서도 제외해 주세요.",
             )
+            progress.completedItem("Termux 배터리 최적화 설정 확인")
+        } else {
+            progress.completedItem("Termux 미설치 확인 · 배터리 검사 생략")
         }
 
         if (!termuxInstalled || !permissionGranted) {
             return diagnosticReport(items)
         }
 
-        val result = runManager("diagnose", timeoutMillis = 60_000)
+        // Long-running probes publish their own measured state; do not cover it with a local waiting card.
+        localOperationProgress = null
+        val result = runManager("diagnose", timeoutMillis = 90_000)
         if (!result.isSuccess) {
             items += DiagnosticItem(
                 id = "diagnose_command",
@@ -617,6 +653,17 @@ class LauncherRepository(private val context: Context) {
             status = if (lastError.isBlank()) DiagnosticStatus.OK else DiagnosticStatus.WARNING,
             recommendation = if (lastError.isBlank()) "" else "서버 로그의 같은 시각을 확인하고, 오류 코드와 함께 진단 내용을 복사해 주세요.",
         )
+        progress.phase("진단 보고서 정리", "완료된 검사 결과를 진단 항목으로 정리합니다.", items.size.toLong())
+        items.forEach { item ->
+            val status = when (item.status) {
+                DiagnosticStatus.OK -> "정상"
+                DiagnosticStatus.WARNING -> "확인 필요"
+                DiagnosticStatus.ERROR -> "오류 확인"
+                DiagnosticStatus.INFO -> "정보 확인"
+            }
+            // Only the known item title/status is logged, never diagnostic values or credentials.
+            progress.completedItem("${item.title} · $status")
+        }
         return diagnosticReport(items, value("manager_version"))
     }
 
@@ -638,14 +685,16 @@ class LauncherRepository(private val context: Context) {
     }
 
     suspend fun readProgress(): WorkProgress? {
+        localOperationProgress?.let { return it }
         val command = buildString {
             append("test -f ${shellQuote(TermuxContract.PROGRESS_PATH)} && cat ${shellQuote(TermuxContract.PROGRESS_PATH)} || true")
+            append("; printf '\\n'; cat ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/run/progress-heartbeat.env")} 2>/dev/null || true")
             append("; printf '\\n__ST_LAUNCHER_LOG__\\n'")
             append("; test -f ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/operation.log")}")
-            append(" && tail -c 60000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/operation.log")} || true")
-            append("; if grep -q '^operation=start$' ${shellQuote(TermuxContract.PROGRESS_PATH)} 2>/dev/null; then")
+            append(" && tail -c 20000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/operation.log")} || true")
+            append("; if grep -Eq '^operation=(start|restart|update)$' ${shellQuote(TermuxContract.PROGRESS_PATH)} 2>/dev/null; then")
             append(" printf '\n===== SillyTavern 서버 출력 =====\n'")
-            append("; tail -c 40000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/server.log")} 2>/dev/null || true; fi")
+            append("; tail -c 20000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/server.log")} 2>/dev/null || true; fi")
         }
         val result = runBash(
             command = command,
@@ -654,23 +703,8 @@ class LauncherRepository(private val context: Context) {
             timeoutMillis = 5_000,
         )
         if (!result.isSuccess || result.stdout.isBlank()) return null
-        val sections = result.stdout.split("\n__ST_LAUNCHER_LOG__\n", limit = 2)
-        val values = sections.first().lineSequence()
-            .mapNotNull { line ->
-                val separator = line.indexOf('=')
-                if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
-            }
-            .toMap()
-        return WorkProgress(
-            percent = values["percent"]?.toIntOrNull()?.coerceIn(0, 100) ?: return null,
-            phase = values["phase"].orEmpty(),
-            detail = values["detail"].orEmpty(),
-            status = values["status"] ?: "running",
-            operation = values["operation"] ?: "idle",
-            errorCode = values["error_code"].orEmpty(),
-            finishedAtMillis = (values["finished_at"]?.toLongOrNull() ?: 0L) * 1_000,
-            logText = sections.getOrElse(1) { "" }.trim(),
-        )
+        if (result.stdoutTruncated) return null
+        return WorkProgressParser.parse(result.stdout)
     }
 
     fun openTermux(): Boolean {
@@ -865,8 +899,55 @@ class LauncherRepository(private val context: Context) {
     }
 
     private fun managerBootstrapCommand(): String {
-        val script = context.assets.open("manager.sh").bufferedReader().use { it.readText() }
-        return createManagerBootstrapCommand(TermuxContract.MANAGER_PATH, encodeManagerScript(script))
+        return listOf("progress.sh", "archive-progress.sh", "manager.sh").joinToString(" && ") { name ->
+            val script = context.assets.open(name).bufferedReader().use { it.readText() }
+            val path = TermuxContract.MANAGER_PATH.substringBeforeLast('/') + "/$name"
+            createManagerBootstrapCommand(path, encodeManagerScript(script))
+        }
+    }
+
+    private suspend fun stageTransfer(uri: Uri, backup: Boolean): SharedImportStaging.Transfer {
+        val started = System.currentTimeMillis()
+        var activity = started
+        var previousBytes = -1L
+        var lastHistoryAt = 0L
+        var lastHistoryBytes = -1L
+        val history = ArrayDeque<String>()
+        val clock = SimpleDateFormat("HH:mm:ss", Locale.KOREA)
+        fun amount(bytes: Long): String = if (bytes < 0) "전체 용량 확인 중" else
+            if (bytes < 1_048_576L) "$bytes B" else String.format(Locale.KOREA, "%.1f MiB", bytes / 1_048_576.0)
+        try {
+            return importStaging.copy(uri, backup) { progress ->
+                val now = System.currentTimeMillis()
+                if (progress.bytes != previousBytes || progress.finished) activity = now
+                previousBytes = progress.bytes
+                if ((now - lastHistoryAt >= 2_000L && progress.bytes != lastHistoryBytes) || progress.finished) {
+                    val name = redactSensitiveText(progress.name.filterNot { it.isISOControl() }.take(512))
+                    history.addLast("[${clock.format(Date(now))}] ${if (progress.finished) "전달 파일 준비 완료" else "파일 복사"} · $name · ${amount(progress.bytes)} / ${amount(progress.total)}")
+                    while (history.size > 8) history.removeFirst()
+                    lastHistoryAt = now
+                    lastHistoryBytes = progress.bytes
+                }
+                localOperationProgress = WorkProgress(
+                    percent = 0,
+                    phase = "가져올 파일 복사",
+                    detail = "선택한 원본은 그대로 두고 Termux에 전달할 임시 파일을 복사합니다.",
+                    operation = if (backup) "import-backup" else "import-st-file",
+                    progressMode = if (progress.total > 0) "bytes" else "indeterminate",
+                    completedBytes = progress.bytes,
+                    totalBytes = progress.total.coerceAtLeast(0),
+                    completedFiles = if (progress.finished) 1 else 0,
+                    totalFiles = 1,
+                    currentItem = progress.name,
+                    phaseStartedAtMillis = started,
+                    heartbeatAtMillis = now,
+                    activityAtMillis = activity,
+                    logText = history.joinToString("\n"),
+                )
+            }
+        } finally {
+            localOperationProgress = null
+        }
     }
 
     private suspend fun runBash(

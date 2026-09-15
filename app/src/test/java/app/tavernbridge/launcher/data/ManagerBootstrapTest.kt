@@ -18,12 +18,36 @@ class ManagerBootstrapTest {
     @get:Rule val temporary = TemporaryFolder()
 
     @Test
-    fun bundledManagerFitsSingleShellArgumentAfterCompression() {
-        val source = File("src/main/assets/manager.sh").takeIf { it.isFile }
-            ?: File("app/src/main/assets/manager.sh")
-        assertTrue("Bundled manager must be available to the regression test", source.isFile)
-        val command = createManagerBootstrapCommand("/data/data/com.termux/files/home/.st-launcher/manager.sh", encodeManagerScript(source.readText()))
-        assertTrue("Compressed bootstrap exceeds safe argument size", command.toByteArray(Charsets.UTF_8).size < 100_000)
+    fun bundledManagerAndHelpersFitSingleShellArgumentAfterCompression() {
+        val command = bundledAssets().joinToString(" && ") { source ->
+            createManagerBootstrapCommand(
+                "/data/data/com.termux/files/home/.st-launcher/${source.name}",
+                encodeManagerScript(source.readText()),
+            )
+        }
+        assertTrue("Combined manager/helper bootstrap exceeds safe argument size", command.toByteArray(Charsets.UTF_8).size < 100_000)
+    }
+
+    @Test
+    fun bundledHelpersAndManagerDeployTogetherWithValidShellSyntax() {
+        assumeLinuxShell()
+        val directory = temporary.newFolder("bundled ' helpers")
+        val sources = bundledAssets()
+        val command = sources.joinToString(" && ") { source ->
+            createManagerBootstrapCommand(directory.resolve(source.name).path, encodeManagerScript(source.readText()))
+        }
+        // Each production bootstrap validates bash syntax before replacing its
+        // file. Exercise the complete chained payload, not only a sample script.
+        assertEquals(0, runShell(command))
+        assertEquals(sources.map { it.name }.toSet(), directory.list().orEmpty().toSet())
+        for (source in sources) {
+            val target = directory.resolve(source.name)
+            assertEquals(source.readText(), target.readText())
+            assertEquals(
+                setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE),
+                Files.getPosixFilePermissions(target.toPath()),
+            )
+        }
     }
 
     @Test
@@ -76,6 +100,12 @@ class ManagerBootstrapTest {
         assertTrue(runShell(createManagerBootstrapCommand(target.path, encodeManagerScript(invalidScript))) != 0)
         assertEquals("old version\n", target.readText())
         assertEquals(setOf("manager.sh"), temporary.root.list().orEmpty().toSet())
+    }
+
+    private fun bundledAssets(): List<File> = listOf("progress.sh", "archive-progress.sh", "manager.sh").map { name ->
+        val source = File("src/main/assets/$name").takeIf { it.isFile } ?: File("app/src/main/assets/$name")
+        assertTrue("Bundled $name must be available to the regression test", source.isFile)
+        source
     }
 
     private fun assumeLinuxShell() = assumeTrue(System.getProperty("os.name").orEmpty().startsWith("Linux"))

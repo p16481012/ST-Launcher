@@ -20,6 +20,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.model.*
+import app.tavernbridge.launcher.ui.components.WorkProgressDetails
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 @Composable
@@ -165,23 +167,29 @@ internal fun TavernFileManagerDialog(
                     Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
                 if (state.lastTrashedEntryId.isNotBlank()) TextButton(onClick = onUndoTrash, enabled = canModify,
                     modifier = Modifier.padding(horizontal = 8.dp)) { Text("방금 휴지통으로 옮긴 항목 복구") }
-                if (state.fileBrowserLoading || state.fileBrowserMutating) LinearProgressIndicator(Modifier.fillMaxWidth())
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (state.fileBrowserEntries.isEmpty() && !state.fileBrowserLoading) item { Text("표시할 항목이 없습니다.") }
-                    items(state.fileBrowserEntries, key = { it.relativePath }) { entry ->
-                        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                            Row(Modifier.fillMaxWidth().clickable(enabled = !state.fileBrowserLoading && !state.fileBrowserMutating) {
-                                if (entry.isDirectory) onNavigate(entry.relativePath) else selected = entry
-                            }.padding(start = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(if (entry.isDirectory) Icons.Outlined.FolderOpen else Icons.Outlined.InsertDriveFile, null)
-                                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                                    Text(entry.name, fontWeight = FontWeight.SemiBold)
-                                    Text(if (entry.isDirectory) "폴더" else fileBytes(entry.sizeBytes), style = MaterialTheme.typography.bodySmall)
-                                    if (entry.sensitive) Text("민감한 정보 포함 가능", color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.labelSmall)
-                                }
-                                IconButton(onClick = { selected = entry }, enabled = !state.fileBrowserMutating) {
-                                    Icon(Icons.Outlined.MoreVert, "${entry.name} 작업")
+                if (state.fileBrowserMutating) {
+                    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                        FileOperationProgress(state.workProgress, state.workingLabel)
+                    }
+                } else {
+                    if (state.fileBrowserLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (state.fileBrowserEntries.isEmpty() && !state.fileBrowserLoading) item { Text("표시할 항목이 없습니다.") }
+                        items(state.fileBrowserEntries, key = { it.relativePath }) { entry ->
+                            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                                Row(Modifier.fillMaxWidth().clickable(enabled = !state.fileBrowserLoading && !state.fileBrowserMutating) {
+                                    if (entry.isDirectory) onNavigate(entry.relativePath) else selected = entry
+                                }.padding(start = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(if (entry.isDirectory) Icons.Outlined.FolderOpen else Icons.Outlined.InsertDriveFile, null)
+                                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                        Text(entry.name, fontWeight = FontWeight.SemiBold)
+                                        Text(if (entry.isDirectory) "폴더" else fileBytes(entry.sizeBytes), style = MaterialTheme.typography.bodySmall)
+                                        if (entry.sensitive) Text("민감한 정보 포함 가능", color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    IconButton(onClick = { selected = entry }, enabled = !state.fileBrowserMutating) {
+                                        Icon(Icons.Outlined.MoreVert, "${entry.name} 작업")
+                                    }
                                 }
                             }
                         }
@@ -251,9 +259,15 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
                 Text("다른 곳에서 파일이 바뀌면 저장을 중단합니다. 수정 내용을 복사한 뒤 파일을 다시 열어 주세요.",
                     style = MaterialTheme.typography.bodySmall)
                 if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
-                OutlinedTextField(value = content, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 65_536) content = it },
-                    modifier = Modifier.fillMaxWidth().weight(1f), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    readOnly = !state.canModifyTavernFiles())
+                if (state.fileBrowserMutating) {
+                    Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+                        FileOperationProgress(state.workProgress, state.workingLabel)
+                    }
+                } else {
+                    OutlinedTextField(value = content, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 65_536) content = it },
+                        modifier = Modifier.fillMaxWidth().weight(1f), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        readOnly = !state.canModifyTavernFiles())
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = { close() }, enabled = !state.fileBrowserMutating) { Text("닫기") }
                     Button(onClick = { onSave(content) }, enabled = state.canModifyTavernFiles() && content != file.content) { Text("저장") }
@@ -264,6 +278,40 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
             text = { Text("저장하지 않은 변경 내용은 사라집니다.") },
             confirmButton = { TextButton(onClick = { discard = false; onClose() }) { Text("변경 버리기") } },
             dismissButton = { TextButton(onClick = { discard = false }) { Text("계속 수정") } })
+    }
+}
+
+@Composable
+private fun FileOperationProgress(progress: WorkProgress?, label: String) {
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(progress?.operation) {
+        while (true) {
+            nowMillis = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    val measuredPercent = progress?.measuredPercent
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                if (progress == null) label.ifBlank { "파일 작업 중" }
+                else "현재 단계 · ${progress.phase.ifBlank { label }}",
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            if (measuredPercent != null) Text("${measuredPercent}%", fontWeight = FontWeight.Bold)
+        }
+        if (!progress?.detail.isNullOrBlank()) Text(progress?.detail.orEmpty(), style = MaterialTheme.typography.bodySmall)
+        if (measuredPercent == null) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        } else {
+            LinearProgressIndicator(progress = { measuredPercent / 100f }, modifier = Modifier.fillMaxWidth())
+        }
+        if (progress == null) {
+            Text("처리 상태를 기다리고 있습니다.", style = MaterialTheme.typography.bodySmall)
+        } else {
+            WorkProgressDetails(progress, nowMillis)
+        }
     }
 }
 

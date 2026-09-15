@@ -120,9 +120,20 @@ zip_regression_generic_import() {
     mkdir -p "$payload/public/scripts/extensions/third-party/example"
     printf 'extension fixture\n' > "$payload/public/scripts/extensions/third-party/example/index.js"
     zip_regression_archive "$payload" "$DOWNLOAD_DIR/SillyTavern-Import-Generic.zip"
+    # Instrument the actual streaming helper boundary. Counting only unzip calls
+    # would miss an accidental second pass through the measured ZIP extractor.
+    eval "$(declare -f measured_archive | sed '1s/measured_archive/zip_original_measured_archive/')"
+    measured_archive() {
+        printf '%s\n' "${3:-}" >> "$ZIP_CASE_ROOT/archive-helper-calls"
+        zip_original_measured_archive "$@"
+    }
     unzip() {
-        printf '%s\n' "$1" >> "$ZIP_CASE_ROOT/unzip-calls"
+        printf '%s\n' "$*" >> "$ZIP_CASE_ROOT/unzip-calls"
         command unzip "$@"
+    }
+    zip() {
+        printf '%s\n' "$*" >> "$ZIP_CASE_ROOT/zip-calls"
+        command zip "$@"
     }
     import_backup SillyTavern-Import-Generic.zip
 }
@@ -136,8 +147,12 @@ zip_regression_expect_exit 0 generic-import zip_regression_generic_import
     fail "generic ZIP config was not restored"
 [[ -f "$TEST_ROOT/zip-generic-import/install/public/scripts/extensions/third-party/example/index.js" ]] ||
     fail "generic ZIP extension was not restored"
-[[ "$(cat "$TEST_ROOT/zip-generic-import/unzip-calls")" == -oq ]] ||
-    fail "generic import inflated the ZIP more than once"
+[[ "$(cat "$TEST_ROOT/zip-generic-import/archive-helper-calls")" == extract ]] ||
+    fail "generic import did not use exactly one measured extraction without recompression"
+[[ ! -s "$TEST_ROOT/zip-generic-import/unzip-calls" ]] ||
+    fail "generic import also used a legacy unzip content/integrity pass"
+[[ ! -s "$TEST_ROOT/zip-generic-import/zip-calls" ]] ||
+    fail "generic import created a normalized intermediate ZIP"
 
 zip_regression_tiny_backup() {
     zip_regression_setup tiny-backup
@@ -185,12 +200,13 @@ zip_regression_partial_copy_failure() {
     zip_regression_install "$payload" incoming
     zip_regression_manifest "$payload" user_data,config
     zip_regression_archive "$payload" "$DOWNLOAD_DIR/SillyTavern-Launcher-20000101-000004.zip"
-    cp() {
-        if [[ "${1:-}" == -a && "${2:-}" == "$CURRENT_WORK_DIR/extracted/data" ]]; then
+    eval "$(declare -f measured_copy | sed '1s/measured_copy/zip_original_measured_copy/')"
+    measured_copy() {
+        if [[ "${1:-}" == "$CURRENT_WORK_DIR/extracted/data" ]]; then
             printf 'injected first-apply-copy failure\n' > "$ZIP_CASE_ROOT/copy-failed"
             return 1
         fi
-        command cp "$@"
+        zip_original_measured_copy "$@"
     }
     restore_backup SillyTavern-Launcher-20000101-000004.zip
 }

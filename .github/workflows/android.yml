@@ -33,13 +33,20 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
 
-      - name: Check manager shell syntax
-        run: bash -n app/src/main/assets/manager.sh
+      - name: Check manager and transfer helper shell syntax
+        run: |
+          bash -n app/src/main/assets/manager.sh
+          bash -n app/src/main/assets/progress.sh
+          bash -n app/src/main/assets/archive-progress.sh
 
       - name: Test manager safety helpers
         run: |
           bash scripts/test-manager.sh
           bash scripts/test-manager-files.sh
+          bash scripts/test-manager-progress.sh
+          bash scripts/test-progress.sh
+          bash scripts/test-archive-progress.sh
+          bash scripts/test-progress-checks.sh
 
       - name: Test, lint, and build debug and unsigned release APKs
         run: ./gradlew --no-daemon test lint assembleDebug assembleRelease

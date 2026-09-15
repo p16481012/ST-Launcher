@@ -20,6 +20,11 @@ PREVIOUS_SERVER_LOG="$LOG_DIR/server-previous.log"
 LEGACY_SERVER_LOG="$LOG_DIR/sillytavern.log"
 HISTORY_LOG="$LOG_DIR/launcher-history.log"
 PROGRESS_FILE="$RUN_DIR/progress.env"
+HEARTBEAT_FILE="$RUN_DIR/progress-heartbeat.env"
+PROGRESS_HELPER="${ST_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/progress.sh}"
+ARCHIVE_PROGRESS_HELPER="${ST_ARCHIVE_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/archive-progress.sh}"
+PROGRESS_MONITOR_PID=""
+PROGRESS_MONITOR_START=""
 LAST_RESULT_FILE="$RUN_DIR/last-result.env"
 SESSION_FILE="$RUN_DIR/server-session.env"
 LOCK_DIR="$RUN_DIR/operation.lock"
@@ -55,17 +60,24 @@ write_progress() {
     local operation="${5:-$CURRENT_OPERATION}"
     local error_code="${6:-}"
     local temp="$PROGRESS_FILE.tmp.$$"
-    printf 'percent=%s\nphase=%s\ndetail=%s\nstatus=%s\noperation=%s\nerror_code=%s\n' \
-        "$percent" "$phase" "$detail" "$status" "$operation" "$error_code" > "$temp"
+    local now previous_phase phase_started mode=indeterminate
+    now="$(date +%s)"
+    previous_phase="$(sed -n 's/^phase=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+    phase_started="$(sed -n 's/^phase_started_at=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+    if [[ "$previous_phase" != "$phase" || ! "$phase_started" =~ ^[0-9]+$ ]]; then phase_started="$now"; fi
+    [[ "$status" == success && "$percent" == 100 ]] && mode=complete
+    # Existing stage weights remain a legacy protocol field only. The UI never
+    # presents them as measured work. Only the transfer helpers provide totals.
+    printf 'percent=%s\nphase=%s\ndetail=%s\nstatus=%s\noperation=%s\nerror_code=%s\nprogress_mode=%s\nphase_started_at=%s\n' \
+        "$percent" "$phase" "$detail" "$status" "$operation" "$error_code" "$mode" "$phase_started" > "$temp"
     mv -f "$temp" "$PROGRESS_FILE"
-
-    printf '[%s] %s - %s (%s%%)\n' \
-        "$(date '+%H:%M:%S')" "$phase" "$detail" "$percent" >> "$LOG_FILE"
 
     local progress_key="$operation|$phase|$status"
     if [[ "$progress_key" != "$LAST_LOGGED_PROGRESS" ]]; then
-        printf '[%s] [%s] %s - %s (%s%%, %s)\n' \
-            "$(date '+%Y-%m-%d %H:%M:%S')" "$operation" "$phase" "$detail" "$percent" "$status" >> "$HISTORY_LOG"
+        # Repeated elapsed-time updates are not actual tool output/activity.
+        printf '[%s] %s - %s\n' "$(date '+%H:%M:%S')" "$phase" "$detail" >> "$LOG_FILE"
+        printf '[%s] [%s] %s - %s (%s)\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "$operation" "$phase" "$detail" "$status" >> "$HISTORY_LOG"
         LAST_LOGGED_PROGRESS="$progress_key"
         trim_history_log
     fi
@@ -221,6 +233,51 @@ reset_current_log() {
     : > "$LOG_FILE"
 }
 
+start_progress_monitor() {
+    local owner="$BASHPID" owner_start
+    owner_start="$(process_start_ticks "$owner")"
+    (
+        trap - EXIT INT TERM
+        local previous_output="" output activity=0 now temp="$HEARTBEAT_FILE.tmp.$BASHPID"
+        while kill -0 "$owner" 2>/dev/null && [[ "$(process_start_ticks "$owner")" == "$owner_start" ]]; do
+            now="$(date +%s)"
+            output="$(stat -c '%s:%Y' "$LOG_FILE" 2>/dev/null || true)"
+            if [[ "$CURRENT_OPERATION" == start || "$CURRENT_OPERATION" == restart || "$CURRENT_OPERATION" == update ]]; then
+                output="$output:$(stat -c '%s:%Y' "$SERVER_LOG" 2>/dev/null || true)"
+            fi
+            if [[ "$output" != "$previous_output" ]]; then activity="$now"; previous_output="$output"; fi
+            printf 'monitor_operation=%s\nmonitor_heartbeat_at=%s\nobserved_activity_at=%s\n' \
+                "$CURRENT_OPERATION" "$now" "$activity" > "$temp"
+            mv -f "$temp" "$HEARTBEAT_FILE"
+            sleep 2
+        done
+        rm -f -- "$temp"
+    ) &
+    PROGRESS_MONITOR_PID=$!
+    PROGRESS_MONITOR_START="$(process_start_ticks "$PROGRESS_MONITOR_PID")"
+}
+
+stop_progress_monitor() {
+    if [[ -n "$PROGRESS_MONITOR_PID" && -n "$PROGRESS_MONITOR_START" &&
+        "$(process_start_ticks "$PROGRESS_MONITOR_PID")" == "$PROGRESS_MONITOR_START" ]]; then
+        kill -TERM "$PROGRESS_MONITOR_PID" 2>/dev/null || true
+        wait "$PROGRESS_MONITOR_PID" 2>/dev/null || true
+    fi
+    PROGRESS_MONITOR_PID=""
+}
+
+measured_copy() {
+    local source="$1" destination="$2" excludes="${3:-}" links="${4:-reject-links}"
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_PHASE="${COPY_PHASE:-파일 복사}" \
+        ST_PROGRESS_DETAIL="실제 복사한 파일과 용량을 확인하고 있습니다." ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
+        bash "$PROGRESS_HELPER" copy "$source" "$destination" "$excludes" "$links"
+}
+
+measured_archive() {
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_PHASE="$1" ST_PROGRESS_DETAIL="$2" \
+        ST_PROGRESS_OPERATION="$CURRENT_OPERATION" bash "$ARCHIVE_PROGRESS_HELPER" "${@:3}"
+}
+
 archive_server_log() {
     [[ -s "$SERVER_LOG" ]] || return 0
     local temp="$PREVIOUS_SERVER_LOG.tmp.$$"
@@ -234,6 +291,13 @@ archive_server_log() {
 record_activity() {
     printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CURRENT_OPERATION" "$1" >> "$HISTORY_LOG"
     trim_history_log
+}
+
+# Actual completed checks/actions only; elapsed time alone must never create a
+# processing record. Never pass file contents or secret configuration values.
+record_processing() {
+    printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG_FILE"
+    record_activity "$1"
 }
 
 track_current_work_dir() {
@@ -450,6 +514,7 @@ operation_cleanup() {
     fi
     cleanup_current_work_dir
     cleanup_temporary_package_source
+    stop_progress_monitor
     release_operation_lock
     exit "$code"
 }
@@ -499,9 +564,13 @@ begin_operation() {
     CURRENT_OPERATION="$1"
     OPERATION_STARTED_EPOCH="$(date +%s)"
     acquire_operation
+    # Only the new lock owner may discard stale progress from the prior run.
+    rm -f -- "$PROGRESS_FILE" "$HEARTBEAT_FILE"
+    LAST_LOGGED_PROGRESS=""
     reset_current_log
     write_progress 0 "작업 준비" "요청한 작업을 안전하게 준비하고 있습니다."
     record_activity "작업 시작"
+    start_progress_monitor
 }
 
 operation_active() {
@@ -594,17 +663,14 @@ install_dependencies() {
         npm install --no-save --no-audit --no-fund --loglevel=notice --no-progress --omit=dev --ignore-scripts
     ) >> "$LOG_FILE" 2>&1 &
     local npm_pid=$!
-    local elapsed=0
-    local percent=55
+    local previous_count=-1
     while kill -0 "$npm_pid" 2>/dev/null; do
-        elapsed=$((elapsed + 2))
-        percent=$((55 + elapsed / 15))
-        (( percent > 76 )) && percent=76
         local package_count=0
         package_count="$(find "$ST_HOME/node_modules" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l || true)"
-        write_progress "$percent" "Node 모듈 설치" "패키지 ${package_count}개 구성 중 · ${elapsed}초 경과"
-        if (( elapsed % 10 == 0 )); then
-            printf '[%s] [live] Node 패키지 %s개 구성 중 · %s초 경과\n' "$(date '+%H:%M:%S')" "$package_count" "$elapsed" >> "$LOG_FILE"
+        write_progress 0 "Node 모듈 설치" "상위 패키지 폴더 ${package_count}개 확인 · 설치 도구의 응답을 기다리고 있습니다."
+        if [[ "$package_count" != "$previous_count" ]]; then
+            record_processing "Node 패키지 폴더 ${package_count}개 확인"
+            previous_count="$package_count"
         fi
         sleep 2
     done
@@ -623,7 +689,7 @@ install_dependencies() {
 }
 
 wait_for_server() {
-    local attempt percent
+    local attempt
     for attempt in $(seq 1 150); do
         if ! is_running; then
             write_progress 0 "시작 실패" "서버 프로세스가 종료됐습니다. 로그를 확인해 주세요." error
@@ -635,15 +701,17 @@ wait_for_server() {
         # Any HTTP response means that the local server socket is ready.
         # Do not use --fail: authentication or whitelist responses may be 4xx.
         if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+            record_processing "로컬 서버 HTTP 응답 확인 · ${attempt}번째 검사"
             write_progress 100 "서버 준비 완료" "브라우저에서 열 수 있습니다." success
             echo "started=1"
             echo "pid=$(cat "$PID_FILE")"
             return 0
         fi
 
-        percent=$((82 + attempt * 16 / 150))
-        (( percent > 98 )) && percent=98
-        write_progress "$percent" "서버 초기화" "기본 콘텐츠를 준비하고 있습니다."
+        write_progress 0 "서버 응답 대기" "서버 프로세스는 실행 중입니다. 127.0.0.1:$PORT 응답을 ${attempt}회 확인했지만 아직 준비되지 않았습니다."
+        if (( attempt == 1 || attempt % 3 == 0 )); then
+            record_processing "서버 프로세스 실행 확인 · HTTP 응답 대기 · ${attempt}회 검사"
+        fi
         sleep 2
     done
 
@@ -730,6 +798,7 @@ prepare_persistent_start() {
     else
         write_progress 78 "Node 모듈 확인" "필수 패키지가 정상입니다."
     fi
+    record_processing "설치 파일·의존성 검사 통과 · Termux 서버 실행 요청 준비"
     write_progress 82 "서버 작업 준비" "Termux에서 지속 실행할 서버 작업을 준비했습니다."
     echo "ready_to_launch=1"
 }
@@ -750,7 +819,9 @@ finish_persistent_start() {
     CURRENT_OPERATION="start"
     OPERATION_STARTED_EPOCH="$(date +%s)"
     acquire_operation
-    record_activity "Termux 지속 실행 작업 확인 시작"
+    write_progress 0 "Termux 실행 응답 대기" "전달한 서버 실행 요청이 실제 프로세스로 시작되는지 확인하고 있습니다."
+    record_processing "Termux 지속 실행 작업 확인 시작"
+    start_progress_monitor
 
     local attempt
     for attempt in $(seq 1 100); do
@@ -763,6 +834,7 @@ finish_persistent_start() {
         record_server_session "start_failed" 0
         return 5
     fi
+    record_processing "Termux 서버 프로세스 생성 확인 · 로컬 HTTP 응답 검사 시작"
     if wait_for_server; then
         record_server_session "${SESSION_ACTION:-start}" 1
     else
@@ -772,16 +844,18 @@ finish_persistent_start() {
 }
 
 wait_for_server_strict() {
-    local attempt percent
+    local attempt
     for attempt in $(seq 1 150); do
         is_running || return 1
         if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+            record_processing "업데이트 서버 HTTP 응답 확인 · 프로세스 유지 여부 재검사"
             sleep 1
             is_running && return 0
         fi
-        percent=$((82 + attempt * 16 / 150))
-        (( percent > 98 )) && percent=98
-        write_progress "$percent" "업데이트 서버 검사" "새 버전의 로컬 서버 응답을 기다리고 있습니다."
+        write_progress 0 "업데이트 서버 검사" "새 서버 프로세스 실행 중 · 로컬 HTTP 응답을 ${attempt}회 확인했으며 아직 대기 중입니다."
+        if (( attempt == 1 || attempt % 3 == 0 )); then
+            record_processing "업데이트 서버 실행 확인 · HTTP 응답 대기 · ${attempt}회 검사"
+        fi
         sleep 2
     done
     return 1
@@ -796,6 +870,7 @@ terminate_server_process() {
     pid="$(cat "$PID_FILE")"
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill -TERM "$pid" 2>/dev/null || true
+    record_processing "관리 대상 서버에 종료 요청 전달 · 종료 여부 확인 중"
     for _ in 1 2 3 4 5; do
         kill -0 "$pid" 2>/dev/null || break
         sleep 1
@@ -803,6 +878,7 @@ terminate_server_process() {
     pkill -KILL -P "$pid" 2>/dev/null || true
     kill -KILL "$pid" 2>/dev/null || true
     clear_server_pid
+    record_processing "관리 대상 서버 종료 절차 완료 · 저장된 프로세스 정보 정리"
 }
 
 is_running() {
@@ -864,7 +940,7 @@ ensure_remote_branch() {
     if ! git -C "$ST_HOME" config --get-all remote.origin.fetch | grep -Fxq "$refspec"; then
         git -C "$ST_HOME" config --add remote.origin.fetch "$refspec"
     fi
-    git -C "$ST_HOME" fetch origin "$refspec"
+    git -C "$ST_HOME" fetch --progress origin "$refspec"
 }
 
 required_node_major() {
@@ -872,23 +948,31 @@ required_node_major() {
 }
 
 update_preflight() {
-    [[ -d "$ST_HOME/.git" ]] || { echo "SillyTavern Git 설치를 찾을 수 없습니다." >&2; exit 8; }
-    local branch dirty_files current_commit remote_commit package_json target_version node_required commits_behind
+    local branch dirty_files dirty_count current_commit remote_commit package_json target_version node_required commits_behind
     local node_major required_major free_bytes modules_bytes required_bytes node_compatible space_ready
+    begin_operation "update-preflight"
+    write_progress 0 "설치 상태 확인" "업데이트할 Git 설치와 현재 브랜치를 확인하고 있습니다."
+    [[ -d "$ST_HOME/.git" ]] || { echo "SillyTavern Git 설치를 찾을 수 없습니다." >&2; exit 8; }
     branch="$(current_branch)"
     [[ "$branch" == "release" || "$branch" == "staging" ]] || { echo "지원하지 않는 현재 브랜치입니다: $branch" >&2; exit 2; }
+    record_processing "업데이트 대상 설치 확인 완료 · $branch 브랜치"
+    write_progress 0 "수정 파일 확인" "업데이트를 방해할 수 있는 로컬 변경을 실제로 검사하고 있습니다."
     dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all | sed 's/^...//' || true)"
-
-    begin_operation "update-preflight"
-    write_progress 18 "수정 파일 확인" "업데이트를 방해할 수 있는 로컬 변경을 확인하고 있습니다."
-    write_progress 38 "업데이트 정보 확인" "$branch 브랜치의 최신 커밋과 요구 사항을 가져오고 있습니다."
+    dirty_count="$(printf '%s\n' "$dirty_files" | sed '/^$/d' | wc -l)"
+    record_processing "수정 파일 검사 완료 · 변경 항목 ${dirty_count}개"
+    write_progress 0 "업데이트 정보 가져오기" "$branch 브랜치의 최신 커밋 정보를 GitHub에서 가져오고 있습니다."
     if ! ensure_remote_branch "$branch" >> "$LOG_FILE" 2>&1; then
+        record_processing "최신 브랜치 정보 가져오기 실패"
         echo "GitHub에서 최신 브랜치 정보를 가져오지 못했습니다." >&2
         exit 18
     fi
+    record_processing "최신 브랜치 정보 가져오기 완료"
+    write_progress 0 "업데이트 비교" "현재 설치와 최신 커밋의 차이를 확인하고 있습니다."
     current_commit="$(git -C "$ST_HOME" rev-parse HEAD)"
     remote_commit="$(git -C "$ST_HOME" rev-parse "origin/$branch")"
     commits_behind="$(git -C "$ST_HOME" rev-list --count "$current_commit..$remote_commit" 2>/dev/null || echo 0)"
+    record_processing "커밋 비교 완료 · 받을 커밋 ${commits_behind:-0}개 · $([[ "$current_commit" == "$remote_commit" ]] && echo '현재 최신 상태' || echo '설치와 원격 상태가 다름')"
+    write_progress 0 "Node.js 요구 사항 확인" "최신 SillyTavern이 요구하는 Node.js와 설치된 실행 환경을 비교하고 있습니다."
     package_json="$(git -C "$ST_HOME" show "origin/$branch:package.json" 2>/dev/null || true)"
     target_version="$(printf '%s' "$package_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version||""))' 2>/dev/null || true)"
     node_required="$(printf '%s' "$package_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).engines?.node||""))' 2>/dev/null || true)"
@@ -897,15 +981,19 @@ update_preflight() {
     required_major="${required_major:-0}"
     node_compatible=0
     (( node_major >= required_major && required_major > 0 )) && node_compatible=1
+    record_processing "Node.js 호환성 검사 완료 · $([[ "$node_compatible" == 1 ]] && echo '요구 사항 충족' || echo '실행 환경 확인 필요')"
 
-    write_progress 68 "저장 공간 확인" "기존 패키지를 보존한 채 새 패키지를 설치할 공간을 계산하고 있습니다."
+    write_progress 0 "남은 저장 공간 확인" "Termux 저장소의 실제 남은 공간을 확인하고 있습니다."
     free_bytes="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
     free_bytes="${free_bytes:-0}"
+    record_processing "남은 저장 공간 확인 완료 · $(awk -v bytes="$free_bytes" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}')"
+    write_progress 0 "필요 저장 공간 계산" "기존 node_modules를 보존할 실제 용량과 여유 공간을 계산하고 있습니다."
     modules_bytes="$(du -sk "$ST_HOME/node_modules" 2>/dev/null | awk '{print $1 * 1024}' | cut -d. -f1)"
     modules_bytes="${modules_bytes:-0}"
     required_bytes=$((modules_bytes + 536870912))
     space_ready=0
     (( free_bytes >= required_bytes )) && space_ready=1
+    record_processing "필요 공간 계산 완료 · $(awk -v bytes="$required_bytes" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}') · $([[ "$space_ready" == 1 ]] && echo '공간 충분' || echo '공간 부족')"
 
     write_progress 100 "업데이트 검사 완료" "커밋·Node.js·저장 공간·수정 파일 검사를 완료했습니다." success
     echo "branch=$branch"
@@ -921,7 +1009,7 @@ update_preflight() {
     echo "free_bytes=$free_bytes"
     echo "required_bytes=$required_bytes"
     echo "space_ready=$space_ready"
-    echo "dirty_count=$(printf '%s\n' "$dirty_files" | sed '/^$/d' | wc -l)"
+    echo "dirty_count=$dirty_count"
     echo "dirty_files_b64=$(printf '%s' "$dirty_files" | base64 -w 0)"
     echo "backup_storage_ready=$([[ -d "$DOWNLOAD_DIR" && -w "$DOWNLOAD_DIR" ]] && echo 1 || echo 0)"
 }
@@ -1239,6 +1327,7 @@ backup_selected() {
 
     begin_operation "backup"
     ensure_archive_tools
+    ensure_import_runtime
     write_progress 12 "백업 항목 확인" "선택한 파일과 폴더를 확인하고 있습니다."
 
     local work="$BACKUP_DIR/backup-work-$$"
@@ -1307,7 +1396,8 @@ backup_selected() {
     if [[ "$include_secrets" != "1" ]]; then
         excludes+=("data/*/secrets.json")
     fi
-    (cd "$ST_HOME" && zip -rq "$output" "${paths[@]}" -x "${excludes[@]}") >> "$LOG_FILE" 2>&1 || {
+    measured_archive "ZIP 생성" "압축 도구가 완료한 파일 수를 표시합니다. 큰 파일 하나를 처리할 때는 파일 수가 유지될 수 있습니다." \
+        compress "$ST_HOME" "$output" "${paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2>&1 || {
         rm -rf "$work"; rm -f "$output"
         echo "선택한 파일을 ZIP으로 만드는 데 실패했습니다." >&2
         exit 18
@@ -1325,11 +1415,13 @@ backup_selected() {
     }
 
     write_progress 88 "ZIP 검사" "ZIP CRC와 확장 메타데이터를 확인하고 있습니다."
-    unzip -tq "$output" >> "$LOG_FILE" 2>&1 || {
+    if ! validate_restore_archive "$output" "$work/verify-index.json" >> "$LOG_FILE" 2>&1 ||
+        ! measured_archive "ZIP 검사" "실제 검사한 용량과 파일을 표시합니다. 파일을 다시 풀어 저장하지 않습니다." \
+            verify "$output" "$work/verify-index.json" >> "$LOG_FILE" 2>&1; then
         rm -rf "$work"; rm -f "$output"
         echo "생성된 ZIP 검증에 실패하여 불완전한 파일을 삭제했습니다." >&2
         exit 19
-    }
+    fi
     local size
     size="$(stat -c %s "$output" 2>/dev/null || wc -c < "$output")"
     rm -rf "$work"
@@ -1489,12 +1581,55 @@ ensure_import_runtime() {
 validate_restore_archive() {
     # Read ZIP metadata without inflating any content. In particular, do not run
     # unzip -t before extraction: CRC is checked by the one actual extraction.
-    node --input-type=commonjs - "$1" <<'NODE'
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
+        ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
+        node --input-type=commonjs - "$1" "${2:-}" <<'NODE'
 const fs = require('fs');
 const fail = (code, message) => { console.error(message); process.exit(code); };
+const phaseStarted = Math.floor(Date.now() / 1000);
+let lastPublished = 0, lastLogged = 0, lastLogState = '';
+const cleanProgress = value => String(value ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024);
+const logScan = (completed, total, item, force) => {
+    const fingerprint = `${completed}/${total}/${item}`;
+    if (fingerprint === lastLogState || (!force && Date.now() - lastLogged < 2000)) return;
+    lastLogged = Date.now(); lastLogState = fingerprint;
+    const stamp = new Date().toLocaleString('sv-SE', { hour12: false });
+    const line = `[${stamp}] [${cleanProgress(process.env.ST_PROGRESS_OPERATION)}] ZIP 구조 검사 · ${cleanProgress(item).slice(0, 240) || '전체 경로 확인'} · 항목 ${completed}/${total}개\n`;
+    if (process.env.ST_PROGRESS_LOG) fs.appendFileSync(process.env.ST_PROGRESS_LOG, line, { mode: 0o600 });
+    const history = process.env.ST_PROGRESS_HISTORY;
+    if (!history || history === process.env.ST_PROGRESS_LOG) return;
+    fs.appendFileSync(history, line, { mode: 0o600 });
+    const size = fs.statSync(history).size;
+    if (size <= 1000000) return;
+    const fd = fs.openSync(history, 'r'), tail = Buffer.alloc(750000);
+    try { fs.readSync(fd, tail, 0, tail.length, size - tail.length); } finally { fs.closeSync(fd); }
+    const newline = tail.indexOf(10), temporary = `${history}.scan.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, newline >= 0 ? tail.subarray(newline + 1) : tail, { mode: 0o600 });
+    fs.renameSync(temporary, history);
+};
+const publishScan = (completed, total, item = '', force = false) => {
+    if (!process.env.ST_PROGRESS_FILE || (!force && Date.now() - lastPublished < 500)) return;
+    lastPublished = Date.now();
+    const now = Math.floor(lastPublished / 1000);
+    logScan(completed, total, item, force);
+    const values = {
+        percent: total > 0 ? Math.floor(completed * 100 / total) : 0,
+        phase: 'ZIP 구조 검사', detail: '실제 ZIP 항목의 경로·크기·압축 정보를 검사하고 있습니다.',
+        status: 'running', operation: cleanProgress(process.env.ST_PROGRESS_OPERATION), error_code: '',
+        progress_mode: 'files', completed_bytes: 0, total_bytes: 0,
+        completed_files: completed, total_files: total,
+        current_item_b64: Buffer.from(cleanProgress(item)).toString('base64'),
+        heartbeat_at: now, activity_at: now, phase_started_at: phaseStarted,
+    };
+    const target = process.env.ST_PROGRESS_FILE, temporary = `${target}.scan.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''), { mode: 0o600 });
+    fs.renameSync(temporary, target);
+};
 try {
     const fd = fs.openSync(process.argv[2], 'r');
-    const size = fs.fstatSync(fd).size;
+    const archiveStat = fs.fstatSync(fd);
+    const size = archiveStat.size;
+    const indexEntries = [];
     const read = (offset, length) => {
         if (!Number.isSafeInteger(offset) || offset < 0 || length < 0 || offset + length > size) throw Error('ZIP bounds');
         const value = Buffer.alloc(length);
@@ -1521,6 +1656,7 @@ try {
         count = n64(z, 32); centralSize = n64(z, 40); cursor = n64(z, 48);
     } else if (tail.readUInt16LE(end + 8) !== count) throw Error('ZIP split');
     if (!count || count > 500000 || centralSize > 268435456 || cursor + centralSize > tailStart + end) throw Error('ZIP entry limits');
+    publishScan(0, count, '', true);
     const centralStart = cursor, centralEnd = cursor + centralSize, names = new Map(), ranges = [];
     let expanded = 0;
     for (let i = 0; i < count; i++) {
@@ -1529,6 +1665,7 @@ try {
         const flags = h.readUInt16LE(8), method = h.readUInt16LE(10), nameLength = h.readUInt16LE(28), extraLength = h.readUInt16LE(30);
         if ((flags & 1) || (method !== 0 && method !== 8)) fail(23, '암호화되었거나 지원하지 않는 압축 방식의 ZIP입니다.');
         const rawName = read(cursor + 46, nameLength), name = rawName.toString('utf8');
+        if (!Buffer.from(name, 'utf8').equals(rawName)) fail(23, 'UTF-8로 읽을 수 없는 ZIP 파일 이름입니다. UTF-8 ZIP으로 저장해 주세요.');
         const canonical = name.replace(/^(\.\/)+/, '').replace(/\/$/, '');
         if (!canonical || /[\x00-\x1f\x7f\\:]/.test(name) || name.startsWith('/') || canonical.split('/').some(p => p === '..' || p === '.' || !p)) fail(21, 'ZIP 안에 안전하지 않은 경로가 있습니다.');
         if (names.has(canonical)) fail(21, 'ZIP 안에 중복되거나 충돌하는 경로가 있습니다.');
@@ -1585,9 +1722,18 @@ try {
             expanded += unpacked;
             if (!Number.isSafeInteger(expanded) || expanded > 1099511627776) fail(29, 'ZIP 해제 크기가 안전 한도를 초과합니다.');
             if (canonical.endsWith('.st-launcher-manifest') && unpacked > 65536) fail(23, '백업 메타데이터가 너무 큽니다.');
+            const date = h.readUInt16LE(14), time = h.readUInt16LE(12);
+            const mtime = new Date(1980 + (date >>> 9), ((date >>> 5) & 15) - 1, date & 31,
+                time >>> 11, (time >>> 5) & 63, (time & 31) * 2).getTime();
+            indexEntries.push({ path: canonical, dataOffset: dataStart, compressedBytes: compressed,
+                bytes: unpacked, method, crc32: h.readUInt32LE(16),
+                mode: (h.readUInt32LE(38) >>> 16) & 0o777, mtime: Number.isFinite(mtime) ? mtime : 0,
+                isDirectory: name.endsWith('/') });
         }
         cursor += 46 + nameLength + extraLength + h.readUInt16LE(32);
         if (cursor > centralEnd) throw Error('ZIP central bounds');
+        // Publish only after real metadata I/O and validation, not a timer.
+        publishScan(i + 1, count, canonical);
     }
     if (cursor !== centralEnd) throw Error('ZIP central length');
     ranges.sort((a, b) => a[0] - b[0]);
@@ -1596,16 +1742,22 @@ try {
         const parts = name.split('/'); parts.pop();
         while (parts.length) { const parent = parts.join('/'); if (names.has(parent) && !names.get(parent)) fail(21, 'ZIP 파일과 폴더 경로가 충돌합니다.'); parts.pop(); }
     }
+    if (process.argv[3]) {
+        const index = { archive: { size, mtimeMs: archiveStat.mtimeMs, dev: archiveStat.dev, ino: archiveStat.ino }, entries: indexEntries };
+        fs.writeFileSync(process.argv[3], JSON.stringify(index), { mode: 0o600, flag: 'wx' });
+    }
     fs.closeSync(fd);
+    publishScan(count, count, '', true);
     console.log(expanded);
-} catch (error) { fail(20, 'ZIP 구조가 손상되었거나 안전하게 읽을 수 없습니다.'); }
+} catch (error) { fail(error.code === 'ENOSPC' ? 29 : 20, 'ZIP 구조가 손상되었거나 안전하게 읽을 수 없습니다.'); }
 NODE
 }
 
 extract_restore_archive() {
     local archive="$1" extracted="$2" expanded free_bytes required_bytes unzip_pid unzip_start elapsed=0
+    local index="$CURRENT_WORK_DIR/archive-index.json"
     write_progress 8 "ZIP 구조 검사" "압축을 풀기 전에 내부 경로·크기·중복 항목을 검사하고 있습니다."
-    expanded="$(validate_restore_archive "$archive")" || exit $?
+    expanded="$(validate_restore_archive "$archive" "$index")" || exit $?
     expanded="$(unsigned_decimal "$expanded")" || exit 20
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
     required_bytes=$((expanded + 268435456))
@@ -1614,7 +1766,7 @@ extract_restore_archive() {
     write_progress 16 "ZIP 해제" "압축을 한 번만 해제하며 파일 손상(CRC)도 함께 검사합니다."
     (
         ulimit -f $(((expanded + 1048576 + 1023) / 1024))
-        unzip -oq "$archive" -x 'node_modules/*' '*/node_modules/*' -d "$extracted"
+        measured_archive "ZIP 해제" "실제 해제한 용량을 세며 파일 손상(CRC)도 함께 검사합니다." extract "$archive" "$extracted" "$index"
     ) >> "$LOG_FILE" 2>&1 &
     unzip_pid=$!
     unzip_start="$(process_start_ticks "$unzip_pid")"
@@ -1631,11 +1783,13 @@ extract_restore_archive() {
             echo "해제 중 실제 여유 공간이 부족해져 중단했습니다. 기존 데이터는 변경하지 않았습니다." >&2
             exit 29
         fi
-        if (( elapsed % 6 == 0 )); then
-            write_progress 22 "ZIP 해제" "ZIP 해제·CRC 검사 중 · ${elapsed}초 경과 (재압축하지 않습니다)"
-        fi
     done
-    wait "$unzip_pid" || { echo "ZIP 해제 또는 CRC 검사에 실패했습니다. 기존 데이터는 변경하지 않았습니다." >&2; exit 20; }
+    local extract_status=0
+    wait "$unzip_pid" || extract_status=$?
+    if (( extract_status != 0 )); then
+        echo "ZIP 해제 또는 CRC 검사에 실패했습니다. 기존 데이터는 변경하지 않았습니다." >&2
+        exit "$extract_status"
+    fi
     if find "$extracted" -type l -print -quit | grep -q .; then exit 22; fi
     write_progress 28 "해제 완료" "압축을 한 번 해제했습니다. 데이터 구조와 실제 사용 공간을 확인합니다."
 }
@@ -1706,7 +1860,10 @@ st_file_action() {
     command -v node >/dev/null 2>&1 || { echo "파일 관리에 필요한 Node.js를 찾을 수 없습니다." >&2; return 12; }
     # Keep the text limit below Linux's per-argument limit after base64 expansion
     # and below the Termux result transport budget. No text contents enter logs.
-    node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$@" <<'ST_LAUNCHER_FILES_JS'
+    ST_PROGRESS_HELPER="$PROGRESS_HELPER" ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" \
+        ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
+        ST_PROGRESS_PHASE="SillyTavern에 파일 저장" ST_PROGRESS_DETAIL="실제 기록한 용량을 세며 선택한 파일을 가져옵니다." \
+        node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$@" <<'ST_LAUNCHER_FILES_JS'
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -1892,18 +2049,18 @@ try {
                 if (before.size > 8 * 1024 ** 3) fail(30, '8 GiB보다 큰 파일은 앱에서 가져올 수 없습니다.');
                 const free = fs.statfsSync(path.dirname(target), { bigint: true });
                 if (BigInt(before.size) + 32n * 1024n * 1024n > free.bavail * free.bsize) fail(30, '파일을 안전하게 가져올 저장 공간이 부족합니다.');
-                output = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-                const buffer = Buffer.alloc(64 * 1024);
-                let copied = 0;
-                let count;
-                while ((count = fs.readSync(input, buffer, 0, buffer.length, null)) > 0) {
-                    copied += count;
-                    if (copied > before.size) fail(42, '가져오는 동안 원본 파일이 변경되었습니다. 다시 선택해 주세요.');
-                    let written = 0;
-                    while (written < count) written += fs.writeSync(output, buffer, written, count - written);
-                }
+                execFileSync('bash', [process.env.ST_PROGRESS_HELPER, 'copy', source, temporary, '', 'reject-links'], {
+                    env: { ...process.env, ST_PROGRESS_ITEM: relative }, stdio: ['ignore', 'ignore', 'pipe'],
+                });
                 const after = fs.fstatSync(input);
-                if (copied !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail(42, '가져오는 동안 원본 파일이 변경되었습니다. 다시 선택해 주세요.');
+                const named = fs.lstatSync(source);
+                if (fs.statSync(temporary).size !== before.size || after.size !== before.size ||
+                    after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
+                    named.ino !== before.ino || named.dev !== before.dev || named.isSymbolicLink()) {
+                    fail(42, '가져오는 동안 원본 파일이 변경되었습니다. 다시 선택해 주세요.');
+                }
+                output = fs.openSync(temporary, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0));
+                fs.fchmodSync(output, 0o600);
                 fs.fsyncSync(output);
                 fs.closeSync(output); output = undefined;
                 if (resolve(relative, true) !== target) fail(44, '저장 위치가 변경되어 가져오기를 중단했습니다.');
@@ -2178,7 +2335,7 @@ import_install() {
     extracted="$work/extracted"
     mkdir -p "$extracted" "$work/rollback"
     write_progress 15 "기존 설치 준비" "원본을 유지한 채 설치와 데이터를 임시 위치에 준비합니다. Node 모듈은 기기에 맞게 다시 구성합니다."
-    if ! (set -o pipefail; tar --exclude=node_modules --exclude='*/node_modules' -C "$source" -cf - . | tar -C "$extracted" -xf -); then
+    if ! COPY_PHASE="기존 설치 복사" measured_copy "$source" "$extracted" node_modules; then
         echo "기존 설치 복사에 실패했습니다. 원본은 변경하지 않았습니다." >&2
         exit 55
     fi
@@ -2412,7 +2569,7 @@ restore_extracted_tree() {
         fi
         mkdir -p "$ST_HOME" || exit 25
         local full_apply_failed=0
-        cp -a "$extracted"/. "$ST_HOME"/ || full_apply_failed=1
+        COPY_PHASE="전체 설치 적용" measured_copy "$extracted" "$ST_HOME" || full_apply_failed=1
         if [[ "$include_secrets" != "1" ]]; then
             while IFS= read -r secret; do
                 local rel="${secret#"$rollback/full-install/"}"
@@ -2455,7 +2612,7 @@ restore_extracted_tree() {
             restore_destination_safe "$path" || { echo "설치 바깥을 가리키는 복원 경로입니다: $path" >&2; exit 24; }
             if [[ -e "$ST_HOME/$path" || -L "$ST_HOME/$path" ]]; then
                 mkdir -p "$rollback/$(dirname "$path")" || exit 25
-                cp -a "$ST_HOME/$path" "$rollback/$path" || exit 25
+                COPY_PHASE="현재 상태 보호 · $path" measured_copy "$ST_HOME/$path" "$rollback/$path" "" preserve-links || exit 25
                 RESTORE_ORIGINAL_PATHS+=("$path")
             fi
         done
@@ -2476,7 +2633,7 @@ restore_extracted_tree() {
             rm -rf "$ST_HOME/$path" || exit 25
             if [[ -e "$extracted/$path" ]]; then
                 mkdir -p "$ST_HOME/$(dirname "$path")" || exit 25
-                cp -a "$extracted/$path" "$ST_HOME/$path" || apply_failed=1
+                COPY_PHASE="데이터 교체 · $path" measured_copy "$extracted/$path" "$ST_HOME/$path" || apply_failed=1
             fi
         done
         if (( apply_failed != 0 )); then
@@ -2634,6 +2791,8 @@ update_st() {
         echo "업데이트 전에 SillyTavern을 종료해 주세요." >&2
         exit 10
     fi
+    begin_operation "update"
+    write_progress 0 "업데이트 준비 검사" "서버 종료 상태와 Git 수정 파일을 확인하고 있습니다."
     local dirty_files
     dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || true)"
     if [[ -n "$dirty_files" && "$allow_dirty" != "1" ]]; then
@@ -2645,12 +2804,15 @@ update_st() {
     local free_bytes modules_bytes required_bytes
     branch="$(current_branch)"
     [[ "$branch" == "release" || "$branch" == "staging" ]] || { echo "지원하지 않는 현재 브랜치입니다: $branch" >&2; exit 2; }
+    record_processing "현재 브랜치 확인 · $branch · Git 수정 파일 검사 완료"
+    write_progress 0 "최신 커밋 조회" "$branch 브랜치의 원격 변경 정보를 가져오고 있습니다."
     if ! ensure_remote_branch "$branch" >> "$LOG_FILE" 2>&1; then
         echo "GitHub에서 업데이트 정보를 가져오지 못했습니다." >&2
         exit 18
     fi
     old_commit="$(git -C "$ST_HOME" rev-parse HEAD)"
     remote_commit="$(git -C "$ST_HOME" rev-parse "origin/$branch")"
+    record_processing "커밋 조회 완료 · 현재 ${old_commit:0:7} → 원격 ${remote_commit:0:7}"
     if [[ "$old_commit" == "$remote_commit" ]]; then
         write_progress 100 "이미 최신 상태" "$branch 브랜치가 이미 최신 커밋입니다. 패키지를 다시 설치하지 않았습니다." success update
         echo "updated=0"
@@ -2664,6 +2826,7 @@ update_st() {
         echo "현재 설치가 원격 $branch 브랜치와 갈라져 있습니다. 진단 보고서를 확인해 주세요." >&2
         exit 34
     fi
+    write_progress 0 "업데이트 요구 사항 검사" "새 버전의 Node.js 요구 사항과 롤백용 여유 공간을 확인하고 있습니다."
     package_json="$(git -C "$ST_HOME" show "origin/$branch:package.json" 2>/dev/null || true)"
     node_required="$(printf '%s' "$package_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).engines?.node||""))' 2>/dev/null || true)"
     required_major="$(required_node_major "$node_required")"
@@ -2683,7 +2846,7 @@ update_st() {
         exit 30
     }
 
-    begin_operation "update"
+    record_processing "Node.js 호환성·저장 공간 검사 통과 · 이전 설치 보호 시작"
     local timestamp rollback_dir state_file old_version
     timestamp="$(date +%Y%m%d-%H%M%S)"
     rollback_dir="$BACKUP_DIR/update-rollback-$timestamp"
@@ -2694,6 +2857,7 @@ update_st() {
         local modified_backup="$BACKUP_DIR/before-forced-update-$timestamp.tar.gz"
         write_progress 8 "수정 파일 보호" "현재 수정 내용을 별도 안전 파일로 보관하고 있습니다."
         tar --exclude='node_modules' --exclude='.git' -czf "$modified_backup" -C "$ST_HOME" .
+        record_processing "수정 파일 안전 보관 완료 · Git 작업 트리 정리 시작"
         git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
         git -C "$ST_HOME" clean -fd >> "$LOG_FILE" 2>&1
         echo "[launcher] Modified files saved to $modified_backup" >> "$LOG_FILE"
@@ -2786,6 +2950,7 @@ switch_branch() {
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
     tar --exclude='SillyTavern/node_modules' --exclude='SillyTavern/.git' \
         -czf "$safety_backup" -C "$HOME" SillyTavern
+    record_processing "브랜치 변경 전 안전 백업 생성 완료"
     if [[ -n "$dirty_files" ]]; then
         write_progress 24 "수정 파일 정리" "확인된 수정 내용을 안전 백업 후 Git 작업 트리에서 정리합니다."
         git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
@@ -2796,15 +2961,17 @@ switch_branch() {
     if ! git -C "$ST_HOME" config --get-all remote.origin.fetch | grep -Fxq "$refspec"; then
         git -C "$ST_HOME" config --add remote.origin.fetch "$refspec"
     fi
-    git -C "$ST_HOME" fetch origin "$refspec"
+    git -C "$ST_HOME" fetch --progress origin "$refspec" >> "$LOG_FILE" 2>&1
+    record_processing "브랜치 정보 수신 완료 · $branch 작업 트리 적용 시작"
     write_progress 70 "브랜치 적용" "작업 트리를 $branch 브랜치로 변경하고 있습니다."
     if git -C "$ST_HOME" show-ref --verify --quiet "refs/heads/$branch"; then
-        git -C "$ST_HOME" switch "$branch"
+        git -C "$ST_HOME" switch "$branch" >> "$LOG_FILE" 2>&1
     else
-        git -C "$ST_HOME" switch --track -c "$branch" "origin/$branch"
+        git -C "$ST_HOME" switch --track -c "$branch" "origin/$branch" >> "$LOG_FILE" 2>&1
     fi
-    git -C "$ST_HOME" branch --set-upstream-to="origin/$branch" "$branch"
-    git -C "$ST_HOME" pull --ff-only
+    git -C "$ST_HOME" branch --set-upstream-to="origin/$branch" "$branch" >> "$LOG_FILE" 2>&1
+    git -C "$ST_HOME" pull --progress --ff-only >> "$LOG_FILE" 2>&1
+    record_processing "브랜치 변경·최신 커밋 반영 확인 완료"
     write_progress 100 "브랜치 변경 완료" "다음 시작 시 필요한 Node 모듈을 자동으로 맞춥니다." success
     echo "switched=1"
     echo "branch=$branch"
@@ -2846,7 +3013,7 @@ previous_server_log() {
 }
 
 history_log() {
-    tail -n "${1:-300}" "$HISTORY_LOG" 2>/dev/null || true
+    bounded_log_tail "$HISTORY_LOG" "${1:-300}" 40000
 }
 
 probe_termux_repository() {
@@ -2873,12 +3040,61 @@ diagnose() {
     previous_operation="$(last_result_value operation)"
     previous_error_code="$(last_result_value error_code)"
     begin_operation "diagnose"
-    write_progress 8 "저장 공간 확인" "Termux와 휴대폰 백업 공간을 확인하고 있습니다."
 
-    local repo_url dirty_files last_error node_required node_compatible
+    local repo_url dirty_files dirty_count last_error node_required node_compatible
+    local termux_free downloads_free github_ready repo_ready git_version node_version npm_version
+    local installation_ready dependencies_status port_listening server_reachable node_process_count
+    write_progress 0 "Termux 저장 공간 확인" "Termux 저장소의 실제 남은 공간을 확인하고 있습니다."
+    termux_free="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
+    echo "termux_free_bytes=$termux_free"
+    record_processing "Termux 저장 공간 확인 완료 · $(awk -v bytes="${termux_free:-0}" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}')"
+
+    write_progress 0 "백업 저장 공간 확인" "휴대폰 Download 연결과 남은 공간을 확인하고 있습니다."
+    if [[ -d "$DOWNLOAD_DIR" ]]; then
+        echo "downloads_ready=1"
+        downloads_free="$(df -Pk "$DOWNLOAD_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
+        echo "downloads_free_bytes=$downloads_free"
+        record_processing "백업 저장 공간 확인 완료 · Download 연결됨 · $(awk -v bytes="${downloads_free:-0}" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}') 남음"
+    else
+        echo "downloads_ready=0"
+        echo "downloads_free_bytes=0"
+        record_processing "백업 저장 공간 확인 완료 · Download 연결 필요"
+    fi
+
+    write_progress 0 "GitHub 연결 확인" "GitHub의 응답을 기다리고 있습니다. 최대 7초 동안 확인합니다."
+    github_ready=0
+    if curl -sSIL --max-time 7 https://github.com/ >/dev/null 2>&1; then github_ready=1; fi
+    echo "github_reachable=$github_ready"
+    record_processing "GitHub 연결 검사 완료 · $([[ "$github_ready" == 1 ]] && echo '응답 확인' || echo '응답 확인 실패')"
+
+    write_progress 0 "Termux 저장소 연결 확인" "설정된 저장소의 패키지 메타데이터 응답을 확인하고 있습니다."
     repo_url="$(awk '/^[[:space:]]*deb[[:space:]]/{print $2; exit}' "$PREFIX/etc/apt/sources.list" 2>/dev/null || true)"
-    dirty_files="$(git -C "$ST_HOME" status --porcelain 2>/dev/null | head -n 30 || true)"
-    last_error="$({ grep -iE 'error|failed|exception|fatal' "$SERVER_LOG" "$PREVIOUS_SERVER_LOG" "$LOG_FILE" 2>/dev/null || true; } | tail -n 1)"
+    if [[ -n "$repo_url" ]]; then echo "termux_repo_configured=1"; else echo "termux_repo_configured=0"; fi
+    repo_ready=0
+    if probe_termux_repository "$repo_url"; then repo_ready=1; fi
+    echo "termux_repo_reachable=$repo_ready"
+    echo "termux_repo=$repo_url"
+    if [[ -z "$repo_url" ]]; then
+        record_processing "Termux 저장소 검사 완료 · 저장소 설정 없음"
+    else
+        record_processing "Termux 저장소 검사 완료 · $([[ "$repo_ready" == 1 ]] && echo '패키지 메타데이터 응답 확인' || echo '패키지 메타데이터 응답 확인 실패')"
+    fi
+
+    # Keep the existing protocol fields for copied diagnostics only. These
+    # internal versions are intentionally absent from live processing history.
+    echo "manager_version=$MANAGER_VERSION"
+    echo "launcher_version=$LAUNCHER_VERSION"
+    echo "last_operation=$previous_operation"
+    echo "last_error_code=$previous_error_code"
+
+    write_progress 0 "Git 실행 확인" "Git 명령이 정상적으로 실행되는지 확인하고 있습니다."
+    git_version="$(git --version 2>/dev/null | awk '{print $3}' || true)"
+    echo "git_version=$git_version"
+    record_processing "Git 실행 검사 완료 · $([[ -n "$git_version" ]] && echo '실행 확인' || echo '실행 확인 실패')"
+
+    write_progress 0 "Node.js 실행 확인" "Node.js 실행과 SillyTavern의 요구 사항을 확인하고 있습니다."
+    node_version="$(node --version 2>/dev/null || true)"
+    echo "node_version=$node_version"
     node_required="$(cd "$ST_HOME" 2>/dev/null && node -p "require('./package.json').engines?.node || ''" 2>/dev/null || true)"
     node_compatible=0
     if command -v node >/dev/null 2>&1 && [[ -n "$node_required" ]]; then
@@ -2887,48 +3103,60 @@ diagnose() {
         required_major="$(printf '%s' "$node_required" | grep -oE '[0-9]+' | head -n 1 || echo 0)"
         if (( current_major >= required_major )); then node_compatible=1; fi
     fi
-
-    echo "termux_free_bytes=$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
-    if [[ -d "$DOWNLOAD_DIR" ]]; then
-        echo "downloads_ready=1"
-        echo "downloads_free_bytes=$(df -Pk "$DOWNLOAD_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
-    else
-        echo "downloads_ready=0"
-        echo "downloads_free_bytes=0"
-    fi
-
-    write_progress 35 "네트워크 확인" "GitHub와 Termux 저장소 연결을 확인하고 있습니다."
-    if curl -sSIL --max-time 7 https://github.com/ >/dev/null 2>&1; then echo "github_reachable=1"; else echo "github_reachable=0"; fi
-    if [[ -n "$repo_url" ]]; then echo "termux_repo_configured=1"; else echo "termux_repo_configured=0"; fi
-    if probe_termux_repository "$repo_url"; then echo "termux_repo_reachable=1"; else echo "termux_repo_reachable=0"; fi
-    echo "termux_repo=$repo_url"
-
-    write_progress 62 "개발 도구 확인" "Git, Node.js, npm과 SillyTavern 설치를 확인하고 있습니다."
-    echo "manager_version=$MANAGER_VERSION"
-    echo "launcher_version=$LAUNCHER_VERSION"
-    echo "last_operation=$previous_operation"
-    echo "last_error_code=$previous_error_code"
-    echo "git_version=$(git --version 2>/dev/null | awk '{print $3}' || true)"
-    echo "node_version=$(node --version 2>/dev/null || true)"
-    echo "npm_version=$(npm --version 2>/dev/null || true)"
     echo "node_required=$node_required"
     echo "node_compatible=$node_compatible"
-    if [[ -d "$ST_HOME/.git" && -f "$ST_HOME/package.json" ]]; then echo "st_folder_ready=1"; else echo "st_folder_ready=0"; fi
+    record_processing "Node.js 검사 완료 · $([[ -n "$node_version" ]] && echo '실행 확인' || echo '실행 확인 실패') · $([[ "$node_compatible" == 1 ]] && echo '요구 사항 충족' || echo '요구 사항 확인 필요')"
+
+    write_progress 0 "npm 실행 확인" "npm이 정상적으로 실행되는지 확인하고 있습니다."
+    npm_version="$(npm --version 2>/dev/null || true)"
+    echo "npm_version=$npm_version"
+    record_processing "npm 실행 검사 완료 · $([[ -n "$npm_version" ]] && echo '실행 확인' || echo '실행 확인 실패')"
+
+    write_progress 0 "SillyTavern 설치 확인" "설치 폴더, Git 정보와 프로그램 버전을 확인하고 있습니다."
+    installation_ready=0
+    if [[ -d "$ST_HOME/.git" && -f "$ST_HOME/package.json" ]]; then installation_ready=1; fi
+    echo "st_folder_ready=$installation_ready"
     echo "st_branch=$(current_branch)"
     echo "st_version=$(version_from_file "$ST_HOME/package.json")"
-    echo "dependencies_ready=$([[ -d "$ST_HOME" ]] && dependencies_ready && echo 1 || echo 0)"
-    echo "dirty_count=$(printf '%s\n' "$dirty_files" | sed '/^$/d' | wc -l)"
-    echo "dirty_files_b64=$(printf '%s' "$dirty_files" | base64 -w 0 2>/dev/null || true)"
+    record_processing "설치 폴더 검사 완료 · $([[ "$installation_ready" == 1 ]] && echo '설치 구조 확인' || echo '설치 구조 확인 필요')"
 
-    write_progress 82 "서버 상태 확인" "포트와 Node 프로세스, 최근 오류를 확인하고 있습니다."
-    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)$PORT$"; then echo "port_listening=1"; else echo "port_listening=0"; fi
-    if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then echo "server_reachable=1"; else echo "server_reachable=0"; fi
+    write_progress 0 "실행 패키지 확인" "SillyTavern에 필요한 Node.js 패키지가 준비되어 있는지 검사하고 있습니다."
+    dependencies_status="$([[ -d "$ST_HOME" ]] && dependencies_ready && echo 1 || echo 0)"
+    echo "dependencies_ready=$dependencies_status"
+    record_processing "실행 패키지 검사 완료 · $([[ "$dependencies_status" == 1 ]] && echo '준비됨' || echo '복구 또는 설치 필요')"
+
+    write_progress 0 "수정 파일 확인" "설치 파일의 로컬 변경 사항을 확인하고 있습니다. 최대 30개를 표시합니다."
+    dirty_files="$(git -C "$ST_HOME" status --porcelain 2>/dev/null | head -n 30 || true)"
+    dirty_count="$(printf '%s\n' "$dirty_files" | sed '/^$/d' | wc -l)"
+    echo "dirty_count=$dirty_count"
+    echo "dirty_files_b64=$(printf '%s' "$dirty_files" | base64 -w 0 2>/dev/null || true)"
+    record_processing "수정 파일 검사 완료 · 표시할 변경 항목 ${dirty_count}개 (최대 30개)"
+
+    write_progress 0 "서버 포트 확인" "설정한 포트에서 연결을 기다리는 서버가 있는지 확인하고 있습니다."
+    port_listening=0
+    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)$PORT$"; then port_listening=1; fi
+    echo "port_listening=$port_listening"
+    record_processing "서버 포트 검사 완료 · $([[ "$port_listening" == 1 ]] && echo '포트 사용 중' || echo '대기 포트 확인되지 않음')"
+
+    write_progress 0 "서버 응답 확인" "현재 서버 주소의 HTTP 응답을 확인하고 있습니다. 최대 2초 동안 확인합니다."
+    server_reachable=0
+    if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then server_reachable=1; fi
+    echo "server_reachable=$server_reachable"
+    record_processing "서버 HTTP 검사 완료 · $([[ "$server_reachable" == 1 ]] && echo '응답 확인' || echo '응답 없음')"
+
+    write_progress 0 "서버 프로세스 확인" "실행 중인 SillyTavern Node 프로세스 수를 확인하고 있습니다."
     if command -v pgrep >/dev/null 2>&1; then
-        echo "node_process_count=$(pgrep -af 'node.*server.js' 2>/dev/null | wc -l || true)"
+        node_process_count="$(pgrep -af 'node.*server.js' 2>/dev/null | wc -l || true)"
     else
-        echo "node_process_count=$(ps -A 2>/dev/null | grep -c '[n]ode.*server.js' || true)"
+        node_process_count="$(ps -A 2>/dev/null | grep -c '[n]ode.*server.js' || true)"
     fi
+    echo "node_process_count=$node_process_count"
+    record_processing "서버 프로세스 검사 완료 · 확인된 프로세스 ${node_process_count:-0}개"
+
+    write_progress 0 "최근 오류 확인" "현재·이전 서버 로그에서 가장 최근의 오류 기록을 확인하고 있습니다."
+    last_error="$({ grep -iE 'error|failed|exception|fatal' "$SERVER_LOG" "$PREVIOUS_SERVER_LOG" "$LOG_FILE" 2>/dev/null || true; } | tail -n 1)"
     echo "last_error_b64=$(printf '%s' "$last_error" | base64 -w 0 2>/dev/null || true)"
+    record_processing "최근 오류 검사 완료 · $([[ -n "$last_error" ]] && echo '오류 기록 있음 (진단 결과에서 확인)' || echo '오류 기록 없음')"
     write_progress 100 "진단 완료" "전체 환경 검사를 완료했습니다." success
 }
 
