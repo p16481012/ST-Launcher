@@ -138,6 +138,8 @@ data class LauncherUiState(
     val fileBrowserError: String = "",
     val fileBrowserMutating: Boolean = false,
     val fileBrowserNotice: String = "",
+    val directoryAppOptions: List<DirectoryAppOption>? = null,
+    val directoryAppError: String = "",
     val lastTrashedEntryId: String = "",
     val editingFile: TavernTextFile? = null,
     val pendingInstallation: ExistingInstallation? = null,

@@ -380,23 +380,10 @@ class LauncherRepository(private val context: Context) {
         return result
     }
 
-    fun openSillyTavernDirectory(): Boolean {
-        val authority = "${TermuxContract.PACKAGE}.documents"
-        val root = DocumentsContract.buildRootUri(authority, TermuxContract.HOME_PATH)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(root, DocumentsContract.Root.MIME_TYPE_ITEM)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        // Termux has no findDocumentPath(), so a document deep link silently falls back to
-        // Downloads. Open its actual writable root instead; the user selects SillyTavern.
-        // DocumentsUI owns MANAGE_DOCUMENTS. Do not forge grants for another app's provider.
-        val handler = context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-            .firstOrNull { context.packageManager.checkPermission(
-                "android.permission.MANAGE_DOCUMENTS", it.activityInfo.packageName,
-            ) == PackageManager.PERMISSION_GRANTED } ?: return false
-        intent.setClassName(handler.activityInfo.packageName, handler.activityInfo.name)
-        return runCatching { context.startActivity(intent); true }.getOrDefault(false)
-    }
+    fun sillyTavernDirectoryApps() = DirectoryAppLauncher(context).options()
+
+    fun openSillyTavernDirectory(optionId: String, allowUnverified: Boolean): Boolean =
+        DirectoryAppLauncher(context).open(optionId, allowUnverified)
 
     fun openSillyTavernFile(relativePath: String): Boolean {
         if (relativePath.startsWith('/') || relativePath.split('/').any { it == ".." }) return false

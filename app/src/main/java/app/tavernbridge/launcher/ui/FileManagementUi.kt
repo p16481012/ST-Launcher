@@ -103,6 +103,8 @@ internal fun TavernFileManagerDialog(
     onNavigate: (String) -> Unit,
     onOpenFile: (String) -> Unit,
     onOpenDirectory: () -> Unit,
+    onSelectDirectoryApp: (String, Boolean) -> Unit,
+    onDismissDirectoryApps: () -> Unit,
     onEdit: (String) -> Unit,
     onSave: (String) -> Unit,
     onCloseEditor: () -> Unit,
@@ -151,7 +153,7 @@ internal fun TavernFileManagerDialog(
                     Spacer(Modifier.width(8.dp))
                     Text("외부에서 폴더 열기")
                 }
-                Text("외부 열기는 Android 파일 화면의 Termux 위치를 엽니다. SillyTavern 폴더를 선택하세요.",
+                Text("열 앱을 직접 선택할 수 있습니다. 문서 접근 권한이 있는 앱을 권장합니다.",
                     Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -196,6 +198,9 @@ internal fun TavernFileManagerDialog(
                     }
                 }
             }
+        }
+        state.directoryAppOptions?.let { options ->
+            DirectoryAppPickerDialog(options, state.directoryAppError, onSelectDirectoryApp, onDismissDirectoryApps)
         }
         selected?.let { entry ->
             AlertDialog(onDismissRequest = { selected = null }, title = { Text(entry.name) }, text = {

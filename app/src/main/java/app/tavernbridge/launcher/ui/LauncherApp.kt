@@ -625,6 +625,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onNavigate = viewModel::loadSillyTavernFolder,
                     onOpenFile = viewModel::openSillyTavernFile,
                     onOpenDirectory = viewModel::openSillyTavernDirectory,
+                    onSelectDirectoryApp = viewModel::selectDirectoryApp,
+                    onDismissDirectoryApps = viewModel::dismissDirectoryAppPicker,
                     onEdit = viewModel::readSillyTavernTextFile,
                     onSave = viewModel::saveSillyTavernTextFile,
                     onCloseEditor = viewModel::closeTextEditor,

@@ -1134,13 +1134,33 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (state.value.fileBrowserMutating) return
         fileBrowserJob?.cancel()
         mutableState.update { it.copy(fileBrowserOpen = false, fileBrowserEntries = emptyList(),
-            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null) }
+            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null,
+            directoryAppOptions = null, directoryAppError = "") }
     }
 
     fun openSillyTavernDirectory() {
-        if (!repository.openSillyTavernDirectory()) {
-            val message = "시스템 파일 화면을 열지 못했습니다. 이 기기의 파일 앱이 Termux 폴더 연결을 지원하는지 확인해 주세요."
-            mutableState.update { if (it.fileBrowserOpen) it.copy(fileBrowserError = message) else it.copy(error = message) }
+        if (state.value.fileBrowserMutating) return
+        runCatching { repository.sillyTavernDirectoryApps() }
+            .onSuccess { options ->
+                mutableState.update { it.copy(directoryAppOptions = options, directoryAppError = "") }
+            }
+            .onFailure {
+                mutableState.update { it.copy(directoryAppOptions = emptyList(),
+                    directoryAppError = "폴더를 열 앱 목록을 불러오지 못했습니다. 선택창을 닫고 다시 시도해 주세요.") }
+            }
+    }
+
+    fun dismissDirectoryAppPicker() {
+        mutableState.update { it.copy(directoryAppOptions = null, directoryAppError = "") }
+    }
+
+    fun selectDirectoryApp(optionId: String, allowUnverified: Boolean) {
+        if (state.value.fileBrowserMutating || state.value.directoryAppOptions?.none { it.id == optionId } != false) return
+        if (repository.openSillyTavernDirectory(optionId, allowUnverified)) {
+            dismissDirectoryAppPicker()
+        } else {
+            mutableState.update { it.copy(directoryAppError =
+                "선택한 앱을 열지 못했습니다. 앱이 삭제되었거나 권한이 바뀌었을 수 있습니다. 다른 앱을 선택하거나 선택창을 다시 열어 주세요.") }
         }
     }
 
