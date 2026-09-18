@@ -59,6 +59,7 @@ jobs:
             bash scripts/test-import-ambiguous-native.sh
             bash scripts/test-install-validation.sh
             bash scripts/test-restore-recovery.sh
+            bash scripts/test-restore-work-collision.sh
           done
 
       - name: Test, lint, and build debug and unsigned release APKs

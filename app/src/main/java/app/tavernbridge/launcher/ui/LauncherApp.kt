@@ -733,7 +733,7 @@ private fun RestoreRecoveryCard(
             SelectionContainer {
                 Text(
                     state.environment.recoveryMessage.ifBlank {
-                        "완료되지 않은 복원 기록이 있습니다. 보호사본을 지우거나 새로 설치하지 말고 점검·복구를 실행해 주세요.",
+                        "완료되지 않은 복원 기록이 있습니다. 보호사본을 지우거나 새로 설치하지 말고 점검·복구를 실행해 주세요."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )

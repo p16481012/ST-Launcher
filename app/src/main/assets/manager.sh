@@ -1572,6 +1572,11 @@ import_backup() {
     ensure_import_runtime
     ensure_archive_tools
     local work="$BACKUP_DIR/import-work-$$"
+    mkdir -m 700 -- "$work" || {
+        CURRENT_IMPORT_ARCHIVE=""
+        echo "임시 복원 폴더를 새로 만들지 못했습니다. 기존 경로는 변경하지 않습니다: $work" >&2
+        exit 25
+    }
     track_current_work_dir "$work"
     local extracted="$work/extracted"
     local normalized="$work/normalized"
@@ -2597,6 +2602,7 @@ import_install() {
     (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 옮길 저장 공간이 부족합니다." >&2; exit 54; }
     record_processing "설치 이동 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
     work="$BACKUP_DIR/install-import-work-$$"
+    mkdir -m 700 -- "$work" || { echo "임시 복원 폴더를 새로 만들지 못했습니다. 기존 경로는 변경하지 않습니다: $work" >&2; exit 25; }
     track_current_work_dir "$work"
     extracted="$work/extracted"
     mkdir -p "$extracted" "$work/rollback"
@@ -2972,6 +2978,7 @@ restore_backup() {
     ensure_import_runtime
     ensure_archive_tools
     local work="$BACKUP_DIR/restore-work-$$"
+    mkdir -m 700 -- "$work" || { echo "임시 복원 폴더를 새로 만들지 못했습니다. 기존 경로는 변경하지 않습니다: $work" >&2; exit 25; }
     track_current_work_dir "$work"
     local extracted="$work/extracted"
     mkdir -p "$extracted" "$work/rollback"

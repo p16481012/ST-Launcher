@@ -1530,8 +1530,23 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val diagnostic = error.userMessage()
                 val errorCode = errorCodeFrom(diagnostic)
                 if (reconnectTimedOutOperation(errorCode, operation, operationStartedAt)) return@launch
+                // Rollback can succeed even when a subsequent repair step fails.
+                // Conversely a failed restore may now have a retained journal.
+                // Refresh read-only state without replacing the actual error.
+                val recoveryEnvironment = if (state.value.environment.recoveryPending ||
+                    errorCode == "RESTORE_ROLLBACK_REQUIRED" ||
+                    operation in setOf("restore", "import-backup", "import-install", "repair")) {
+                    progressJob.cancel()
+                    try { repository.inspect() }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                } else null
                 mutableState.update {
                     it.copy(
+                        environment = recoveryEnvironment ?: it.environment,
+                        backgroundStatus = recoveryEnvironment?.let { current ->
+                            repository.backgroundStatus(current.processRunning)
+                        } ?: it.backgroundStatus,
                         isWorking = false,
                         workingLabel = "",
                         workProgress = null,
