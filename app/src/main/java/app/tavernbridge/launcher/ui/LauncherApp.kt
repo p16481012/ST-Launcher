@@ -145,7 +145,8 @@ import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
-import app.tavernbridge.launcher.ui.components.WorkProgressDetails
+import app.tavernbridge.launcher.ui.components.WorkProgressLog
+import app.tavernbridge.launcher.ui.components.FollowLogTail
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -2099,10 +2100,7 @@ private fun DiagnosticsScreen(
         DiagnosticPanel.WORK_HISTORY -> state.operationHistory
         DiagnosticPanel.OVERVIEW -> ""
     }
-    LaunchedEffect(visibleLog) {
-        delay(50)
-        logScrollState.scrollTo(logScrollState.maxValue)
-    }
+    FollowLogTail(visibleLog, logScrollState, resetKey = state.diagnosticPanel)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2678,12 +2676,8 @@ private fun WorkingOverlay(
     progress: app.tavernbridge.launcher.model.WorkProgress?,
     onCancel: () -> Unit,
 ) {
-    val clipboard = LocalClipboardManager.current
-    var detailsExpanded by remember { mutableStateOf(true) }
     var collapsed by remember { mutableStateOf(false) }
     var cancelConfirmation by remember { mutableStateOf(false) }
-    var elapsedSeconds by remember(progress?.operation, label) { mutableStateOf(0L) }
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var spinnerRotation by remember { mutableFloatStateOf(0f) }
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
     val finalizing = progress?.status == "success" && !finalConfirmation
@@ -2694,32 +2688,6 @@ private fun WorkingOverlay(
         while (true) {
             delay(16)
             spinnerRotation = (spinnerRotation + 7f) % 360f
-        }
-    }
-    val logScrollState = rememberScrollState()
-    LaunchedEffect(progress?.operation, label) {
-        while (true) {
-            delay(1_000)
-            elapsedSeconds += 1
-            nowMillis = System.currentTimeMillis()
-        }
-    }
-    val recentLog = progress?.logText
-        ?.lineSequence()
-        ?.filter { it.isNotBlank() }
-        ?.toList()
-        ?.takeLast(50)
-        ?.joinToString("\n")
-        .orEmpty()
-    val elapsedLabel = if (elapsedSeconds < 60) {
-        "${elapsedSeconds}초 경과"
-    } else {
-        "${elapsedSeconds / 60}분 ${elapsedSeconds % 60}초 경과"
-    }
-    LaunchedEffect(detailsExpanded, recentLog) {
-        if (detailsExpanded) {
-            delay(50)
-            logScrollState.scrollTo(logScrollState.maxValue)
         }
     }
     if (cancelConfirmation) {
@@ -2788,38 +2756,12 @@ private fun WorkingOverlay(
                         strokeWidth = 3.dp,
                     )
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        if (progress != null && !finalizing && progress.status != "success") {
-                            Text(
-                                "현재 단계",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
-                        Text(
-                            if (finalizing) "마무리 확인 중" else progress?.phase?.ifBlank { label }
-                                ?: label.ifBlank { "처리 중" },
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        if (finalizing) {
-                            Text(
-                                "작업 결과를 최종 확인하고 있습니다.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        } else if (!progress?.detail.isNullOrBlank()) {
-                            Text(
-                                progress?.detail.orEmpty(),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Text(
-                            elapsedLabel,
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
+                    Text(
+                        if (finalizing) "마무리 확인 중" else progress?.phase?.ifBlank { label }
+                            ?: label.ifBlank { "처리 중" },
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     if (measuredPercent != null) {
                         Text("${measuredPercent}%", fontWeight = FontWeight.Bold)
                     }
@@ -2834,83 +2776,16 @@ private fun WorkingOverlay(
                     )
                 } else {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    if (progress == null) {
-                        Text(
-                            "Termux의 응답을 기다리고 있습니다.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
                 }
-                if (progress != null && !finalizing) WorkProgressDetails(progress, nowMillis)
-                Text(
-                    "설치 위치  ~/SillyTavern",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (elapsedSeconds >= 60 && progress?.phase?.let {
-                        it.contains("Node") || it.contains("서버") || it.contains("패키지")
-                    } == true
-                ) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(12.dp),
+                WorkProgressLog(progress?.logText.orEmpty())
+                if (cancellable) {
+                    OutlinedButton(
+                        onClick = { cancelConfirmation = true },
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            "첫 설치, 네트워크 상태 또는 기본 콘텐츠 초기화 때문에 오래 걸릴 수 있습니다. 마지막 처리·출력 변화 시간과 상세 로그를 함께 확인하세요.",
-                            modifier = Modifier.padding(12.dp),
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-                if (progress != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { detailsExpanded = !detailsExpanded },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(if (detailsExpanded) "상세 로그 접기" else "상세 로그 보기")
-                        }
-                        IconButton(
-                            onClick = { clipboard.setText(AnnotatedString(progress.logText)) },
-                            enabled = progress.logText.isNotBlank(),
-                        ) {
-                            Icon(Icons.Outlined.ContentCopy, contentDescription = "전체 로그 복사")
-                        }
-                    }
-                    if (cancellable) {
-                        OutlinedButton(
-                            onClick = { cancelConfirmation = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Outlined.Stop, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("작업 중단")
-                        }
-                    }
-                    if (detailsExpanded) {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(210.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(14.dp),
-                        ) {
-                            SelectionContainer {
-                                Text(
-                                    recentLog.ifBlank { "아직 출력된 상세 로그가 없습니다." },
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .verticalScroll(logScrollState)
-                                        .padding(12.dp),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    lineHeight = 16.sp,
-                                )
-                            }
-                        }
+                        Icon(Icons.Outlined.Stop, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("작업 중단")
                     }
                 }
             }

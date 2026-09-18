@@ -31,6 +31,7 @@ import app.tavernbridge.launcher.model.validTavernEntryName
 import app.tavernbridge.launcher.termux.TermuxCommandResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,7 +59,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     )
     val state = mutableState.asStateFlow()
     private var detachedOperationMonitor: Job? = null
-    private var logRefreshJob: Job? = null
+    private val logReadJobs = mutableMapOf<DiagnosticPanel, Job>()
+    private val logReadErrorRequests = mutableSetOf<DiagnosticPanel>()
     private var refreshJob: Job? = null
     private val environmentRefreshGate = EnvironmentRefreshGate()
     private var fileBrowserJob: Job? = null
@@ -904,91 +906,62 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         retryAction = RetryAction.REPAIR,
     ) { repository.repair() }
 
-    fun loadLogs() {
-        if (state.value.isWorking) return
-        viewModelScope.launch {
-            mutableState.update { it.copy(isWorking = true, workingLabel = "로그 불러오는 중", workProgress = null) }
-            val journal = LocalProgressJournal("server-logs", ::publishProgress)
-            journal.phase("서버 로그 읽기", "Termux에 보관된 최근 서버 로그 최대 500줄을 요청했습니다. 응답을 기다립니다.")
-            try {
-                val result = repository.logs()
-                if (!result.isSuccess) throw IllegalStateException(result.readableError())
-                journal.completedItem("최근 서버 로그 수신")
-                mutableState.update {
-                    it.copy(
-                        logs = result.stdout.ifBlank { "표시할 로그가 없습니다." },
-                        isWorking = false,
-                        workingLabel = "",
-                        workProgress = null,
-                    )
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                mutableState.update {
-                    it.copy(isWorking = false, workingLabel = "", workProgress = null, error = error.userMessage())
-                }
-            }
-        }
-    }
+    fun loadLogs() = loadDiagnosticText(DiagnosticPanel.SERVER_LOG, reportErrors = true)
 
-    fun refreshLogsSilently() {
-        if (!appInForeground || state.value.isWorking || !state.value.environment.managerConnected || logRefreshJob?.isActive == true) return
-        logRefreshJob = viewModelScope.launch {
+    fun refreshLogsSilently() = loadDiagnosticText(DiagnosticPanel.SERVER_LOG, reportErrors = false)
+
+    fun loadPreviousServerLogs() = loadDiagnosticText(DiagnosticPanel.PREVIOUS_SERVER_LOG, reportErrors = true)
+
+    fun loadOperationHistory() = loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = true)
+
+    private fun loadDiagnosticText(panel: DiagnosticPanel, reportErrors: Boolean) {
+        if (!appInForeground || state.value.isWorking) return
+        if (!reportErrors && !state.value.environment.managerConnected) return
+        if (panel == DiagnosticPanel.OVERVIEW) return
+        if (logReadJobs[panel]?.isActive == true) {
+            // A manual request joins the existing automatic read instead of racing it.
+            if (reportErrors) logReadErrorRequests.add(panel)
+            return
+        }
+        if (reportErrors) logReadErrorRequests.add(panel) else logReadErrorRequests.remove(panel)
+        val request = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
-                val result = repository.logs()
-                if (result.isSuccess) {
-                    mutableState.update {
-                        it.copy(logs = result.stdout.ifBlank { "아직 기록된 서버 로그가 없습니다." })
+                val result = when (panel) {
+                    DiagnosticPanel.SERVER_LOG -> repository.logs()
+                    DiagnosticPanel.PREVIOUS_SERVER_LOG -> repository.previousServerLogs()
+                    DiagnosticPanel.WORK_HISTORY -> repository.operationHistory()
+                    DiagnosticPanel.OVERVIEW -> return@launch
+                }
+                if (!result.isSuccess) throw IllegalStateException(result.readableError())
+                // Read-only refreshes own only their text field, never the global operation state.
+                // A late response must not clear a real operation started while this read was pending.
+                mutableState.update {
+                    when (panel) {
+                        DiagnosticPanel.SERVER_LOG -> it.copy(logs = result.stdout.ifBlank { "아직 기록된 서버 로그가 없습니다." })
+                        DiagnosticPanel.PREVIOUS_SERVER_LOG -> it.copy(previousServerLogs = result.stdout.ifBlank { "아직 보관된 이전 서버 로그가 없습니다." })
+                        DiagnosticPanel.WORK_HISTORY -> it.copy(operationHistory = result.stdout.ifBlank { "아직 기록된 런처 작업이 없습니다." })
+                        DiagnosticPanel.OVERVIEW -> it
                     }
                 }
-            } catch (_: Exception) {
-                // Keep the last visible server log and retry on the next poll.
-            }
-        }
-    }
-
-    fun loadPreviousServerLogs() {
-        if (state.value.isWorking) return
-        viewModelScope.launch {
-            mutableState.update { it.copy(isWorking = true, workingLabel = "이전 서버 로그 불러오는 중", workProgress = null) }
-            val journal = LocalProgressJournal("previous-server-logs", ::publishProgress)
-            journal.phase("이전 서버 로그 읽기", "Termux에 보관된 이전 서버 로그 최대 800줄을 요청했습니다. 응답을 기다립니다.")
-            try {
-                val result = repository.previousServerLogs()
-                if (!result.isSuccess) throw IllegalStateException(result.readableError())
-                journal.completedItem("이전 서버 로그 수신")
-                mutableState.update {
-                    it.copy(
-                        previousServerLogs = result.stdout.ifBlank { "아직 보관된 이전 서버 로그가 없습니다." },
-                        isWorking = false,
-                        workingLabel = "",
-                        workProgress = null,
-                    )
-                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                mutableState.update {
-                    it.copy(isWorking = false, workingLabel = "", workProgress = null, error = error.userMessage())
+                if (appInForeground && panel in logReadErrorRequests) {
+                    mutableState.update {
+                        if (it.isWorking) it else it.copy(error = "${panel.label} 조회에 실패했습니다.\n${error.userMessage()}")
+                    }
+                }
+                // Background reads keep the existing text and retry on the next refresh.
+            } finally {
+                if (logReadJobs[panel] === coroutineContext[Job]) {
+                    logReadJobs.remove(panel)
+                    logReadErrorRequests.remove(panel)
                 }
             }
         }
-    }
-
-    fun loadOperationHistory() {
-        if (state.value.isWorking) return
-        viewModelScope.launch {
-            try {
-                val result = repository.operationHistory()
-                if (!result.isSuccess) throw IllegalStateException(result.readableError())
-                mutableState.update {
-                    it.copy(operationHistory = result.stdout.ifBlank { "아직 기록된 런처 작업이 없습니다." })
-                }
-            } catch (error: Exception) {
-                mutableState.update { it.copy(error = error.userMessage()) }
-            }
-        }
+        // Register before starting so even immediate completion cannot leave an untracked read.
+        logReadJobs[panel] = request
+        request.start()
     }
 
     fun runDiagnostics() {

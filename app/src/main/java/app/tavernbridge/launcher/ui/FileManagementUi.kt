@@ -20,8 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.model.*
-import app.tavernbridge.launcher.ui.components.WorkProgressDetails
-import kotlinx.coroutines.delay
+import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import java.util.Locale
 
 @Composable
@@ -288,35 +287,22 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
 
 @Composable
 private fun FileOperationProgress(progress: WorkProgress?, label: String) {
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(progress?.operation) {
-        while (true) {
-            nowMillis = System.currentTimeMillis()
-            delay(1_000)
-        }
-    }
     val measuredPercent = progress?.measuredPercent
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                if (progress == null) label.ifBlank { "파일 작업 중" }
-                else "현재 단계 · ${progress.phase.ifBlank { label }}",
+                progress?.phase?.ifBlank { label } ?: label.ifBlank { "파일 작업 중" },
                 Modifier.weight(1f),
                 style = MaterialTheme.typography.titleSmall,
             )
             if (measuredPercent != null) Text("${measuredPercent}%", fontWeight = FontWeight.Bold)
         }
-        if (!progress?.detail.isNullOrBlank()) Text(progress?.detail.orEmpty(), style = MaterialTheme.typography.bodySmall)
         if (measuredPercent == null) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         } else {
             LinearProgressIndicator(progress = { measuredPercent / 100f }, modifier = Modifier.fillMaxWidth())
         }
-        if (progress == null) {
-            Text("처리 상태를 기다리고 있습니다.", style = MaterialTheme.typography.bodySmall)
-        } else {
-            WorkProgressDetails(progress, nowMillis)
-        }
+        WorkProgressLog(progress?.logText.orEmpty())
     }
 }
 
