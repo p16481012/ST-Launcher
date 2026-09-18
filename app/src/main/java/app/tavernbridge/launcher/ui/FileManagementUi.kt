@@ -102,12 +102,11 @@ internal fun TavernFileManagerDialog(
     onNavigate: (String) -> Unit,
     onOpenFile: (String) -> Unit,
     onOpenDirectory: () -> Unit,
-    onSelectDirectoryApp: (String, Boolean) -> Unit,
-    onDismissDirectoryApps: () -> Unit,
     onEdit: (String) -> Unit,
     onSave: (String) -> Unit,
     onCloseEditor: () -> Unit,
     onCreateFolder: (String) -> Unit,
+    onCreateFile: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onTrash: (String) -> Unit,
     onUndoTrash: () -> Unit,
@@ -118,6 +117,7 @@ internal fun TavernFileManagerDialog(
     var renameTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
     var trashTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
     var newFolder by remember { mutableStateOf(false) }
+    var newFile by remember { mutableStateOf(false) }
     var externalFile by remember { mutableStateOf<TavernFileEntry?>(null) }
     val canModify = state.canModifyTavernFiles()
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -152,12 +152,16 @@ internal fun TavernFileManagerDialog(
                     Spacer(Modifier.width(8.dp))
                     Text("외부에서 폴더 열기")
                 }
-                Text("열 앱을 직접 선택할 수 있습니다. 문서 접근 권한이 있는 앱을 권장합니다.",
+                Text("권장 파일 앱의 Termux 위치를 엽니다.\nSillyTavern 폴더를 선택하세요.",
                     Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { newFolder = true }, enabled = canModify, modifier = Modifier.weight(1f)) { Text("새 폴더") }
-                    OutlinedButton(onClick = onImport, enabled = canModify, modifier = Modifier.weight(1f)) { Text("파일 가져오기") }
+                    OutlinedButton(onClick = { newFile = true }, enabled = canModify, modifier = Modifier.weight(1f)) { Text("새 파일") }
+                }
+                OutlinedButton(onClick = onImport, enabled = canModify,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                    Text("파일 가져오기")
                 }
                 if (state.environment.processRunning || state.environment.operationActive) Text(
                     "서버 또는 작업 실행 중에는 탐색만 가능합니다. 변경하려면 먼저 종료하세요.",
@@ -198,9 +202,6 @@ internal fun TavernFileManagerDialog(
                 }
             }
         }
-        state.directoryAppOptions?.let { options ->
-            DirectoryAppPickerDialog(options, state.directoryAppError, onSelectDirectoryApp, onDismissDirectoryApps)
-        }
         selected?.let { entry ->
             AlertDialog(onDismissRequest = { selected = null }, title = { Text(entry.name) }, text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -226,6 +227,9 @@ internal fun TavernFileManagerDialog(
         if (newFolder) EntryNameDialog("새 폴더", "", onDismiss = { newFolder = false }) {
             newFolder = false; onCreateFolder(it)
         }
+        if (newFile) EntryNameDialog("새 파일", "", onDismiss = { newFile = false }, nameHint = "예: memo.txt") {
+            newFile = false; onCreateFile(it)
+        }
         renameTarget?.let { entry -> EntryNameDialog("이름 변경", entry.name, onDismiss = { renameTarget = null }) {
             renameTarget = null; onRename(entry.relativePath, it)
         } }
@@ -240,10 +244,12 @@ internal fun TavernFileManagerDialog(
 }
 
 @Composable
-private fun EntryNameDialog(title: String, initial: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+private fun EntryNameDialog(title: String, initial: String, onDismiss: () -> Unit, nameHint: String? = null,
+    onConfirm: (String) -> Unit) {
     var name by remember(initial) { mutableStateOf(initial) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
-        OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("이름") })
+        OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("이름") },
+            placeholder = { nameHint?.let { Text(it) } })
     }, confirmButton = { Button(onClick = { onConfirm(name) }, enabled = validTavernEntryName(name)) { Text("확인") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } })
 }

@@ -5,8 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.DocumentsContract
-import app.tavernbridge.launcher.model.DirectoryAppOption
-import app.tavernbridge.launcher.model.rankDirectoryApps
 import app.tavernbridge.launcher.termux.TermuxContract
 
 internal class DirectoryAppLauncher(private val context: Context) {
@@ -21,32 +19,20 @@ internal class DirectoryAppLauncher(private val context: Context) {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
-    fun options(): List<DirectoryAppOption> {
+    fun openRecommended(): Boolean = runCatching {
         val pm = context.packageManager
-        val candidates = pm.queryIntentActivities(rootIntent(), PackageManager.MATCH_DEFAULT_ONLY)
-            .mapNotNull { resolved ->
-                val activity = resolved.activityInfo ?: return@mapNotNull null
-                if (!activity.exported || !activity.enabled || !activity.applicationInfo.enabled) return@mapNotNull null
+        val intent = rootIntent()
+        val handler = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            .firstOrNull { resolved ->
+                val activity = resolved.activityInfo ?: return@firstOrNull false
+                if (!activity.exported || !activity.enabled || !activity.applicationInfo.enabled) return@firstOrNull false
                 if (!activity.permission.isNullOrBlank() &&
                     context.checkSelfPermission(activity.permission) != PackageManager.PERMISSION_GRANTED
-                ) return@mapNotNull null
-                DirectoryAppOption(
-                    packageName = activity.packageName,
-                    activityName = activity.name,
-                    label = resolved.loadLabel(pm).toString().ifBlank { activity.packageName },
-                    hasDocumentAccess = pm.checkPermission(Manifest.permission.MANAGE_DOCUMENTS, activity.packageName) ==
-                        PackageManager.PERMISSION_GRANTED,
-                )
-            }
-        return rankDirectoryApps(candidates)
-    }
-
-    fun open(optionId: String, allowUnverified: Boolean): Boolean = runCatching {
-        // Re-query: an app may have been removed/disabled or lost permission since
-        // the picker opened. Never accept an arbitrary component from the caller.
-        val option = options().firstOrNull { it.id == optionId } ?: return false
-        if (!option.hasDocumentAccess && !allowUnverified) return false
-        context.startActivity(rootIntent().setClassName(option.packageName, option.activityName))
+                ) return@firstOrNull false
+                pm.checkPermission(Manifest.permission.MANAGE_DOCUMENTS, activity.packageName) ==
+                    PackageManager.PERMISSION_GRANTED
+            } ?: return false
+        context.startActivity(intent.setClassName(handler.activityInfo.packageName, handler.activityInfo.name))
         true
     }.getOrDefault(false)
 }

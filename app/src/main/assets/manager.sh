@@ -185,7 +185,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|import-st-file|mkdir-st|rename-st|delete-st|restore-st-trash)
+        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|create-st-file|import-st-file|mkdir-st|rename-st|delete-st|restore-st-trash)
             return 0
             ;;
         *)
@@ -1832,6 +1832,12 @@ mkdir_st() {
     write_progress 100 "폴더 생성 완료" "SillyTavern 안에 새 폴더를 만들었습니다." success
 }
 
+create_st_file() {
+    begin_st_file_mutation create-st-file
+    st_file_action create-file "${1:-}"
+    write_progress 100 "파일 생성 완료" "기존 항목을 덮어쓰지 않고 빈 파일을 만들었습니다." success
+}
+
 rename_st() {
     begin_st_file_mutation rename-st
     st_file_action rename "${1:-}" "${2:-}"
@@ -1971,7 +1977,7 @@ try {
         console.log(`restored_b64=${b64(relative)}`);
     } else {
         const relative = relativePath(encoded, action === 'list');
-        const target = resolve(relative, action === 'mkdir' || action === 'import');
+        const target = resolve(relative, action === 'mkdir' || action === 'create-file' || action === 'import');
         if (action === 'list') {
             if (!/^(0|[1-9][0-9]{0,9})$/.test(value)) fail(64, '올바르지 않은 목록 페이지입니다.');
             const before = fs.lstatSync(target, { bigint: true });
@@ -2071,6 +2077,13 @@ try {
                 if (exists(temporary)) fs.unlinkSync(temporary);
             }
             console.log(`imported_b64=${b64(relative)}`);
+        } else if (action === 'create-file') {
+            writable(relative);
+            // Exclusive creation also rejects a file, directory, or symlink
+            // created by another app after path validation. Never truncate.
+            const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o600);
+            try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+            console.log(`created_b64=${b64(relative)}`);
         } else if (action === 'mkdir') {
             writable(relative);
             if (exists(target)) fail(43, '같은 이름의 항목이 이미 있습니다.');
@@ -3190,6 +3203,7 @@ case "${1:-doctor}" in
     list-st-files) list_st_files "${2:-}" "${3:-0}" ;;
     read-st-file) read_st_file "${2:-}" ;;
     write-st-file) write_st_file "${2:-}" "${3:-}" "${4:-}" ;;
+    create-st-file) create_st_file "${2:-}" ;;
     import-st-file) import_st_file "${2:-}" "${3:-}" ;;
     mkdir-st) mkdir_st "${2:-}" ;;
     rename-st) rename_st "${2:-}" "${3:-}" ;;

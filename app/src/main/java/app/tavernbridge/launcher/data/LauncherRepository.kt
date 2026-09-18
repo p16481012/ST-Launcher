@@ -347,6 +347,9 @@ class LauncherRepository(private val context: Context) {
     suspend fun createSillyTavernFolder(parent: String, name: String): TermuxCommandResult =
         runManager("mkdir-st ${shellQuote(encodeFileArgument(fileChildPath(parent, name)))}", 30_000)
 
+    suspend fun createSillyTavernFile(parent: String, name: String): TermuxCommandResult =
+        runManager("create-st-file ${shellQuote(encodeFileArgument(fileChildPath(parent, name)))}", 30_000)
+
     suspend fun renameSillyTavernEntry(relativePath: String, newName: String): TermuxCommandResult =
         runManager("rename-st ${shellQuote(encodeFileArgument(relativePath))} ${shellQuote(encodeFileArgument(fileChildPath(relativePath.substringBeforeLast('/', ""), newName)))}", 30_000)
 
@@ -380,10 +383,7 @@ class LauncherRepository(private val context: Context) {
         return result
     }
 
-    fun sillyTavernDirectoryApps() = DirectoryAppLauncher(context).options()
-
-    fun openSillyTavernDirectory(optionId: String, allowUnverified: Boolean): Boolean =
-        DirectoryAppLauncher(context).open(optionId, allowUnverified)
+    fun openSillyTavernDirectory(): Boolean = DirectoryAppLauncher(context).openRecommended()
 
     fun openSillyTavernFile(relativePath: String): Boolean {
         if (relativePath.startsWith('/') || relativePath.split('/').any { it == ".." }) return false

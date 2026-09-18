@@ -1112,33 +1112,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (state.value.fileBrowserMutating) return
         fileBrowserJob?.cancel()
         mutableState.update { it.copy(fileBrowserOpen = false, fileBrowserEntries = emptyList(),
-            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null,
-            directoryAppOptions = null, directoryAppError = "") }
+            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null) }
     }
 
     fun openSillyTavernDirectory() {
         if (state.value.fileBrowserMutating) return
-        runCatching { repository.sillyTavernDirectoryApps() }
-            .onSuccess { options ->
-                mutableState.update { it.copy(directoryAppOptions = options, directoryAppError = "") }
-            }
-            .onFailure {
-                mutableState.update { it.copy(directoryAppOptions = emptyList(),
-                    directoryAppError = "폴더를 열 앱 목록을 불러오지 못했습니다. 선택창을 닫고 다시 시도해 주세요.") }
-            }
-    }
-
-    fun dismissDirectoryAppPicker() {
-        mutableState.update { it.copy(directoryAppOptions = null, directoryAppError = "") }
-    }
-
-    fun selectDirectoryApp(optionId: String, allowUnverified: Boolean) {
-        if (state.value.fileBrowserMutating || state.value.directoryAppOptions?.none { it.id == optionId } != false) return
-        if (repository.openSillyTavernDirectory(optionId, allowUnverified)) {
-            dismissDirectoryAppPicker()
-        } else {
-            mutableState.update { it.copy(directoryAppError =
-                "선택한 앱을 열지 못했습니다. 앱이 삭제되었거나 권한이 바뀌었을 수 있습니다. 다른 앱을 선택하거나 선택창을 다시 열어 주세요.") }
+        if (!repository.openSillyTavernDirectory()) {
+            mutableState.update { it.copy(fileBrowserError =
+                "Termux 폴더를 열 수 있는 권장 파일 앱을 실행하지 못했습니다. 런처 안의 폴더 관리를 이용해 주세요.") }
         }
     }
 
@@ -1176,6 +1157,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val parent = state.value.fileBrowserPath
         mutateTavernFiles("mkdir-st", "폴더 만들기", "폴더를 만들었습니다.") {
             repository.createSillyTavernFolder(parent, name)
+        }
+    }
+
+    fun createSillyTavernFile(name: String) {
+        if (!checkEntryName(name)) return
+        val parent = state.value.fileBrowserPath
+        mutateTavernFiles("create-st-file", "파일 만들기", "빈 파일을 만들었습니다. 파일을 선택하면 내용을 수정할 수 있습니다.") {
+            repository.createSillyTavernFile(parent, name)
         }
     }
 
@@ -1508,6 +1497,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "import-install" -> "기존 설치 이동"
         "write-st-file" -> "파일 저장"
         "mkdir-st" -> "폴더 만들기"
+        "create-st-file" -> "파일 만들기"
         "rename-st" -> "이름 변경"
         "delete-st" -> "휴지통으로 이동"
         "import-st-file" -> "파일 가져오기"

@@ -50,6 +50,30 @@ expect_code 40 read_st_file "$(b64 data/large.txt)"
 printf 'ok' > "$ST_HOME/data/has..dots.txt"
 read_st_file "$(b64 data/has..dots.txt)" >/dev/null || fail 'safe consecutive dots were rejected'
 
+created_path='data/new 한글 file.txt'
+created_result="$(st_file_action create-file "$(b64 "$created_path")")"
+[[ "$created_result" == "created_b64=$(b64 "$created_path")" ]] || fail 'new file returned the wrong path'
+[[ -f "$ST_HOME/$created_path" && ! -s "$ST_HOME/$created_path" ]] || fail 'new file is not an empty regular file'
+read_st_file "$(b64 "$created_path")" | grep -Fxq 'content_b64=' || fail 'new empty file cannot be opened in the text editor'
+printf 'keep-new-file' > "$ST_HOME/$created_path"
+expect_code 43 st_file_action create-file "$(b64 "$created_path")"
+[[ "$(cat "$ST_HOME/$created_path")" == keep-new-file ]] || fail 'new file creation overwrote an existing file'
+expect_code 43 st_file_action create-file "$(b64 data/default-user)"
+grep -Fxq keep "$ST_HOME/data/default-user/chats/keep.jsonl" || fail 'new file creation damaged a directory collision'
+expect_code 44 st_file_action create-file "$(b64 .git/new-file)"
+expect_code 44 st_file_action create-file "$(b64 node_modules/new-file)"
+expect_code 64 st_file_action create-file "$(b64 ../outside.txt)"
+expect_code 64 st_file_action create-file "$(b64 /outside.txt)"
+expect_code 64 st_file_action create-file ''
+expect_code 64 st_file_action create-file "$(b64 $'data/bad\nfile')"
+expect_code 6 st_file_action create-file "$(b64 missing-parent/new-file)"
+[[ "$(cat "$TEST_ROOT/outside.txt")" == SECRET ]] || fail 'new file creation changed a path outside SillyTavern'
+should_record_operation create-st-file || fail 'new file operation is not recorded'
+[[ "$(manager_error_code create-st-file 43)" == FILE_ALREADY_EXISTS ]] || fail 'new file collision has no stable error code'
+if [[ "$OSTYPE" != msys* ]]; then
+    [[ "$(stat -c '%a' "$ST_HOME/$created_path")" == 600 ]] || fail 'new file permissions are not private'
+fi
+
 st_file_action mkdir "$(b64 'data/new folder')" >/dev/null
 expect_code 43 st_file_action mkdir "$(b64 'data/new folder')"
 st_file_action rename "$(b64 'data/new folder')" "$(b64 'data/renamed folder')" >/dev/null
@@ -116,11 +140,17 @@ grep -Fxq 'next_cursor=' <<< "$empty_page" || fail 'empty directory did not term
 if [[ "$OSTYPE" != msys* ]]; then
     ln -s "$TEST_ROOT" "$ST_HOME/escape"
     ln -s "$TEST_ROOT/outside.txt" "$ST_HOME/data/linked.txt"
+    ln -s "$TEST_ROOT/does-not-exist.txt" "$ST_HOME/data/dangling.txt"
     expect_code 44 list_st_files "$(b64 escape)"
     expect_code 44 read_st_file "$(b64 data/linked.txt)"
     expect_code 44 st_file_action mkdir "$(b64 escape/new)"
     expect_code 44 st_file_action rename "$(b64 data/settings.json)" "$(b64 escape/overwrite)"
     expect_code 44 st_file_action trash "$(b64 data/linked.txt)"
+    expect_code 44 st_file_action create-file "$(b64 data/linked.txt)"
+    expect_code 44 st_file_action create-file "$(b64 data/dangling.txt)"
+    expect_code 44 st_file_action create-file "$(b64 escape/new-file)"
+    [[ -L "$ST_HOME/data/linked.txt" && -L "$ST_HOME/data/dangling.txt" ]] || fail 'new file creation replaced a symlink'
+    [[ ! -e "$TEST_ROOT/does-not-exist.txt" && ! -e "$TEST_ROOT/new-file" ]] || fail 'new file creation followed an outside symlink'
     [[ "$(cat "$TEST_ROOT/outside.txt")" == SECRET ]] || fail 'outside file changed'
 else
     echo 'NOTE: Windows symlink privileges unavailable; Linux CI checks symlink boundaries.'
@@ -140,4 +170,18 @@ expect_code 11 bash -c '
     write_st_file unused unused unused
 ' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
 
-echo 'PASS: file read/write, revision conflict, rename, recoverable deletion, import and path safety'
+expect_code 10 bash -c '
+    source "$1"
+    begin_operation() { [[ "$1" == create-st-file ]] || exit 99; }
+    is_running() { return 0; }
+    st_file_action() { exit 99; }
+    create_st_file unused
+' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
+expect_code 11 bash -c '
+    source "$1"
+    begin_operation() { exit 11; }
+    st_file_action() { exit 99; }
+    create_st_file unused
+' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
+
+echo 'PASS: file read/write/create, revision conflict, rename, recoverable deletion, import and path safety'
