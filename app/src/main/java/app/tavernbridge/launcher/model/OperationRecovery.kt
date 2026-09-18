@@ -21,6 +21,23 @@ internal fun shouldRestoreUpdateServer(
 internal fun retryActionAfterFailure(errorCode: String, requested: RetryAction): RetryAction =
     if (errorCode == "TERMUX_TIMEOUT") RetryAction.REFRESH else requested
 
+/** Finishing a detached child command does not prove that its caller ran the remaining steps. */
+internal fun recoveredSubstepNotice(requestedOperation: String?, completedOperation: String, status: String?): String? {
+    if (status != "success" || requestedOperation == completedOperation) return null
+    val requestedLabel = when (requestedOperation) {
+        "update" -> "업데이트"
+        "restart" -> "재시작"
+        "switch-branch" -> "브랜치 전환"
+        else -> return null
+    }
+    val completedLabel = when (completedOperation) {
+        "stop" -> "서버 종료"
+        "backup" -> if (requestedOperation == "update") "백업" else return null
+        else -> return null
+    }
+    return "현재 $completedLabel 단계 완료는 확인했습니다. 응답 지연으로 요청한 ${requestedLabel}의 전체 완료는 확인하지 못했으며 후속 단계는 자동으로 진행하지 않았습니다. 현재 상태를 확인한 뒤 원래 작업을 다시 실행해 주세요."
+}
+
 /** A callback deadline is not an operation failure while the backend is still active. */
 internal fun LauncherUiState.reconnectingAfterTimeout(
     activeEnvironment: EnvironmentStatus,

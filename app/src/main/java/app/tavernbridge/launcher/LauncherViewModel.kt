@@ -24,6 +24,7 @@ import app.tavernbridge.launcher.model.ProgressLogHistory
 import app.tavernbridge.launcher.model.belongsToStartedOperation
 import app.tavernbridge.launcher.model.RecoveredOperationStatus
 import app.tavernbridge.launcher.model.recoveredOperationStatus
+import app.tavernbridge.launcher.model.recoveredSubstepNotice
 import app.tavernbridge.launcher.model.reconnectingAfterTimeout
 import app.tavernbridge.launcher.model.resolveWorkingStartedAtMillis
 import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
@@ -355,7 +356,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun resumeDetachedOperation(fileBrowserPath: String? = null, startedAtMillis: Long? = null) {
+    private fun resumeDetachedOperation(
+        fileBrowserPath: String? = null,
+        startedAtMillis: Long? = null,
+        requestedOperation: String? = null,
+    ) {
         if (detachedOperationMonitor?.isActive == true) return
         detachedOperationMonitor = viewModelScope.launch {
             while (true) {
@@ -420,10 +425,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
                 val operation = progress?.operation.orEmpty().ifBlank { "unknown" }
                 val reportUnavailable = operation in setOf("update-preflight", "diagnose")
+                val substepNotice = recoveredSubstepNotice(requestedOperation, operation, progress?.status)
                 val resultDetail = when {
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
                     failed -> progress?.detail?.ifBlank { "작업이 실패했습니다. 로그를 확인해 주세요." }
                         ?: "작업이 실패했습니다. 로그를 확인해 주세요."
+                    substepNotice != null -> substepNotice
                     operation == "update-preflight" -> "작업은 완료됐지만 업데이트 검사 결과를 받지 못했습니다. 업데이트 확인을 다시 실행해 주세요."
                     operation == "diagnose" -> "작업은 완료됐지만 진단 보고서를 받지 못했습니다. 전체 환경 진단을 다시 실행해 주세요."
                     else -> "진행 중이던 작업을 완료했습니다."
@@ -460,7 +467,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     } else {
                         it.copy(
                             environment = environment,
-                            section = if (environment.sillyTavernInstalled && !reportUnavailable) MainSection.HOME else it.section,
+                            section = if (environment.sillyTavernInstalled && !reportUnavailable && substepNotice == null) MainSection.HOME else it.section,
                             isWorking = true,
                             workingLabel = "작업 완료",
                             workingStartedAtMillis = resolveWorkingStartedAtMillis(
@@ -1410,7 +1417,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return false
         }
         mutableState.update { it.reconnectingAfterTimeout(environment, operation) }
-        resumeDetachedOperation(startedAtMillis = startedAtMillis)
+        resumeDetachedOperation(startedAtMillis = startedAtMillis, requestedOperation = operation)
         return true
     }
 

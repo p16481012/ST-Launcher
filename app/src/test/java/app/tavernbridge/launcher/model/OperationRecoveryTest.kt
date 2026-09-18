@@ -62,6 +62,48 @@ class OperationRecoveryTest {
     }
 
     @Test
+    fun recoveredAutomaticBackupDoesNotClaimTheWholeUpdateCompleted() {
+        val notice = recoveredSubstepNotice("update", "backup", "success").orEmpty()
+        assertTrue(notice.contains("현재 백업 단계 완료는 확인"))
+        assertTrue(notice.contains("업데이트의 전체 완료는 확인하지 못했으며"))
+        assertTrue(notice.contains("후속 단계는 자동으로 진행하지 않았습니다"))
+        assertTrue(notice.contains("현재 상태를 확인한 뒤 원래 작업을 다시 실행"))
+        assertEquals(RecoveredOperationStatus.SUCCESS, recoveredOperationStatus("success"))
+    }
+
+    @Test
+    fun completedStopIsOnlyAnIntermediateStepOfCompoundRequests() {
+        for ((operation, label) in listOf("update" to "업데이트", "restart" to "재시작", "switch-branch" to "브랜치 전환")) {
+            val notice = recoveredSubstepNotice(operation, "stop", "success").orEmpty()
+            assertTrue(notice.contains("현재 서버 종료 단계 완료"))
+            assertTrue(notice.contains("${label}의 전체 완료는 확인하지 못했으며"))
+        }
+    }
+
+    @Test
+    fun completedStartCanBeTheFinalStepAndDoesNotClaimThatStepsWereSkipped() {
+        listOf("update", "restart", "switch-branch").forEach { operation ->
+            assertNull(recoveredSubstepNotice(operation, "start", "success"))
+        }
+    }
+
+    @Test
+    fun completeRequestsAndUnknownRecoveryKeepTheOrdinaryResultMessage() {
+        assertNull(recoveredSubstepNotice("update", "update", "success"))
+        assertNull(recoveredSubstepNotice("backup", "backup", "success"))
+        assertNull(recoveredSubstepNotice(null, "backup", "success"))
+        assertNull(recoveredSubstepNotice("delete-backup", "delete-backups", "success"))
+        assertNull(recoveredSubstepNotice("restart", "backup", "success"))
+    }
+
+    @Test
+    fun unfinishedOrFailedSubstepsAreNeverDescribedAsCompleted() {
+        listOf(null, "running", "error", "cancelled").forEach { status ->
+            assertNull(recoveredSubstepNotice("update", "backup", status))
+        }
+    }
+
+    @Test
     fun activeTimeoutDoesNotCreateAFailedResultOrDiscardProgress() {
         val previousResult = OperationResultSummary("backup", "백업", "완료", true,
             completedAt = "이전 작업", completedAtMillis = 1_000L, durationSeconds = 1L)
