@@ -11,6 +11,7 @@ import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
+import app.tavernbridge.launcher.model.EnvironmentRefreshGate
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
@@ -59,6 +60,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var detachedOperationMonitor: Job? = null
     private var logRefreshJob: Job? = null
     private var refreshJob: Job? = null
+    private val environmentRefreshGate = EnvironmentRefreshGate()
     private var fileBrowserJob: Job? = null
     @Volatile private var operationCancellationRequested = false
     @Volatile private var appInForeground = false
@@ -201,8 +203,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refresh() {
-        if (!appInForeground) return
-        if (state.value.isWorking && refreshJob?.isActive != true) return
+        if (!environmentRefreshGate.tryStart(
+                appInForeground = appInForeground,
+                isWorking = state.value.isWorking,
+                refreshActive = refreshJob?.isActive == true,
+            )) return
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             mutableState.update { it.copy(isWorking = true, workingLabel = "환경 확인 중", workProgress = null) }
