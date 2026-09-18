@@ -119,8 +119,10 @@ internal fun TavernFileManagerDialog(
     var trashTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
     var newFolder by remember { mutableStateOf(false) }
     var newFile by remember { mutableStateOf(false) }
+    var actionMenu by remember { mutableStateOf<FileActionMenu?>(null) }
     var externalFile by remember { mutableStateOf<TavernFileEntry?>(null) }
     val canModify = state.canModifyTavernFiles()
+    LaunchedEffect(canModify, state.fileBrowserPath) { actionMenu = null }
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp),
             shape = RoundedCornerShape(24.dp), tonalElevation = 6.dp) {
@@ -136,45 +138,66 @@ internal fun TavernFileManagerDialog(
                     }
                     IconButton(onClick = onClose, enabled = !state.fileBrowserMutating) { Icon(Icons.Outlined.Close, "닫기") }
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { onNavigate("") }, enabled = !state.fileBrowserMutating) { Text("SillyTavern") }
-                    var prefix = ""
-                    state.fileBrowserPath.split('/').filter(String::isNotBlank).forEach { segment ->
-                        prefix = listOf(prefix, segment).filter(String::isNotBlank).joinToString("/")
-                        val target = prefix
-                        Text("/")
-                        TextButton(onClick = { onNavigate(target) }, enabled = !state.fileBrowserMutating) { Text(segment) }
+                    Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { onNavigate("") }, enabled = !state.fileBrowserMutating) { Text("SillyTavern") }
+                        var prefix = ""
+                        state.fileBrowserPath.split('/').filter(String::isNotBlank).forEach { segment ->
+                            prefix = listOf(prefix, segment).filter(String::isNotBlank).joinToString("/")
+                            val target = prefix
+                            Text("/")
+                            TextButton(onClick = { onNavigate(target) }, enabled = !state.fileBrowserMutating) { Text(segment) }
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { actionMenu = FileActionMenu.CREATE }, enabled = canModify,
+                            modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Outlined.Add, "새로 만들기")
+                        }
+                        DropdownMenu(expanded = actionMenu == FileActionMenu.CREATE && canModify,
+                            onDismissRequest = { actionMenu = null }) {
+                            DropdownMenuItem(text = { Text("새 파일") },
+                                leadingIcon = { Icon(Icons.Outlined.InsertDriveFile, null) }, enabled = canModify,
+                                onClick = { actionMenu = null; newFile = true })
+                            DropdownMenuItem(text = { Text("새 폴더") },
+                                leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) }, enabled = canModify,
+                                onClick = { actionMenu = null; newFolder = true })
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { actionMenu = FileActionMenu.IMPORT }, enabled = canModify,
+                            modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Outlined.FileDownload, "가져오기")
+                        }
+                        DropdownMenu(expanded = actionMenu == FileActionMenu.IMPORT && canModify,
+                            onDismissRequest = { actionMenu = null }) {
+                            DropdownMenuItem(text = { Text("파일 가져오기") },
+                                leadingIcon = { Icon(Icons.Outlined.InsertDriveFile, null) }, enabled = canModify,
+                                onClick = { actionMenu = null; onImport() })
+                            DropdownMenuItem(text = { Text("폴더 가져오기") },
+                                leadingIcon = { Icon(Icons.Outlined.FolderOpen, null) }, enabled = canModify,
+                                onClick = { actionMenu = null; onImportFolder() })
+                        }
+                    }
+                    IconButton(onClick = onOpenDirectory, enabled = !state.fileBrowserMutating,
+                        modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Outlined.OpenInNew, "외부에서 폴더 열기")
+                    }
+                    if (state.lastTrashedEntryId.isNotBlank()) {
+                        IconButton(onClick = onUndoTrash, enabled = canModify, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Outlined.Undo, "방금 휴지통으로 옮긴 항목 복구")
+                        }
                     }
                 }
-                FilledTonalButton(onClick = onOpenDirectory, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    enabled = !state.fileBrowserMutating) {
-                    Icon(Icons.Outlined.FolderOpen, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("외부에서 폴더 열기")
-                }
-                Text("권장 파일 앱의 Termux 위치를 엽니다.\nSillyTavern 폴더를 선택하세요.",
-                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { newFolder = true }, enabled = canModify, modifier = Modifier.weight(1f)) { Text("새 폴더") }
-                    OutlinedButton(onClick = { newFile = true }, enabled = canModify, modifier = Modifier.weight(1f)) { Text("새 파일") }
-                }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onImport, enabled = canModify, modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 12.dp)) { Text("파일 가져오기") }
-                    OutlinedButton(onClick = onImportFolder, enabled = canModify, modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 12.dp)) { Text("폴더 가져오기") }
-                }
                 if (state.environment.processRunning || state.environment.operationActive) Text(
-                    "서버 또는 작업 실행 중에는 탐색만 가능합니다. 변경하려면 먼저 종료하세요.",
+                    "서버·작업 실행 중에는 탐색만 가능합니다.",
                     Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
                 if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError,
                     Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 if (state.fileBrowserNotice.isNotBlank()) Text(state.fileBrowserNotice,
                     Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
-                if (state.lastTrashedEntryId.isNotBlank()) TextButton(onClick = onUndoTrash, enabled = canModify,
-                    modifier = Modifier.padding(horizontal = 8.dp)) { Text("방금 휴지통으로 옮긴 항목 복구") }
                 if (state.fileBrowserMutating) {
                     Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
                         FileOperationProgress(state.workProgress, state.workingLabel)
@@ -245,6 +268,8 @@ internal fun TavernFileManagerDialog(
         state.editingFile?.let { file -> TavernTextEditor(file, state, onSave, onCloseEditor) }
     }
 }
+
+private enum class FileActionMenu { CREATE, IMPORT }
 
 @Composable
 private fun EntryNameDialog(title: String, initial: String, onDismiss: () -> Unit, nameHint: String? = null,
