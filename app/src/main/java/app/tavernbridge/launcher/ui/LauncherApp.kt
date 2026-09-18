@@ -466,6 +466,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onStart = viewModel::start,
                         onStop = viewModel::stop,
                         onRestart = viewModel::restart,
+                        onRepair = viewModel::repair,
                         onSetup = { viewModel.selectSection(MainSection.SETUP) },
                         onOpenTermuxSettings = viewModel::openTermuxAppSettings,
                         onOpenTermux = viewModel::openTermux,
@@ -479,6 +480,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onOpenTermux = viewModel::openTermux,
                             onRefresh = viewModel::refresh,
                         )
+                    } else if (state.environment.recoveryPending) {
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+                            RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
+                        }
                     } else if (state.environment.sillyTavernInstalled) {
                         ManagementScreen(
                             state = state,
@@ -661,6 +666,7 @@ private fun HomeScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
+    onRepair: () -> Unit,
     onSetup: () -> Unit,
     onOpenTermuxSettings: () -> Unit,
     onOpenTermux: () -> Unit,
@@ -676,16 +682,18 @@ private fun HomeScreen(
         item {
             if (!state.environmentChecked) {
                 EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh)
+            } else if (environment.recoveryPending) {
+                RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
             } else if (!environment.sillyTavernInstalled) {
                 EmptyHomeCard(onSetup)
             } else {
                 ServerHeroCard(environment, onOpen, onStart, onStop)
             }
         }
-        state.lastOperationResult?.let { summary ->
+        if (!environment.recoveryPending) state.lastOperationResult?.let { summary ->
             item { OperationResultCard(summary, onRetry) }
         }
-        if (environment.sillyTavernInstalled) {
+        if (environment.sillyTavernInstalled && !environment.recoveryPending) {
             item {
                 QuickAction(
                     modifier = Modifier.fillMaxWidth(),
@@ -704,6 +712,40 @@ private fun HomeScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun RestoreRecoveryCard(
+    state: LauncherUiState,
+    onRepair: () -> Unit,
+    onStop: () -> Unit,
+    onOpenTermux: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("중단된 복원을 확인해 주세요", style = MaterialTheme.typography.titleLarge)
+            SelectionContainer {
+                Text(
+                    state.environment.recoveryMessage.ifBlank {
+                        "완료되지 않은 복원 기록이 있습니다. 보호사본을 지우거나 새로 설치하지 말고 점검·복구를 실행해 주세요.",
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Button(
+                onClick = if (state.environment.processRunning) onStop else onRepair,
+                enabled = !state.isWorking && !state.environment.operationActive,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.environment.processRunning) "먼저 서버 종료" else "점검·복구")
+            }
+            TextButton(onClick = onOpenTermux) { Text("Termux 열기") }
         }
     }
 }

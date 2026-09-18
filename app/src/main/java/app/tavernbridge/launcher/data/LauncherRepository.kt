@@ -120,7 +120,7 @@ class LauncherRepository(private val context: Context) {
             termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
         )
         progress?.completedItem("Termux 설치·프로세스·도구 검사")
-        if (!status.operationActive) importStaging.cleanAbandoned()
+        if (!status.operationActive && !status.recoveryPending) importStaging.cleanAbandoned()
         return status
     }
 
@@ -541,6 +541,17 @@ class LauncherRepository(private val context: Context) {
             status = if (version.isBlank()) DiagnosticStatus.ERROR else DiagnosticStatus.OK,
         )
 
+        val recovery = DoctorOutputParser.parse(result.stdout)
+        if (recovery.recoveryPending) {
+            items += DiagnosticItem(
+                id = "restore_recovery",
+                title = "중단된 복원",
+                value = "기존 데이터 복구 필요",
+                detail = recovery.recoveryMessage,
+                status = DiagnosticStatus.ERROR,
+                recommendation = "서버를 종료한 뒤 홈 또는 관리 화면의 점검·복구를 실행해 주세요. 자동 복구가 거부되면 보호사본을 지우지 말고 진단 내용을 확인해 주세요.",
+            )
+        }
         items += storageItem("termux_storage", "Termux 저장 공간", value("termux_free_bytes"))
         items += if (enabled("downloads_ready")) {
             storageItem("download_storage", "휴대폰 Download 백업 폴더", value("downloads_free_bytes"))
@@ -897,7 +908,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     private fun managerBootstrapCommand(): String {
-        return listOf("progress.sh", "archive-progress.sh", "safe-backup.sh", "manager.sh").joinToString(" && ") { name ->
+        return managerAssetNames.joinToString(" && ") { name ->
             val script = context.assets.open(name).bufferedReader().use { it.readText() }
             val path = TermuxContract.MANAGER_PATH.substringBeforeLast('/') + "/$name"
             createManagerBootstrapCommand(path, encodeManagerScript(script))

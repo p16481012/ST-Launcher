@@ -247,7 +247,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 } else {
                     null
                 }
-                val recoveredTerminal = !environment.operationActive &&
+                val recoveredTerminal = !environment.operationActive && !environment.recoveryPending &&
                     progress?.status in setOf("success", "error", "cancelled") &&
                     (progress?.finishedAtMillis ?: 0L) > (state.value.lastOperationResult?.completedAtMillis ?: 0L)
                 val recoveredFailure = recoveredTerminal && progress?.status != "success"

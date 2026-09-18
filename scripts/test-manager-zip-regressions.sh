@@ -19,6 +19,15 @@ zip_regression_setup() {
     ensure_import_runtime() { command -v node >/dev/null && command -v git >/dev/null; }
     curl() { return 1; }
     ensure_archive_tools() { command -v zip >/dev/null && command -v unzip >/dev/null; }
+    # Git Bash cannot apply RLIMIT_FSIZE to Windows Node. Streamed size/CRC
+    # checks remain real; Linux CI also exercises the actual OS-level limit.
+    if [[ "$OSTYPE" == msys* ]]; then
+        ulimit() { :; }
+        # Windows denies rename-over-open when the shell monitor reads a Node
+        # progress file. Linux CI keeps the monitor; its behavior also has a
+        # separate test suite. Do not turn this host constraint into a ZIP failure.
+        start_progress_monitor() { :; }
+    fi
     install_dependencies() { echo "Unexpected dependency installation in ZIP fixture" >&2; return 99; }
 }
 

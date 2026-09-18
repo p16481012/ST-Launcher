@@ -102,7 +102,7 @@ class ManagerBootstrapTest {
         assertEquals(setOf("manager.sh"), temporary.root.list().orEmpty().toSet())
     }
 
-    private fun bundledAssets(): List<File> = listOf("progress.sh", "archive-progress.sh", "manager.sh").map { name ->
+    private fun bundledAssets(): List<File> = managerAssetNames.map { name ->
         val source = File("src/main/assets/$name").takeIf { it.isFile } ?: File("app/src/main/assets/$name")
         assertTrue("Bundled $name must be available to the regression test", source.isFile)
         source

@@ -16,7 +16,8 @@ internal fun shouldRestoreUpdateServer(
     wasRunning: Boolean,
     environment: EnvironmentStatus,
     rollbackFailed: Boolean,
-): Boolean = wasRunning && !environment.operationActive && !environment.processRunning && !rollbackFailed
+): Boolean = wasRunning && !environment.operationActive && !environment.processRunning &&
+    !environment.recoveryPending && !rollbackFailed
 
 internal fun retryActionAfterFailure(errorCode: String, requested: RetryAction): RetryAction =
     if (errorCode == "TERMUX_TIMEOUT") RetryAction.REFRESH else requested

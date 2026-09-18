@@ -38,6 +38,7 @@ class OperationRecoveryTest {
     @Test
     fun failedRollbackMustNotLaunchAnUnsafeInstallation() {
         assertFalse(shouldRestoreUpdateServer(true, EnvironmentStatus(), rollbackFailed = true))
+        assertFalse(shouldRestoreUpdateServer(true, EnvironmentStatus(recoveryPending = true), rollbackFailed = false))
     }
 
     @Test

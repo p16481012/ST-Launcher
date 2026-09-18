@@ -20,6 +20,7 @@ class FileManagementModelsTest {
         assertFalse(idle.copy(fileBrowserMutating = true).canModifyTavernFiles())
         assertFalse(idle.copy(environment = idle.environment.copy(processRunning = true)).canModifyTavernFiles())
         assertFalse(idle.copy(environment = idle.environment.copy(operationActive = true)).canModifyTavernFiles())
+        assertFalse(idle.copy(environment = idle.environment.copy(recoveryPending = true)).canModifyTavernFiles())
         assertFalse(idle.copy(environment = idle.environment.copy(managerConnected = false)).canModifyTavernFiles())
     }
 }

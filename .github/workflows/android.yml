@@ -39,6 +39,7 @@ jobs:
           bash -n app/src/main/assets/progress.sh
           bash -n app/src/main/assets/archive-progress.sh
           bash -n app/src/main/assets/safe-backup.sh
+          bash -n app/src/main/assets/install-validation.sh
 
       - name: Test manager safety helpers
         run: |
@@ -49,6 +50,16 @@ jobs:
           bash scripts/test-archive-progress.sh
           bash scripts/test-progress-checks.sh
           bash scripts/test-safe-backup.sh
+
+      - name: Repeat isolated import and interrupted-restore simulations
+        run: |
+          for pass in 1 2; do
+            echo "Safety simulation pass $pass"
+            bash scripts/test-import-normalization.sh
+            bash scripts/test-import-ambiguous-native.sh
+            bash scripts/test-install-validation.sh
+            bash scripts/test-restore-recovery.sh
+          done
 
       - name: Test, lint, and build debug and unsigned release APKs
         run: ./gradlew --no-daemon test lint assembleDebug assembleRelease

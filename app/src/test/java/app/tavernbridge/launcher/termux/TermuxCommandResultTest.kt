@@ -6,6 +6,17 @@ import org.junit.Test
 
 class TermuxCommandResultTest {
     @Test
+    fun `runtime validation and interrupted restore retain actionable error codes`() {
+        mapOf(25 to "RESTORE_ROLLBACK_REQUIRED", 56 to "NODE_VERSION_UNSUPPORTED", 57 to "NODE_VERSION_CHECK_FAILED")
+            .forEach { (exitCode, code) ->
+                val result = TermuxCommandResult("test", "", "원본과 보호사본은 유지했습니다.", exitCode, -1, "")
+                assertFalse(result.isSuccess)
+                assertTrue(result.readableError().startsWith("[$code]"))
+                assertTrue(result.readableError().contains("보호사본"))
+            }
+    }
+
+    @Test
     fun `safety backup failures never masquerade as branch or command errors`() {
         mapOf(35 to "SAFETY_BACKUP_NO_SPACE", 36 to "SAFETY_BACKUP_FAILED", 37 to "SAFETY_BACKUP_SOURCE_CHANGED")
             .forEach { (exitCode, code) ->

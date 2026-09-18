@@ -143,6 +143,8 @@ prepare_full_recovery_fixture() {
     mv "$ST_HOME" "$RESTORE_ROLLBACK_DIR/full-install"
     RESTORE_FULL_ORIGINAL_MOVED=1
     mkdir -p "$ST_HOME/data"
+    RESTORE_INSTALLATION_ID="$(restore_file_identity "$ST_HOME")"
+    write_restore_journal
     printf 'new-partial-data\n' > "$ST_HOME/data/value.txt"
     printf 'new-hash\n' > "$DEPENDENCY_HASH_FILE"
     CURRENT_OPERATION=restore

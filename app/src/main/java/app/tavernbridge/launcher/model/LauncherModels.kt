@@ -70,6 +70,8 @@ data class EnvironmentStatus(
     val modifiedFiles: List<String> = emptyList(),
     val processRunning: Boolean = false,
     val operationActive: Boolean = false,
+    val recoveryPending: Boolean = false,
+    val recoveryMessage: String = "",
     val serverReachable: Boolean = false,
     val portListening: Boolean = false,
     val port: Int = 8000,

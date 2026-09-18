@@ -2,6 +2,7 @@ package app.tavernbridge.launcher.data
 
 import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.SillyBranch
+import app.tavernbridge.launcher.security.redactSensitiveText
 import java.util.Base64
 
 object DoctorOutputParser {
@@ -31,6 +32,10 @@ object DoctorOutputParser {
             }.getOrDefault("").lineSequence().filter(String::isNotBlank).toList(),
             processRunning = values["running"] == "1",
             operationActive = values["operation_active"] == "1",
+            recoveryPending = values["recovery_pending"] == "1",
+            recoveryMessage = redactSensitiveText(runCatching {
+                String(Base64.getDecoder().decode(values["recovery_error_b64"].orEmpty()), Charsets.UTF_8)
+            }.getOrDefault(""), maxLength = 4_000),
             portListening = values["port_listening"] == "1",
             port = values["port"]?.toIntOrNull() ?: 8000,
             externalAccessEnabled = values["external_access"] == "1",

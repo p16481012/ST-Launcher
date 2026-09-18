@@ -4,6 +4,11 @@ import java.io.ByteArrayOutputStream
 import java.util.Base64
 import java.util.zip.GZIPOutputStream
 
+// Keep production deployment and payload-size regression tests on the same asset list.
+internal val managerAssetNames = listOf(
+    "progress.sh", "archive-progress.sh", "safe-backup.sh", "install-validation.sh", "manager.sh",
+)
+
 internal fun encodeManagerScript(script: String): String {
     // Keep RUN_COMMAND's single shell argument below Linux's per-argument limit.
     val compressed = ByteArrayOutputStream().apply {

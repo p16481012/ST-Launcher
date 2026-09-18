@@ -66,6 +66,8 @@ internal object LauncherErrorCode {
         53 -> "INSTALL_IMPORT_UNSAFE_ENTRY"
         54 -> "INSTALL_IMPORT_NO_SPACE"
         55 -> "INSTALL_IMPORT_COPY_FAILED"
+        56 -> "NODE_VERSION_UNSUPPORTED"
+        57 -> "NODE_VERSION_CHECK_FAILED"
         64 -> "INVALID_ARGUMENT"
         130 -> "OPERATION_CANCELLED"
         else -> if (androidErrorCode != Activity.RESULT_OK) "TERMUX_COMMAND_FAILED" else "UNKNOWN_COMMAND_FAILURE"

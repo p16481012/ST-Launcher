@@ -25,6 +25,7 @@ HEARTBEAT_FILE="$RUN_DIR/progress-heartbeat.env"
 PROGRESS_HELPER="${ST_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/progress.sh}"
 ARCHIVE_PROGRESS_HELPER="${ST_ARCHIVE_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/archive-progress.sh}"
 SAFETY_BACKUP_HELPER="${ST_SAFETY_BACKUP_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/safe-backup.sh}"
+INSTALL_VALIDATION_HELPER="${ST_INSTALL_VALIDATION_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/install-validation.sh}"
 PROGRESS_MONITOR_PID=""
 PROGRESS_MONITOR_START=""
 LAST_RESULT_FILE="$RUN_DIR/last-result.env"
@@ -48,9 +49,18 @@ RESTORE_DEPENDENCY_SAVED=0
 RESTORE_RECOVERY_RETAINED=0
 RESTORE_FULL_ORIGINAL_MOVED=0
 RESTORE_FULL_DATA_RECOVERED=0
+RESTORE_JOURNAL_STATE="applying"
+RESTORE_JOURNAL_PUBLISHED=0
+RESTORE_ORIGINAL_ID="none"
+RESTORE_INSTALLATION_ID="none"
+RESTORE_RECOVERY_GUARD_FAILED=0
+RESTORE_PENDING_DETAIL=""
+RESTORE_PENDING_BLOCKED=0
 declare -a RESTORE_AFFECTED_PATHS=()
 declare -a RESTORE_ORIGINAL_PATHS=()
 declare -a RESTORE_RECOVERED_PATHS=()
+declare -a RESTORE_PATH_IDENTITIES=()
+declare -a RESTORE_PENDING_WORKS=()
 
 mkdir -p "$RUN_DIR" "$LOG_DIR" "$BACKUP_DIR" "$UPDATE_DIR"
 
@@ -157,6 +167,8 @@ manager_error_code() {
         *:43) echo "FILE_ALREADY_EXISTS" ;;
         *:44) echo "FILE_PROTECTED_PATH" ;;
         *:45) echo "FILE_OPERATION_FAILED" ;;
+        *:56) echo "NODE_VERSION_UNSUPPORTED" ;;
+        *:57) echo "NODE_VERSION_CHECK_FAILED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
         *) echo "UNKNOWN_COMMAND_FAILURE" ;;
@@ -522,7 +534,7 @@ operation_cleanup() {
     set +e
     local progress_status=""
     progress_status="$(sed -n 's/^status=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1)"
-    local restore_interrupted=0
+    local restore_interrupted="$RESTORE_RECOVERY_GUARD_FAILED"
     if (( RESTORE_TRANSACTION_ACTIVE )); then
         restore_interrupted=1
         (( code == 0 )) && code=25
@@ -621,6 +633,9 @@ begin_operation() {
     OPERATION_STARTED_EPOCH="$(date +%s)"
     export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
+    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose ]]; then
+        recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
+    fi
     # Only the new lock owner may discard stale progress from the prior run.
     rm -f -- "$PROGRESS_FILE" "$HEARTBEAT_FILE"
     LAST_LOGGED_PROGRESS=""
@@ -1132,6 +1147,9 @@ NODE
 }
 
 doctor() {
+    inspect_restore_recovery
+    printf 'recovery_pending=%s\n' "$(( ${#RESTORE_PENDING_WORKS[@]} > 0 ? 1 : 0 ))"
+    printf 'recovery_error_b64=%s\n' "$(printf '%s' "$RESTORE_PENDING_DETAIL" | base64 -w 0)"
     echo "protocol=1"
     echo "manager_version=$MANAGER_VERSION"
     echo "termux_ready=1"
@@ -1406,7 +1424,7 @@ backup_selected() {
 
     local -a paths=()
     local -a custom_paths=()
-    local item
+    local item path_count included_kinds=""
     IFS=',' read -ra selected_kinds <<< "$kinds"
     if [[ ",$kinds," == *,full,* ]]; then
         paths=(".")
@@ -1414,6 +1432,7 @@ backup_selected() {
         custom_folders=""
     else
         for item in "${selected_kinds[@]}"; do
+            path_count=${#paths[@]}
             case "$item" in
                 user_data) [[ -d "$ST_HOME/data" ]] && paths+=("data") ;;
                 extensions)
@@ -1428,14 +1447,20 @@ backup_selected() {
                     for custom in "${requested_custom[@]}"; do
                         [[ "$custom" =~ ^[A-Za-z0-9_[:space:]-]+$ ]] || { echo "허용되지 않는 사용자 폴더 이름입니다: $custom" >&2; exit 64; }
                         local relative="data/default-user/$custom"
-                        if [[ -e "$ST_HOME/$relative" ]]; then
+                        if [[ -d "$ST_HOME/$relative" ]]; then
                             paths+=("$relative")
                             custom_paths+=("$custom")
                         fi
                     done
                     ;;
             esac
+            # A requested but absent item must not make the resulting backup
+            # impossible to restore (for example data without config.yaml).
+            if (( ${#paths[@]} > path_count )) && [[ ",$included_kinds," != *",$item,"* ]]; then
+                included_kinds="${included_kinds:+$included_kinds,}$item"
+            fi
         done
+        kinds="$included_kinds"
     fi
     if (( ${#paths[@]} == 0 )); then
         echo "선택한 백업 항목에서 저장할 파일을 찾지 못했습니다." >&2
@@ -1553,23 +1578,47 @@ import_backup() {
     mkdir -p "$extracted" "$normalized" "$work/rollback"
     extract_restore_archive "$archive" "$extracted"
 
-    # Native backups keep their manifest semantics, but use the same single
-    # extraction/apply path as foreign backups instead of creating another ZIP.
-    if [[ -f "$extracted/.st-launcher-manifest" ]]; then
-        restore_extracted_tree "$extracted" "$file_name"
-        echo "imported_restore=1"
-        return 0
-    fi
-
     write_progress 30 "백업 구조 분석" "한 번 해제한 파일에서 복원할 데이터 구조를 확인하고 있습니다."
     local root="$extracted"
     local -a top_entries=()
-    while IFS= read -r -d '' entry; do top_entries+=("$entry"); done < <(find "$extracted" -mindepth 1 -maxdepth 1 -print0)
-    # Keep known data roots intact. A single default-user/data folder is not a
-    # generic archive wrapper; unwrapping it would lose other users/settings.
-    if (( ${#top_entries[@]} == 1 )) && [[ -d "${top_entries[0]}" &&
-        ! -d "$root/data" && ! -d "$root/default-user" && ! -d "$root/characters" && ! -d "$root/chats" ]]; then
+    while :; do
+        # A manifest retains its original restore scope even when a ZIP was
+        # repacked inside one or more wrapper folders. Never rewrite a native
+        # custom/extensions-only backup as a replacement of all user data.
+        if [[ -f "$root/.st-launcher-manifest" ]]; then
+            restore_extracted_tree "$root" "$file_name"
+            echo "imported_restore=1"
+            return 0
+        fi
+        # Pre-1.12 user data lived in public/. Do not report a config-only
+        # success while silently omitting the old characters and conversations.
+        if [[ -d "$root/public/characters" || -d "$root/public/chats" ||
+              -d "$root/public/group chats" || -d "$root/public/groups" ||
+              -d "$root/public/worlds" || -f "$root/public/settings.json" ||
+              -f "$root/public/stats.json" ]]; then
+            echo "public 폴더에 사용자 데이터를 저장한 구형 SillyTavern 백업은 직접 복원할 수 없습니다. 원본 ZIP은 그대로 보관하고, 기존 SillyTavern에서 데이터 형식을 갱신한 뒤 data 폴더가 포함된 백업을 다시 가져와 주세요. 기존 설치는 변경하지 않았습니다." >&2
+            exit 23
+        fi
+        # Keep known data roots intact. A single default-user/data folder is
+        # not a wrapper; descending into it could change the account/scope.
+        if [[ -d "$root/data" || -d "$root/default-user" || -d "$root/characters" ||
+              -d "$root/chats" || -f "$root/settings.json" ]]; then break; fi
+        top_entries=()
+        while IFS= read -r -d '' entry; do top_entries+=("$entry"); done < <(find "$root" -mindepth 1 -maxdepth 1 -print0)
+        (( ${#top_entries[@]} == 1 )) && [[ -d "${top_entries[0]}" ]] || break
         root="${top_entries[0]}"
+    done
+
+    # A native manifest outside the unambiguous wrapper chain must never fall
+    # through to generic data replacement (reserved data roots, siblings, etc.).
+    local remaining_manifest
+    if ! remaining_manifest="$(find "$extracted" -name .st-launcher-manifest -print -quit)"; then
+        echo "백업 항목 정보를 안전하게 확인하지 못했습니다. 원본 ZIP은 보관하고 백업 구조를 확인해 주세요. 기존 설치는 변경하지 않았습니다." >&2
+        exit 23
+    fi
+    if [[ -n "$remaining_manifest" ]]; then
+        echo "런처 백업의 항목 정보가 모호한 위치에 있어 복원 범위를 결정할 수 없습니다. .st-launcher-manifest가 ZIP 최상위에 있는 원본 백업을 가져와 주세요. 기존 설치는 변경하지 않았습니다." >&2
+        exit 23
     fi
 
     local kinds=""
@@ -2397,9 +2446,52 @@ validate_install_tree() {
 }
 
 install_source_snapshot() {
-    # Include ignored dependencies too: cleanup must preserve the original if
-    # another launcher writes anywhere in it while the copy is being prepared.
-    find "$1" -printf '%y %i %s %T@ %p\0' | LC_ALL=C sort -z | sha256sum | awk '{print $1}'
+    # Include contents and nanosecond ctime, including ignored dependencies:
+    # matching size/mtime alone cannot authorize deleting a changed original.
+    local phase
+    phase="$(sed -n 's/^phase=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
+        ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_PROGRESS_PHASE="${phase:-원본 내용 검증}" \
+        ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
+        bash "$INSTALL_VALIDATION_HELPER" snapshot "$1"
+}
+
+validate_install_runtime() {
+    local npm_path output status
+    if [[ ! -r "$INSTALL_VALIDATION_HELPER" ]] || ! command -v node >/dev/null 2>&1; then
+        output="Node.js 요구 조건 검사기를 실행할 수 없습니다. 런처를 다시 실행하고 Termux의 Node.js/npm 설치를 확인해 주세요."
+        printf '%s\n' "$output" >> "$LOG_FILE"
+        printf '%s\n' "$output" >&2
+        return 57
+    fi
+    npm_path="$(command -v npm || true)"
+    if output="$(bash "$INSTALL_VALIDATION_HELPER" runtime "$1" "$npm_path" "$PREFIX" 2>&1)"; then
+        printf '%s\n' "$output" >> "$LOG_FILE"
+        return 0
+    else
+        status=$?
+        [[ "$status" == 56 || "$status" == 57 ]] || status=57
+        printf '%s\n' "$output" >> "$LOG_FILE"
+        printf '%s\n' "$output" >&2
+        return "$status"
+    fi
+}
+
+remove_verified_install_source() {
+    local source="$1" identity="$2" expected="$3" current
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 1
+    installation_server_running "$source" && return 1
+    [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
+        "$(stat -c '%d:%i' -- "$source" 2>/dev/null || true)" == "$identity" ]] || return 1
+    # This potentially long content check runs after the final UI phase write,
+    # immediately before deletion. Any read failure preserves the original.
+    current="$(install_source_snapshot "$source")" || return 1
+    [[ "$current" == "$expected" ]] || return 1
+    # A different launcher may have started while the full tree was hashed.
+    installation_server_running "$source" && return 1
+    [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
+        "$(stat -c '%d:%i' -- "$source" 2>/dev/null || true)" == "$identity" ]] || return 1
+    rm -rf -- "$source" && [[ ! -e "$source" && ! -L "$source" ]]
 }
 
 installation_server_running() {
@@ -2483,6 +2575,9 @@ import_install() {
     write_progress 0 "설치 구조 검사" "기존 설치의 파일 구조를 검사하고 있습니다. 전체 검사 명령의 완료를 기다립니다."
     validate_install_tree "$source" || exit $?
     record_processing "원본 설치 구조 검사 완료"
+    write_progress 0 "Node.js 요구 조건 검사" "가져올 설치의 버전 조건을 현재 Node.js와 정확히 비교하고 있습니다."
+    validate_install_runtime "$source" || exit $?
+    record_processing "가져올 설치의 Node.js 요구 조건 검사 완료"
     destination="$(realpath -m "$ST_HOME")"
     if [[ "$source" == "$destination" ]]; then
         write_progress 100 "설치 확인 완료" "이미 런처의 설치 위치에 있는 SillyTavern입니다. 폴더를 이동하지 않았습니다." success
@@ -2493,7 +2588,7 @@ import_install() {
     fi
     [[ ! -L "$ST_HOME" ]] || exit 51
     identity="$(stat -c '%d:%i' -- "$source")" || exit 50
-    write_progress 0 "원본 상태 기록" "작업 중 변경 여부를 비교할 원본 파일 정보를 기록하고 있습니다."
+    write_progress 0 "원본 상태 기록" "원본 파일 내용(SHA256)과 메타데이터를 검사합니다. 파일이 많으면 시간이 걸릴 수 있습니다."
     snapshot="$(install_source_snapshot "$source")" || exit 53
     record_processing "원본 파일 상태 기록 완료"
     write_progress 0 "설치 이동 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
@@ -2521,21 +2616,13 @@ import_install() {
     restore_extracted_tree "$extracted" "existing-installation"
     # Destination is now complete and the rollback transaction has committed.
     # A late source change or cleanup failure does not invalidate that success.
-    write_progress 0 "원본 변경 재확인" "새 설치는 준비되었습니다. 원본 정리 전에 파일 변경 여부를 다시 검사합니다."
-    if ! installation_server_running "$source" && [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
-        "$(stat -c '%d:%i' -- "$source" 2>/dev/null || true)" == "$identity" &&
-        "$(install_source_snapshot "$source" 2>/dev/null || true)" == "$snapshot" ]]; then
-        write_progress 0 "원본 정리" "검증된 이전 설치 폴더를 정리하고 있습니다. 정리 명령의 완료를 기다립니다."
-        if rm -rf -- "$source" && [[ ! -e "$source" && ! -L "$source" ]]; then
-            echo "source_removed=1"
-            write_progress 100 "설치 이동 완료" "기존 설치를 런처 위치로 옮겼습니다. 검증된 원본 폴더를 정리했습니다." success
-        else
-            echo "source_cleanup_failed=1"
-            write_progress 100 "설치 이동 완료 · 원본 정리 필요" "새 설치는 정상입니다. 원본 폴더 정리는 완료하지 못했습니다." success
-        fi
+    write_progress 0 "원본 변경 재확인 및 정리" "새 설치는 준비되었습니다. 원본 내용을 마지막으로 검사하고 변경되지 않은 원본만 정리합니다."
+    if remove_verified_install_source "$source" "$identity" "$snapshot"; then
+        echo "source_removed=1"
+        write_progress 100 "설치 이동 완료" "기존 설치를 런처 위치로 옮겼습니다. 검증된 원본 폴더를 정리했습니다." success
     else
         echo "source_cleanup_failed=1"
-        write_progress 100 "설치 이동 완료 · 원본 유지" "새 설치는 정상입니다. 원본이 변경되었거나 원본 서버가 실행되어 원본 폴더를 지우지 않았습니다." success
+        write_progress 100 "설치 이동 완료 · 원본 정리 필요" "새 설치는 정상입니다. 원본 변경·접근 오류·실행 중 상태 또는 정리 실패로 원본 자동 정리를 완료하지 않았습니다." success
     fi
     echo "imported_installation=1"
     echo "same_installation=0"
@@ -2557,9 +2644,13 @@ prepare_restore_transaction() {
     RESTORE_RECOVERY_RETAINED=0
     RESTORE_FULL_ORIGINAL_MOVED=0
     RESTORE_FULL_DATA_RECOVERED=0
+    RESTORE_JOURNAL_STATE="applying"
+    RESTORE_ORIGINAL_ID="none"
+    RESTORE_INSTALLATION_ID="none"
     RESTORE_AFFECTED_PATHS=()
     RESTORE_ORIGINAL_PATHS=()
     RESTORE_RECOVERED_PATHS=()
+    RESTORE_PATH_IDENTITIES=()
 }
 
 normalize_restore_paths() {
@@ -2584,29 +2675,252 @@ restore_destination_safe() {
     [[ "$resolved" == "$expected/"* ]]
 }
 
+restore_file_identity() {
+    if [[ -e "$1" || -L "$1" ]]; then stat -c '%d:%i' -- "$1"; else printf 'none\n'; fi
+}
+
+restore_recovery_work_safe() {
+    local work="$1" name="${1##*/}" base installation
+    [[ "$name" =~ ^(restore|import|install-import)-work-[0-9]+$ ]] || return 1
+    [[ -d "$work" && ! -L "$work" && ! -L "$BACKUP_DIR" && ! -L "$work/rollback" && ! -L "$work/recovery.env" ]] || return 1
+    base="$(realpath -m "$BACKUP_DIR")" || return 1
+    installation="$(realpath -m "$ST_HOME")" || return 1
+    [[ "$installation" != / && "$installation" != "$(realpath -m "$HOME")" &&
+        "$installation" != "$base/$name" && "$installation" != "$base/$name/"* && "$base/$name" != "$installation/"* ]] || return 1
+    [[ "$(realpath -m "$(dirname "$work")")" == "$base" && "$(realpath -m "$work")" == "$base/$name" ]]
+}
+
 write_restore_journal() {
-    printf 'format=st-launcher-restore-recovery-v1\nmode=%s\ninstallation_b64=%s\nhad_installation=%s\ndependency_saved=%s\naffected_b64=%s\noriginal_paths_b64=%s\n' \
-        "$RESTORE_TRANSACTION_KIND" "$(printf '%s' "$ST_HOME" | base64 -w 0)" \
-        "$RESTORE_HAD_INSTALLATION" "$RESTORE_DEPENDENCY_SAVED" \
-        "$(printf '%s\n' "${RESTORE_AFFECTED_PATHS[@]}" | base64 -w 0)" \
-        "$(printf '%s\n' "${RESTORE_ORIGINAL_PATHS[@]}" | base64 -w 0)" > "$CURRENT_WORK_DIR/recovery.env"
+    RESTORE_JOURNAL_PUBLISHED=0
+    restore_recovery_work_safe "$CURRENT_WORK_DIR" || return 1
+    [[ -d "$CURRENT_WORK_DIR/rollback" ]] || return 1
+    local temp path identity index=0
+    if [[ "$RESTORE_ORIGINAL_ID" == none && "$RESTORE_TRANSACTION_KIND" == full && "$RESTORE_HAD_INSTALLATION" == 1 ]]; then
+        RESTORE_ORIGINAL_ID="$(restore_file_identity "$ST_HOME")" || return 1
+    fi
+    if [[ "$RESTORE_INSTALLATION_ID" == none && "$RESTORE_TRANSACTION_KIND" == partial ]]; then
+        RESTORE_INSTALLATION_ID="$(restore_file_identity "$ST_HOME")" || return 1
+    fi
+    for path in "${RESTORE_AFFECTED_PATHS[@]}"; do
+        if [[ -z "${RESTORE_PATH_IDENTITIES[$index]:-}" ]]; then
+            identity=none
+            if array_contains "$path" "${RESTORE_ORIGINAL_PATHS[@]}"; then
+                identity="$(restore_file_identity "$RESTORE_ROLLBACK_DIR/$path")" || return 1
+                [[ "$identity" != none ]] || return 1
+            fi
+            RESTORE_PATH_IDENTITIES[$index]="$identity"
+        fi
+        index=$((index + 1))
+    done
+    temp="$(mktemp "$CURRENT_WORK_DIR/recovery.env.tmp.XXXXXX")" || return 1
+    {
+        printf 'format=st-launcher-restore-recovery-v2\nmode=%s\nstate=%s\ninstallation_b64=%s\nhad_installation=%s\ndependency_saved=%s\noriginal_identity=%s\ninstallation_identity=%s\n' \
+            "$RESTORE_TRANSACTION_KIND" "$RESTORE_JOURNAL_STATE" "$(printf '%s' "$ST_HOME" | base64 -w 0)" \
+            "$RESTORE_HAD_INSTALLATION" "$RESTORE_DEPENDENCY_SAVED" "$RESTORE_ORIGINAL_ID" "$RESTORE_INSTALLATION_ID" || return 1
+        index=0
+        for path in "${RESTORE_AFFECTED_PATHS[@]}"; do
+            printf 'path=%s|%s\n' "$(printf '%s' "$path" | base64 -w 0)" "${RESTORE_PATH_IDENTITIES[$index]}" || return 1
+            index=$((index + 1))
+        done
+    } > "$temp" || return 1
+    # Flush the complete new record before atomic replacement. Never source it.
+    sync -f "$temp" 2>/dev/null || sync || return 1
+    mv -f -- "$temp" "$CURRENT_WORK_DIR/recovery.env" || return 1
+    RESTORE_JOURNAL_PUBLISHED=1
+    sync -f "$CURRENT_WORK_DIR" 2>/dev/null || sync || return 1
+}
+
+commit_restore_transaction() {
+    RESTORE_JOURNAL_STATE=committed
+    if ! write_restore_journal; then
+        # Once atomically published, a committed marker must never describe an
+        # in-progress rollback. Preserve both copies if its final flush fails.
+        if (( RESTORE_JOURNAL_PUBLISHED )); then
+            RESTORE_TRANSACTION_ACTIVE=0
+            RESTORE_RECOVERY_RETAINED=1
+        else
+            RESTORE_JOURNAL_STATE=applying
+        fi
+        return 1
+    fi
+    RESTORE_TRANSACTION_ACTIVE=0
+}
+
+decode_restore_journal_path() {
+    local encoded="$1" decoded
+    [[ "$encoded" =~ ^[A-Za-z0-9+/]+={0,2}$ && ${#encoded} -le 16384 ]] || return 1
+    decoded="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || return 1
+    [[ -n "$decoded" && "$decoded" != *$'\n'* && "$decoded" != *$'\r'* && "$decoded" != *$'\t'* &&
+        "$(printf '%s' "$decoded" | base64 -w 0)" == "$encoded" ]] || return 1
+    printf '%s\n' "$decoded"
+}
+
+load_restore_journal() {
+    local work="$1" line key value seen='|' installation="" path identity
+    restore_recovery_work_safe "$work" || return 1
+    [[ -f "$work/recovery.env" && "$(stat -c %s "$work/recovery.env")" -le 1048576 ]] || return 1
+    prepare_restore_transaction "" "$work/rollback"
+    CURRENT_WORK_DIR="$work"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == *=* ]] || return 1
+        key="${line%%=*}"; value="${line#*=}"
+        if [[ "$key" != path ]]; then
+            [[ "$seen" != *"|$key|"* ]] || return 1
+            seen="$seen$key|"
+        fi
+        case "$key" in
+            format) [[ "$value" == st-launcher-restore-recovery-v2 ]] || return 1 ;;
+            mode) [[ "$value" == full || "$value" == partial ]] || return 1; RESTORE_TRANSACTION_KIND="$value" ;;
+            state) [[ "$value" == applying || "$value" == committed || "$value" == rolled-back ]] || return 1; RESTORE_JOURNAL_STATE="$value" ;;
+            installation_b64) installation="$(decode_restore_journal_path "$value")" || return 1 ;;
+            had_installation) [[ "$value" == 0 || "$value" == 1 ]] || return 1; RESTORE_HAD_INSTALLATION="$value" ;;
+            dependency_saved) [[ "$value" == 0 || "$value" == 1 ]] || return 1; RESTORE_DEPENDENCY_SAVED="$value" ;;
+            original_identity) [[ "$value" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1; RESTORE_ORIGINAL_ID="$value" ;;
+            installation_identity) [[ "$value" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1; RESTORE_INSTALLATION_ID="$value" ;;
+            path)
+                [[ "$value" == *'|'* && ${#RESTORE_AFFECTED_PATHS[@]} -lt 1024 ]] || return 1
+                path="$(decode_restore_journal_path "${value%%|*}")" || return 1
+                identity="${value#*|}"
+                [[ "$identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1
+                case "$path" in data|config.yaml|public/scripts/extensions/third-party|data/*/extensions|data/default-user/*) ;; *) return 1 ;; esac
+                restore_destination_safe "$path" || return 1
+                array_contains "$path" "${RESTORE_AFFECTED_PATHS[@]}" && return 1
+                RESTORE_AFFECTED_PATHS+=("$path")
+                RESTORE_PATH_IDENTITIES+=("$identity")
+                [[ "$identity" == none ]] || RESTORE_ORIGINAL_PATHS+=("$path")
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$work/recovery.env"
+    for key in format mode state installation_b64 had_installation dependency_saved original_identity installation_identity; do
+        [[ "$seen" == *"|$key|"* ]] || return 1
+    done
+    [[ "$installation" == "$ST_HOME" && ! -L "$ST_HOME" && "$(realpath -m "$ST_HOME")" != / ]] || return 1
+    [[ "$RESTORE_JOURNAL_STATE" != applying || -d "$work/rollback" ]] || return 1
+    if [[ "$RESTORE_TRANSACTION_KIND" == full ]]; then
+        [[ ${#RESTORE_AFFECTED_PATHS[@]} == 0 && ( "$RESTORE_HAD_INSTALLATION" == 0 || "$RESTORE_ORIGINAL_ID" != none ) ]] || return 1
+    else
+        [[ ${#RESTORE_AFFECTED_PATHS[@]} -gt 0 && "$RESTORE_INSTALLATION_ID" != none && "$RESTORE_HAD_INSTALLATION" == 0 && "$RESTORE_DEPENDENCY_SAVED" == 0 ]] || return 1
+        local other
+        for path in "${RESTORE_AFFECTED_PATHS[@]}"; do
+            for other in "${RESTORE_AFFECTED_PATHS[@]}"; do
+                [[ "$path" != "$other" && "$path" == "$other/"* ]] && return 1
+            done
+        done
+    fi
+    return 0
+}
+
+inspect_restore_recovery() {
+    RESTORE_PENDING_WORKS=(); RESTORE_PENDING_DETAIL=""; RESTORE_PENDING_BLOCKED=0
+    # A live writer's journal is normal, not a stranded recovery. A new lock
+    # owner (including diagnose) must still inspect a previous writer's files.
+    if operation_active && [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" != "$$" ]]; then return 0; fi
+    local work state
+    for work in "$BACKUP_DIR"/restore-work-* "$BACKUP_DIR"/import-work-* "$BACKUP_DIR"/install-import-work-*; do
+        [[ -e "$work/recovery.env" || -L "$work/recovery.env" ]] || continue
+        if state="$(load_restore_journal "$work" && printf '%s' "$RESTORE_JOURNAL_STATE")"; then
+            [[ "$state" == committed || "$state" == rolled-back ]] && continue
+        else
+            RESTORE_PENDING_BLOCKED=1
+        fi
+        RESTORE_PENDING_WORKS+=("$work")
+    done
+    if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+        RESTORE_PENDING_DETAIL="중단된 복원 기록이 있습니다. 다음 변경 작업 전에 기존 데이터를 복구합니다. 보호 사본: ${RESTORE_PENDING_WORKS[*]}"
+        if (( RESTORE_PENDING_BLOCKED || ${#RESTORE_PENDING_WORKS[@]} > 1 )); then
+            RESTORE_PENDING_BLOCKED=1
+            RESTORE_PENDING_DETAIL="복원 기록이 손상되었거나 이전 형식/여러 기록이 있어 자동으로 변경하지 않습니다. 보호 사본을 확인해 주세요: ${RESTORE_PENDING_WORKS[*]}"
+        fi
+    fi
+}
+
+recover_pending_restore() {
+    inspect_restore_recovery
+    (( ${#RESTORE_PENDING_WORKS[@]} )) || return 0
+    if (( RESTORE_PENDING_BLOCKED )); then echo "$RESTORE_PENDING_DETAIL" >&2; return 25; fi
+    if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+        echo "중단된 복원을 복구하려면 먼저 서버를 종료해 주세요. 보호 사본: ${RESTORE_PENDING_WORKS[0]}" >&2
+        return 25
+    fi
+    if ! load_restore_journal "${RESTORE_PENDING_WORKS[0]}"; then
+        CURRENT_WORK_DIR=""; echo "$RESTORE_PENDING_DETAIL" >&2; return 25
+    fi
+    RESTORE_TRANSACTION_ACTIVE=1
+    if ! rollback_restore_transaction; then
+        RESTORE_TRANSACTION_ACTIVE=0; RESTORE_RECOVERY_RETAINED=1
+        echo "중단된 복원의 자동 원복을 완료하지 못했습니다. 보호 사본은 유지됩니다: $CURRENT_WORK_DIR" >&2
+        return 25
+    fi
+    record_activity "중단된 복원의 기존 데이터 원복 완료"
+    rm -rf -- "$CURRENT_WORK_DIR" || true
+    CURRENT_WORK_DIR=""
+    return 0
+}
+
+recover_restore_before_dispatch() {
+    case "$CURRENT_OPERATION" in
+        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
+        *) return 0 ;;
+    esac
+    inspect_restore_recovery
+    (( ${#RESTORE_PENDING_WORKS[@]} )) || return 0
+    acquire_operation
+    recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
+    release_operation_lock
+    trap 'command_cleanup $?' EXIT
+    trap - INT TERM
 }
 
 rollback_restore_transaction() {
     (( RESTORE_TRANSACTION_ACTIVE )) || return 0
     [[ -n "$CURRENT_WORK_DIR" && "$RESTORE_ROLLBACK_DIR" == "$CURRENT_WORK_DIR/rollback" ]] || return 1
-    local path
+    restore_recovery_work_safe "$CURRENT_WORK_DIR" || return 1
+    if [[ "$RESTORE_JOURNAL_STATE" == committed || "$RESTORE_JOURNAL_STATE" == rolled-back ]]; then
+        RESTORE_TRANSACTION_ACTIVE=0
+        return 0
+    fi
+    [[ ! -L "$ST_HOME" && ! -L "$DEPENDENCY_HASH_FILE" ]] || return 1
+    if (( RESTORE_DEPENDENCY_SAVED )); then
+        [[ -f "$RESTORE_ROLLBACK_DIR/dependency-lock.sha256" && ! -L "$RESTORE_ROLLBACK_DIR/dependency-lock.sha256" ]] || return 1
+    fi
+    local path identity backup_identity target_identity rollback_parent rollback_root index=0
+    # Validate every protected path before deleting even the first replacement.
+    if [[ "$RESTORE_TRANSACTION_KIND" == partial ]]; then
+        [[ "$(restore_file_identity "$ST_HOME")" == "$RESTORE_INSTALLATION_ID" ]] || return 1
+        for path in "${RESTORE_AFFECTED_PATHS[@]}"; do
+            restore_destination_safe "$path" || return 1
+            identity="${RESTORE_PATH_IDENTITIES[$index]:-}"
+            [[ "$identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1
+            rollback_parent="$(realpath -m "$(dirname "$RESTORE_ROLLBACK_DIR/$path")")" || return 1
+            rollback_root="$(realpath -m "$RESTORE_ROLLBACK_DIR")" || return 1
+            [[ "$rollback_parent" == "$rollback_root" || "$rollback_parent" == "$rollback_root/"* ]] || return 1
+            if [[ "$identity" != none ]]; then
+                backup_identity="$(restore_file_identity "$RESTORE_ROLLBACK_DIR/$path")" || return 1
+                target_identity="$(restore_file_identity "$ST_HOME/$path")" || return 1
+                [[ "$backup_identity" == "$identity" || ( "$backup_identity" == none && "$target_identity" == "$identity" ) ]] || return 1
+            fi
+            index=$((index + 1))
+        done
+    fi
     if [[ "$RESTORE_TRANSACTION_KIND" == "full" ]]; then
         if (( ! RESTORE_FULL_DATA_RECOVERED )); then
             if (( RESTORE_HAD_INSTALLATION )); then
                 if [[ -e "$RESTORE_ROLLBACK_DIR/full-install" || -L "$RESTORE_ROLLBACK_DIR/full-install" ]]; then
+                    [[ ! -L "$RESTORE_ROLLBACK_DIR/full-install" && "$(restore_file_identity "$RESTORE_ROLLBACK_DIR/full-install")" == "$RESTORE_ORIGINAL_ID" ]] || return 1
+                    target_identity="$(restore_file_identity "$ST_HOME")" || return 1
+                    [[ "$target_identity" == none || ( "$RESTORE_INSTALLATION_ID" != none && "$target_identity" == "$RESTORE_INSTALLATION_ID" ) ]] || return 1
                     rm -rf "$ST_HOME" || return 1
                     mv "$RESTORE_ROLLBACK_DIR/full-install" "$ST_HOME" || return 1
-                elif (( RESTORE_FULL_ORIGINAL_MOVED )) || [[ ! -e "$ST_HOME" ]]; then
+                elif [[ "$(restore_file_identity "$ST_HOME")" != "$RESTORE_ORIGINAL_ID" ]]; then
                     return 1
                 fi
             else
-                rm -rf "$ST_HOME" || return 1
+                target_identity="$(restore_file_identity "$ST_HOME")" || return 1
+                if [[ "$target_identity" != none ]]; then
+                    [[ "$RESTORE_INSTALLATION_ID" != none && "$target_identity" == "$RESTORE_INSTALLATION_ID" ]] || return 1
+                    rm -rf "$ST_HOME" || return 1
+                fi
             fi
             RESTORE_FULL_DATA_RECOVERED=1
         fi
@@ -2616,25 +2930,29 @@ rollback_restore_transaction() {
             rm -f "$DEPENDENCY_HASH_FILE" || return 1
         fi
     elif [[ "$RESTORE_TRANSACTION_KIND" == "partial" ]]; then
+        index=0
         for path in "${RESTORE_AFFECTED_PATHS[@]}"; do
-            array_contains "$path" "${RESTORE_RECOVERED_PATHS[@]}" && continue
-            restore_destination_safe "$path" || return 1
-            if array_contains "$path" "${RESTORE_ORIGINAL_PATHS[@]}"; then
-                [[ -e "$RESTORE_ROLLBACK_DIR/$path" || -L "$RESTORE_ROLLBACK_DIR/$path" ]] || return 1
+            identity="${RESTORE_PATH_IDENTITIES[$index]}"
+            index=$((index + 1))
+            if [[ "$identity" != none && "$(restore_file_identity "$RESTORE_ROLLBACK_DIR/$path")" == none &&
+                "$(restore_file_identity "$ST_HOME/$path")" == "$identity" ]]; then
+                # A prior recovery may have been killed after mv, before its next journal write.
+                continue
             fi
             rm -rf "$ST_HOME/$path" || return 1
-            if array_contains "$path" "${RESTORE_ORIGINAL_PATHS[@]}"; then
+            if [[ "$identity" != none ]]; then
                 mkdir -p "$ST_HOME/$(dirname "$path")" || return 1
                 # Move the protected copy back on the same filesystem. A failed
                 # move leaves it available for recovery; do not erase it later.
                 mv "$RESTORE_ROLLBACK_DIR/$path" "$ST_HOME/$path" || return 1
             fi
             RESTORE_RECOVERED_PATHS+=("$path")
-            printf 'recovered_b64=%s\n' "$(printf '%s' "$path" | base64 -w 0)" >> "$CURRENT_WORK_DIR/recovery.env" || return 1
         done
     else
         return 1
     fi
+    RESTORE_JOURNAL_STATE=rolled-back
+    write_restore_journal || return 1
     RESTORE_TRANSACTION_ACTIVE=0
     RESTORE_RECOVERY_RETAINED=0
     echo "기존 설치와 데이터를 복구했습니다." >&2
@@ -2685,6 +3003,7 @@ restore_extracted_tree() {
             echo "전체 설치 백업에 정상적인 Git 저장소(.git) 또는 필수 실행 파일이 없습니다. 기존 설치는 변경하지 않았습니다. 사용자 데이터·설정 백업으로 가져와 주세요." >&2
             exit 24
         }
+        validate_install_runtime "$extracted" || exit $?
     elif [[ ",$kinds," == *,user_data,* && ! -d "$extracted/data" ]]; then
         echo "사용자 데이터 폴더가 없는 백업입니다." >&2; rm -rf "$work"; exit 24
     fi
@@ -2737,13 +3056,19 @@ restore_extracted_tree() {
             cp -a "$DEPENDENCY_HASH_FILE" "$rollback/dependency-lock.sha256" || exit 25
             RESTORE_DEPENDENCY_SAVED=1
         fi
+        # Plan the replacement inode before changing the live path. A kill
+        # between mkdir and journal publication must not leave an unknown root.
+        local replacement="$work/replacement-install"
+        mkdir "$replacement" || exit 25
+        RESTORE_INSTALLATION_ID="$(restore_file_identity "$replacement")" || exit 25
+        [[ "$(stat -c %d "$replacement")" == "$(stat -c %d "$(dirname "$ST_HOME")")" ]] || exit 25
         write_restore_journal || exit 25
         RESTORE_TRANSACTION_ACTIVE=1
         if (( RESTORE_HAD_INSTALLATION )); then
             mv "$ST_HOME" "$rollback/full-install" || exit 25
             RESTORE_FULL_ORIGINAL_MOVED=1
         fi
-        mkdir -p "$ST_HOME" || exit 25
+        mv "$replacement" "$ST_HOME" || exit 25
         local full_apply_failed=0
         COPY_PHASE="전체 설치 적용" measured_copy "$extracted" "$ST_HOME" || full_apply_failed=1
         if [[ "$include_secrets" != "1" ]]; then
@@ -2835,7 +3160,7 @@ restore_extracted_tree() {
         echo "복원 결과 검증에 실패하여 기존 상태 복구를 시작합니다." >&2
         exit 27
     fi
-    RESTORE_TRANSACTION_ACTIVE=0
+    commit_restore_transaction || exit 25
     write_progress 0 "임시 복원 파일 정리" "복원 결과 검사를 통과했습니다. 임시 파일 정리 명령의 완료를 기다립니다."
     rm -rf "$work"
     if [[ -n "$CURRENT_IMPORT_ARCHIVE" ]]; then rm -f -- "$CURRENT_IMPORT_ARCHIVE"; CURRENT_IMPORT_ARCHIVE=""; fi
@@ -3229,6 +3554,16 @@ diagnose() {
     previous_error_code="$(last_result_value error_code)"
     begin_operation "diagnose"
 
+    write_progress 0 "미완료 복원 기록 확인" "이전 복원의 보호 사본과 복구 필요 여부를 확인하고 있습니다."
+    inspect_restore_recovery
+    printf 'recovery_pending=%s\n' "$(( ${#RESTORE_PENDING_WORKS[@]} > 0 ? 1 : 0 ))"
+    printf 'recovery_error_b64=%s\n' "$(printf '%s' "$RESTORE_PENDING_DETAIL" | base64 -w 0)"
+    if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+        record_processing "$RESTORE_PENDING_DETAIL"
+    else
+        record_processing "미완료 복원 기록 검사 완료 · 복구가 필요한 기록 없음"
+    fi
+
     local repo_url dirty_files dirty_count last_error node_required node_compatible
     local termux_free downloads_free github_ready repo_ready git_version node_version npm_version
     local installation_ready dependencies_status port_listening server_reachable node_process_count
@@ -3286,10 +3621,9 @@ diagnose() {
     node_required="$(cd "$ST_HOME" 2>/dev/null && node -p "require('./package.json').engines?.node || ''" 2>/dev/null || true)"
     node_compatible=0
     if command -v node >/dev/null 2>&1 && [[ -n "$node_required" ]]; then
-        local current_major required_major
-        current_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-        required_major="$(printf '%s' "$node_required" | grep -oE '[0-9]+' | head -n 1 || echo 0)"
-        if (( current_major >= required_major )); then node_compatible=1; fi
+        # Match full-install import validation, including upper bounds and OR
+        # ranges; diagnosis must not label an incompatible runtime as healthy.
+        if validate_install_runtime "$ST_HOME" >/dev/null 2>&1; then node_compatible=1; fi
     fi
     echo "node_required=$node_required"
     echo "node_compatible=$node_compatible"
@@ -3356,6 +3690,7 @@ case "$CURRENT_OPERATION" in
     check-update) CURRENT_OPERATION="update-preflight" ;;
 esac
 trap 'command_cleanup $?' EXIT
+recover_restore_before_dispatch
 case "${1:-doctor}" in
     doctor) doctor ;;
     install) install_st "${2:-release}" ;;

@@ -1,6 +1,7 @@
 package app.tavernbridge.launcher.data
 
 import app.tavernbridge.launcher.model.SillyBranch
+import java.util.Base64
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -56,7 +57,29 @@ class DoctorOutputParserTest {
 
         assertFalse(result.sillyTavernInstalled)
         assertFalse(result.workingTreeClean)
+        assertFalse(result.recoveryPending)
+        assertEquals("", result.recoveryMessage)
         assertEquals(8000, result.port)
         assertEquals(null, result.branch)
+    }
+
+    @Test
+    fun reportsInterruptedRestoreWithoutPretendingItIsAnActiveOperation() {
+        val message = "보호사본을 확인해 주세요. password=fixture-secret"
+        val encoded = Base64.getEncoder().encodeToString(message.toByteArray(Charsets.UTF_8))
+        val result = DoctorOutputParser.parse(
+            "protocol=1\noperation_active=0\nrecovery_pending=1\nrecovery_error_b64=$encoded",
+        )
+        assertTrue(result.recoveryPending)
+        assertFalse(result.operationActive)
+        assertTrue(result.recoveryMessage.contains("보호사본"))
+        assertFalse(result.recoveryMessage.contains("fixture-secret"))
+    }
+
+    @Test
+    fun invalidRecoveryMessageDoesNotHideThePendingState() {
+        val result = DoctorOutputParser.parse("protocol=1\nrecovery_pending=1\nrecovery_error_b64=!!!")
+        assertTrue(result.recoveryPending)
+        assertEquals("", result.recoveryMessage)
     }
 }

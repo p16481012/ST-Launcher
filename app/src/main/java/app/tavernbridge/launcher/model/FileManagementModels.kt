@@ -20,5 +20,5 @@ fun validTavernEntryName(name: String): Boolean =
         name.none { it == '/' || it == '\\' || it.isISOControl() }
 
 fun LauncherUiState.canModifyTavernFiles(): Boolean =
-    environment.managerConnected && !isWorking && !environment.operationActive &&
+    environment.managerConnected && !isWorking && !environment.operationActive && !environment.recoveryPending &&
         !environment.processRunning && !fileBrowserLoading && !fileBrowserMutating
