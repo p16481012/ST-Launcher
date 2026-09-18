@@ -76,6 +76,7 @@ function writeProgress(force = false) {
     const values = {
         percent, phase: clean(process.env.ST_PROGRESS_PHASE), detail: clean(process.env.ST_PROGRESS_DETAIL),
         status: 'running', operation: clean(process.env.ST_PROGRESS_OPERATION), error_code: '', ...progress,
+        operation_started_at: Number(process.env.ST_OPERATION_STARTED_EPOCH) || 0,
     };
     const temporary = `${target}.archive.${process.pid}.tmp`;
     fs.writeFileSync(temporary, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''), { mode: 0o600 });

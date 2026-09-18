@@ -146,6 +146,7 @@ import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
+import app.tavernbridge.launcher.ui.components.WorkElapsedTime
 import app.tavernbridge.launcher.ui.components.FollowLogTail
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import kotlinx.coroutines.delay
@@ -616,10 +617,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 }
             }
 
-            if (state.isWorking) {
+            if (state.isWorking && !(state.fileBrowserOpen && state.fileBrowserMutating)) {
                 WorkingOverlay(
                     label = state.workingLabel,
                     progress = state.workProgress,
+                    startedAtMillis = state.workingStartedAtMillis,
                     onCancel = viewModel::cancelCurrentOperation,
                 )
             }
@@ -2680,6 +2682,7 @@ private fun SettingsScreen(
 private fun WorkingOverlay(
     label: String,
     progress: app.tavernbridge.launcher.model.WorkProgress?,
+    startedAtMillis: Long,
     onCancel: () -> Unit,
 ) {
     var collapsed by remember { mutableStateOf(false) }
@@ -2783,6 +2786,7 @@ private fun WorkingOverlay(
                 } else {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
+                WorkElapsedTime(startedAtMillis)
                 WorkProgressLog(progress?.logText.orEmpty())
                 if (cancellable) {
                     OutlinedButton(

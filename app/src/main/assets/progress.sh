@@ -136,6 +136,7 @@ function publish(force = false) {
         heartbeat_at: Math.floor(now / 1000),
         activity_at: state.activityAt,
         phase_started_at: phaseStartedAt,
+        operation_started_at: Number(process.env.ST_OPERATION_STARTED_EPOCH) || 0,
     };
     const temporary = `${progressFile}.tmp.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
     temporaryFiles.add(temporary);
@@ -408,6 +409,8 @@ try {
         if (targetStat && (entry.kind === 'directory' ? !targetStat.isDirectory() : !targetStat.isFile())) {
             fail('COPY_UNSAFE_DESTINATION');
         }
+        activity(entry.relative || path.basename(source));
+        publish();
     }
     state.planning = false;
     state.currentItem = '';

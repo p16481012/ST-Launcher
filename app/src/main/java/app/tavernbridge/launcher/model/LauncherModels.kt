@@ -112,6 +112,7 @@ data class LauncherUiState(
     val termuxWakeBlocked: Boolean = false,
     val isWorking: Boolean = true,
     val workingLabel: String = "환경 확인 중",
+    val workingStartedAtMillis: Long = 0L,
     val workProgress: WorkProgress? = null,
     val message: String? = null,
     val error: String? = null,

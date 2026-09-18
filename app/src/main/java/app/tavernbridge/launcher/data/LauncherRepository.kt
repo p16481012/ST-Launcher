@@ -687,12 +687,12 @@ class LauncherRepository(private val context: Context) {
         val command = buildString {
             append("test -f ${shellQuote(TermuxContract.PROGRESS_PATH)} && cat ${shellQuote(TermuxContract.PROGRESS_PATH)} || true")
             append("; printf '\\n'; cat ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/run/progress-heartbeat.env")} 2>/dev/null || true")
+            append("; printf '\\n'; sed 's/^/server_/' ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/run/server-log-context.env")} 2>/dev/null || true")
+            append("; printf '\\n__ST_LAUNCHER_SERVER_LOG__\\n'")
+            append("; tail -c 20000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/server.log")} 2>/dev/null || true")
             append("; printf '\\n__ST_LAUNCHER_LOG__\\n'")
             append("; test -f ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/operation.log")}")
             append(" && tail -c 20000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/operation.log")} || true")
-            append("; if grep -Eq '^operation=(start|restart|update)$' ${shellQuote(TermuxContract.PROGRESS_PATH)} 2>/dev/null; then")
-            append(" printf '\n===== SillyTavern 서버 출력 =====\n'")
-            append("; tail -c 20000 ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/logs/server.log")} 2>/dev/null || true; fi")
         }
         val result = runBash(
             command = command,
@@ -897,7 +897,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     private fun managerBootstrapCommand(): String {
-        return listOf("progress.sh", "archive-progress.sh", "manager.sh").joinToString(" && ") { name ->
+        return listOf("progress.sh", "archive-progress.sh", "safe-backup.sh", "manager.sh").joinToString(" && ") { name ->
             val script = context.assets.open(name).bufferedReader().use { it.readText() }
             val path = TermuxContract.MANAGER_PATH.substringBeforeLast('/') + "/$name"
             createManagerBootstrapCommand(path, encodeManagerScript(script))
@@ -940,6 +940,7 @@ class LauncherRepository(private val context: Context) {
                     totalFiles = 1,
                     currentItem = progress.name,
                     phaseStartedAtMillis = started,
+                    operationStartedAtMillis = started,
                     heartbeatAtMillis = now,
                     activityAtMillis = activity,
                     logText = history.joinToString("\n"),

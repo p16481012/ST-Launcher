@@ -38,6 +38,7 @@ jobs:
           bash -n app/src/main/assets/manager.sh
           bash -n app/src/main/assets/progress.sh
           bash -n app/src/main/assets/archive-progress.sh
+          bash -n app/src/main/assets/safe-backup.sh
 
       - name: Test manager safety helpers
         run: |
@@ -47,6 +48,7 @@ jobs:
           bash scripts/test-progress.sh
           bash scripts/test-archive-progress.sh
           bash scripts/test-progress-checks.sh
+          bash scripts/test-safe-backup.sh
 
       - name: Test, lint, and build debug and unsigned release APKs
         run: ./gradlew --no-daemon test lint assembleDebug assembleRelease

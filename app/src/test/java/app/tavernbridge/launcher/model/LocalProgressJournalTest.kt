@@ -8,6 +8,18 @@ import org.junit.Test
 
 class LocalProgressJournalTest {
     @Test
+    fun wholeOperationStartDoesNotResetWithTheNextPhase() {
+        var now = 10_000L
+        val values = mutableListOf<WorkProgress>()
+        val journal = LocalProgressJournal("diagnose", values::add, { now })
+        journal.phase("기기 검사", "권한 확인")
+        now = 25_000L
+        journal.phase("Termux 검사", "응답 확인")
+        assertEquals(10_000L, values.last().operationStartedAtMillis)
+        assertEquals(25_000L, values.last().phaseStartedAtMillis)
+    }
+
+    @Test
     fun itemCountsAdvanceOnlyWhenWorkCompletes() {
         val values = mutableListOf<WorkProgress>()
         var now = 10_000L

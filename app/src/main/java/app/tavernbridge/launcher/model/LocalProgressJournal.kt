@@ -12,6 +12,7 @@ internal class LocalProgressJournal(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val history = ArrayDeque<String>()
+    private val startedAtMillis = clock()
     private var snapshot = WorkProgress(0, "준비 중", "", operation = operation)
 
     fun phase(title: String, detail: String, totalItems: Long = 0L) {
@@ -21,6 +22,7 @@ internal class LocalProgressJournal(
             progressMode = if (totalItems > 0L) "files" else "indeterminate",
             totalFiles = totalItems.coerceAtLeast(0L), phaseStartedAtMillis = now,
             heartbeatAtMillis = now, logText = history.joinToString("\n"),
+            operationStartedAtMillis = startedAtMillis,
         )
         record("${snapshot.phase} · ${snapshot.detail}")
     }

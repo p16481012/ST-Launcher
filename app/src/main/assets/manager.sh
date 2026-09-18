@@ -16,6 +16,7 @@ PID_FILE="$RUN_DIR/sillytavern.pid"
 PID_META_FILE="$RUN_DIR/sillytavern.pid.meta"
 LOG_FILE="$LOG_DIR/operation.log"
 SERVER_LOG="$LOG_DIR/server.log"
+SERVER_LOG_CONTEXT="$RUN_DIR/server-log-context.env"
 PREVIOUS_SERVER_LOG="$LOG_DIR/server-previous.log"
 LEGACY_SERVER_LOG="$LOG_DIR/sillytavern.log"
 HISTORY_LOG="$LOG_DIR/launcher-history.log"
@@ -23,6 +24,7 @@ PROGRESS_FILE="$RUN_DIR/progress.env"
 HEARTBEAT_FILE="$RUN_DIR/progress-heartbeat.env"
 PROGRESS_HELPER="${ST_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/progress.sh}"
 ARCHIVE_PROGRESS_HELPER="${ST_ARCHIVE_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/archive-progress.sh}"
+SAFETY_BACKUP_HELPER="${ST_SAFETY_BACKUP_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/safe-backup.sh}"
 PROGRESS_MONITOR_PID=""
 PROGRESS_MONITOR_START=""
 LAST_RESULT_FILE="$RUN_DIR/last-result.env"
@@ -68,8 +70,8 @@ write_progress() {
     [[ "$status" == success && "$percent" == 100 ]] && mode=complete
     # Existing stage weights remain a legacy protocol field only. The UI never
     # presents them as measured work. Only the transfer helpers provide totals.
-    printf 'percent=%s\nphase=%s\ndetail=%s\nstatus=%s\noperation=%s\nerror_code=%s\nprogress_mode=%s\nphase_started_at=%s\n' \
-        "$percent" "$phase" "$detail" "$status" "$operation" "$error_code" "$mode" "$phase_started" > "$temp"
+    printf 'percent=%s\nphase=%s\ndetail=%s\nstatus=%s\noperation=%s\nerror_code=%s\nprogress_mode=%s\nphase_started_at=%s\noperation_started_at=%s\n' \
+        "$percent" "$phase" "$detail" "$status" "$operation" "$error_code" "$mode" "$phase_started" "$OPERATION_STARTED_EPOCH" > "$temp"
     mv -f "$temp" "$PROGRESS_FILE"
 
     local progress_key="$operation|$phase|$status"
@@ -146,6 +148,9 @@ manager_error_code() {
         *:32) echo "UPDATE_PACKAGES_FAILED" ;;
         *:33) echo "UPDATE_SERVER_FAILED" ;;
         *:34) echo "UPDATE_HISTORY_DIVERGED" ;;
+        *:35) echo "SAFETY_BACKUP_NO_SPACE" ;;
+        *:36) echo "SAFETY_BACKUP_FAILED" ;;
+        *:37) echo "SAFETY_BACKUP_SOURCE_CHANGED" ;;
         *:40) echo "FILE_EDIT_TOO_LARGE" ;;
         *:41) echo "FILE_NOT_TEXT" ;;
         *:42) echo "FILE_EDIT_CONFLICT" ;;
@@ -238,16 +243,40 @@ start_progress_monitor() {
     owner_start="$(process_start_ticks "$owner")"
     (
         trap - EXIT INT TERM
-        local previous_output="" output activity=0 now temp="$HEARTBEAT_FILE.tmp.$BASHPID"
+        local previous_output="" output activity=0 now server_operation server_started temp="$HEARTBEAT_FILE.tmp.$BASHPID"
+        local wait_seconds wait_detail progress_operation progress_started measured_activity key value
         while kill -0 "$owner" 2>/dev/null && [[ "$(process_start_ticks "$owner")" == "$owner_start" ]]; do
             now="$(date +%s)"
             output="$(stat -c '%s:%Y' "$LOG_FILE" 2>/dev/null || true)"
             if [[ "$CURRENT_OPERATION" == start || "$CURRENT_OPERATION" == restart || "$CURRENT_OPERATION" == update ]]; then
-                output="$output:$(stat -c '%s:%Y' "$SERVER_LOG" 2>/dev/null || true)"
+                server_operation="$(sed -n 's/^operation=//p' "$SERVER_LOG_CONTEXT" 2>/dev/null | head -n 1 || true)"
+                server_started="$(sed -n 's/^operation_started_at=//p' "$SERVER_LOG_CONTEXT" 2>/dev/null | head -n 1 || true)"
+                if [[ "$server_operation" == "$CURRENT_OPERATION" && "$server_started" == "$OPERATION_STARTED_EPOCH" ]]; then
+                    output="$output:$(stat -c '%s:%Y' "$SERVER_LOG" 2>/dev/null || true)"
+                fi
             fi
             if [[ "$output" != "$previous_output" ]]; then activity="$now"; previous_output="$output"; fi
-            printf 'monitor_operation=%s\nmonitor_heartbeat_at=%s\nobserved_activity_at=%s\n' \
-                "$CURRENT_OPERATION" "$now" "$activity" > "$temp"
+            progress_operation=""; progress_started=""; measured_activity=0
+            while IFS='=' read -r key value; do
+                case "$key" in
+                    operation) progress_operation="$value" ;;
+                    operation_started_at) progress_started="$value" ;;
+                    activity_at) measured_activity="$value" ;;
+                esac
+            done < "$PROGRESS_FILE" 2>/dev/null || true
+            if [[ "$progress_operation" == "$CURRENT_OPERATION" && "$progress_started" == "$OPERATION_STARTED_EPOCH" &&
+                "$measured_activity" =~ ^[0-9]+$ ]] && (( measured_activity > activity && measured_activity <= now )); then
+                activity="$measured_activity"
+            fi
+            wait_seconds=0; wait_detail=""
+            if (( activity > 0 && now - activity >= 10 )); then
+                wait_seconds=$(( (now - activity) / 10 * 10 ))
+                wait_detail="$(printf '작업 프로세스는 실행 중입니다. 최근 %s초 동안 새 처리 출력이 없어 현재 명령의 완료를 기다리고 있습니다.' "$wait_seconds" | base64 -w 0)"
+            fi
+            # Waiting metadata is never appended to operation.log: it is not
+            # evidence of processed data and must not reset activity timers.
+            printf 'monitor_operation=%s\nmonitor_heartbeat_at=%s\nobserved_activity_at=%s\nmonitor_started_at=%s\nmonitor_wait_seconds=%s\nmonitor_wait_detail_b64=%s\n' \
+                "$CURRENT_OPERATION" "$now" "$activity" "$OPERATION_STARTED_EPOCH" "$wait_seconds" "$wait_detail" > "$temp"
             mv -f "$temp" "$HEARTBEAT_FILE"
             sleep 2
         done
@@ -270,12 +299,39 @@ measured_copy() {
     local source="$1" destination="$2" excludes="${3:-}" links="${4:-reject-links}"
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_PHASE="${COPY_PHASE:-파일 복사}" \
         ST_PROGRESS_DETAIL="실제 복사한 파일과 용량을 확인하고 있습니다." ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
+        ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
         bash "$PROGRESS_HELPER" copy "$source" "$destination" "$excludes" "$links"
 }
 
 measured_archive() {
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_PHASE="$1" ST_PROGRESS_DETAIL="$2" \
-        ST_PROGRESS_OPERATION="$CURRENT_OPERATION" bash "$ARCHIVE_PROGRESS_HELPER" "${@:3}"
+        ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
+        bash "$ARCHIVE_PROGRESS_HELPER" "${@:3}"
+}
+
+safety_backup() {
+    local archive="$1" layout="${2:-contents}" reserve="${3:-33554432}" code=0
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
+        ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_PROGRESS_PHASE="${SAFETY_PHASE:-안전 백업}" \
+        ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" ST_SAFETY_RESERVE_BYTES="$reserve" \
+        bash "$SAFETY_BACKUP_HELPER" "$ST_HOME" "$archive" "$layout" >> "$LOG_FILE" 2>&1 || code=$?
+    if (( code != 0 )); then
+        case "$code" in 35|36|37|130) ;; *) code=36 ;; esac
+        return "$code"
+    fi
+}
+
+reset_server_log() {
+    local operation="$CURRENT_OPERATION" started="$OPERATION_STARTED_EPOCH"
+    if [[ "$operation" == server-task || "$operation" == idle ]]; then
+        operation="$(sed -n 's/^operation=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+        started="$(sed -n 's/^operation_started_at=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+    fi
+    [[ "$started" =~ ^[0-9]+$ ]] || started=0
+    archive_server_log
+    : > "$SERVER_LOG"
+    printf 'operation=%s\noperation_started_at=%s\n' "$operation" "$started" > "$SERVER_LOG_CONTEXT.tmp.$$"
+    mv -f "$SERVER_LOG_CONTEXT.tmp.$$" "$SERVER_LOG_CONTEXT"
 }
 
 archive_server_log() {
@@ -563,6 +619,7 @@ cancel_operation() {
 begin_operation() {
     CURRENT_OPERATION="$1"
     OPERATION_STARTED_EPOCH="$(date +%s)"
+    export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
     # Only the new lock owner may discard stale progress from the prior run.
     rm -f -- "$PROGRESS_FILE" "$HEARTBEAT_FILE"
@@ -652,9 +709,9 @@ install_dependencies() {
     fi
     write_progress 48 "Node 모듈 준비" "손상되거나 오래된 의존성을 정리하고 있습니다."
     echo "[launcher] Rebuilding Node modules..." >> "$LOG_FILE"
-    record_activity "기존 Node 모듈 정리 시작"
+    record_processing "기존 Node 모듈 정리 시작 · 파일 수에 따라 시간이 걸리며 정리 명령의 완료를 기다립니다."
     rm -rf "$ST_HOME/node_modules"
-    record_activity "기존 Node 모듈 정리 완료"
+    record_processing "기존 Node 모듈 정리 완료"
 
     write_progress 55 "Node 모듈 설치" "필수 패키지를 내려받고 있습니다. 몇 분 걸릴 수 있어요."
     (
@@ -769,8 +826,7 @@ is_managed_server_process() {
 launch_server_process() {
     (
         cd "$ST_HOME"
-        archive_server_log
-        : > "$SERVER_LOG"
+        reset_server_log
         nohup node server.js --port "$PORT" >> "$SERVER_LOG" 2>&1 &
         write_server_pid "$!"
     )
@@ -809,15 +865,20 @@ run_persistent_server_task() {
         return 0
     fi
     cd "$ST_HOME"
-    archive_server_log
-    : > "$SERVER_LOG"
+    reset_server_log
     write_server_pid "$$"
     exec node server.js --port "$PORT" >> "$SERVER_LOG" 2>&1
 }
 
 finish_persistent_start() {
     CURRENT_OPERATION="start"
-    OPERATION_STARTED_EPOCH="$(date +%s)"
+    local prior_operation
+    prior_operation="$(sed -n 's/^operation=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+    if [[ "$prior_operation" == start ]]; then
+        OPERATION_STARTED_EPOCH="$(sed -n 's/^operation_started_at=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1 || true)"
+    fi
+    if [[ ! "$OPERATION_STARTED_EPOCH" =~ ^[1-9][0-9]*$ ]]; then OPERATION_STARTED_EPOCH="$(date +%s)"; fi
+    export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
     write_progress 0 "Termux 실행 응답 대기" "전달한 서버 실행 요청이 실제 프로세스로 시작되는지 확인하고 있습니다."
     record_processing "Termux 지속 실행 작업 확인 시작"
@@ -1402,6 +1463,7 @@ backup_selected() {
         echo "선택한 파일을 ZIP으로 만드는 데 실패했습니다." >&2
         exit 18
     }
+    write_progress 0 "백업 메타데이터 기록" "압축 정보와 항목 수를 기록하고 있습니다. ZIP 후처리 명령의 완료를 기다립니다."
     local expanded_bytes entry_count
     expanded_bytes="$(archive_expanded_size "$output")"
     entry_count="$(unzip -Z1 "$output" 2>/dev/null | grep -Fvx '.st-launcher-manifest' | wc -l | tr -d ' ')"
@@ -1581,7 +1643,7 @@ ensure_import_runtime() {
 validate_restore_archive() {
     # Read ZIP metadata without inflating any content. In particular, do not run
     # unzip -t before extraction: CRC is checked by the one actual extraction.
-    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
         ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
         node --input-type=commonjs - "$1" "${2:-}" <<'NODE'
 const fs = require('fs');
@@ -1620,6 +1682,7 @@ const publishScan = (completed, total, item = '', force = false) => {
         completed_files: completed, total_files: total,
         current_item_b64: Buffer.from(cleanProgress(item)).toString('base64'),
         heartbeat_at: now, activity_at: now, phase_started_at: phaseStarted,
+        operation_started_at: Number(process.env.ST_OPERATION_STARTED_EPOCH) || 0,
     };
     const target = process.env.ST_PROGRESS_FILE, temporary = `${target}.scan.${process.pid}.tmp`;
     fs.writeFileSync(temporary, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''), { mode: 0o600 });
@@ -1873,7 +1936,7 @@ st_file_action() {
     # Keep the text limit below Linux's per-argument limit after base64 expansion
     # and below the Termux result transport budget. No text contents enter logs.
     ST_PROGRESS_HELPER="$PROGRESS_HELPER" ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" \
-        ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
+        ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
         ST_PROGRESS_PHASE="SillyTavern에 파일 저장" ST_PROGRESS_DETAIL="실제 기록한 용량을 세며 선택한 파일을 가져옵니다." \
         node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$HOME" "$@" <<'ST_LAUNCHER_FILES_JS'
 const fs = require('fs');
@@ -2417,7 +2480,9 @@ import_install() {
         exit 10
     fi
     ensure_import_runtime
+    write_progress 0 "설치 구조 검사" "기존 설치의 파일 구조를 검사하고 있습니다. 전체 검사 명령의 완료를 기다립니다."
     validate_install_tree "$source" || exit $?
+    record_processing "원본 설치 구조 검사 완료"
     destination="$(realpath -m "$ST_HOME")"
     if [[ "$source" == "$destination" ]]; then
         write_progress 100 "설치 확인 완료" "이미 런처의 설치 위치에 있는 SillyTavern입니다. 폴더를 이동하지 않았습니다." success
@@ -2428,10 +2493,14 @@ import_install() {
     fi
     [[ ! -L "$ST_HOME" ]] || exit 51
     identity="$(stat -c '%d:%i' -- "$source")" || exit 50
+    write_progress 0 "원본 상태 기록" "작업 중 변경 여부를 비교할 원본 파일 정보를 기록하고 있습니다."
     snapshot="$(install_source_snapshot "$source")" || exit 53
+    record_processing "원본 파일 상태 기록 완료"
+    write_progress 0 "설치 이동 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
     bytes="$(unsigned_decimal "$(du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 54
     (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 옮길 저장 공간이 부족합니다." >&2; exit 54; }
+    record_processing "설치 이동 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
     work="$BACKUP_DIR/install-import-work-$$"
     track_current_work_dir "$work"
     extracted="$work/extracted"
@@ -2441,6 +2510,7 @@ import_install() {
         echo "기존 설치 복사에 실패했습니다. 원본은 변경하지 않았습니다." >&2
         exit 55
     fi
+    write_progress 0 "복사 결과 검사" "복사된 설치 구조와 원본 변경 여부를 검사하고 있습니다."
     validate_install_tree "$extracted" || exit $?
     after_snapshot="$(install_source_snapshot "$source")" || exit 55
     [[ "$snapshot" == "$after_snapshot" && "$(stat -c '%d:%i' -- "$source")" == "$identity" ]] || {
@@ -2451,9 +2521,11 @@ import_install() {
     restore_extracted_tree "$extracted" "existing-installation"
     # Destination is now complete and the rollback transaction has committed.
     # A late source change or cleanup failure does not invalidate that success.
+    write_progress 0 "원본 변경 재확인" "새 설치는 준비되었습니다. 원본 정리 전에 파일 변경 여부를 다시 검사합니다."
     if ! installation_server_running "$source" && [[ ! -L "$source" && "$(realpath -e -- "$source" 2>/dev/null || true)" == "$source" &&
         "$(stat -c '%d:%i' -- "$source" 2>/dev/null || true)" == "$identity" &&
         "$(install_source_snapshot "$source" 2>/dev/null || true)" == "$snapshot" ]]; then
+        write_progress 0 "원본 정리" "검증된 이전 설치 폴더를 정리하고 있습니다. 정리 명령의 완료를 기다립니다."
         if rm -rf -- "$source" && [[ ! -e "$source" && ! -L "$source" ]]; then
             echo "source_removed=1"
             write_progress 100 "설치 이동 완료" "기존 설치를 런처 위치로 옮겼습니다. 검증된 원본 폴더를 정리했습니다." success
@@ -2641,6 +2713,7 @@ restore_extracted_tree() {
         fi
     fi
     local incoming_bytes current_bytes free_bytes required_bytes
+    write_progress 0 "복원 공간 계산" "가져온 데이터와 현재 데이터의 실제 사용 공간을 계산하고 있습니다."
     incoming_bytes="$(du -sk "$extracted" | awk '{printf "%.0f", $1 * 1024}')"
     current_bytes=0
     if [[ ",$kinds," != *,full,* && -d "$ST_HOME" ]]; then
@@ -2651,6 +2724,7 @@ restore_extracted_tree() {
     current_bytes="$(unsigned_decimal "$current_bytes")" || exit 29
     required_bytes=$((incoming_bytes + current_bytes + 268435456))
     (( free_bytes >= required_bytes )) || { echo "기존 데이터 보호와 복원 적용에 필요한 저장 공간이 부족합니다." >&2; exit 29; }
+    record_processing "복원 공간 검사 완료 · 필요 ${required_bytes}바이트 · 사용 가능 ${free_bytes}바이트"
 
     ensure_restore_target_stopped
     write_progress 38 "현재 상태 보호" "문제가 생기면 되돌릴 수 있도록 현재 데이터를 임시 보관하고 있습니다."
@@ -2732,6 +2806,7 @@ restore_extracted_tree() {
         write_progress 58 "데이터 교체" "검증된 백업을 실제 데이터에 적용하고 있습니다."
         local apply_failed=0
         for path in "${affected[@]}"; do
+            write_progress 0 "기존 항목 정리" "안전 사본을 보관한 기존 항목을 정리하고 있습니다. 정리 명령의 완료를 기다립니다."
             rm -rf "$ST_HOME/$path" || exit 25
             if [[ -e "$extracted/$path" ]]; then
                 mkdir -p "$ST_HOME/$(dirname "$path")" || exit 25
@@ -2761,9 +2836,14 @@ restore_extracted_tree() {
         exit 27
     fi
     RESTORE_TRANSACTION_ACTIVE=0
+    write_progress 0 "임시 복원 파일 정리" "복원 결과 검사를 통과했습니다. 임시 파일 정리 명령의 완료를 기다립니다."
     rm -rf "$work"
     if [[ -n "$CURRENT_IMPORT_ARCHIVE" ]]; then rm -f -- "$CURRENT_IMPORT_ARCHIVE"; CURRENT_IMPORT_ARCHIVE=""; fi
-    write_progress 100 "복원 완료" "선택한 백업을 안전하게 복원했습니다." success
+    if [[ "$CURRENT_OPERATION" == import-install ]]; then
+        write_progress 0 "새 설치 준비 완료" "새 설치 검증을 마쳤습니다. 이전 설치의 정리 여부를 확인합니다."
+    else
+        write_progress 100 "복원 완료" "선택한 백업을 안전하게 복원했습니다." success
+    fi
     echo "restored=$file_name"
 }
 
@@ -2793,7 +2873,11 @@ repair_st() {
         exit 15
     fi
     write_progress 38 "npm 캐시 점검" "다운로드 캐시의 무결성을 확인하고 있습니다."
-    npm cache verify >> "$LOG_FILE" 2>&1 || true
+    if npm cache verify >> "$LOG_FILE" 2>&1; then
+        record_processing "npm 캐시 검사 완료"
+    else
+        record_processing "npm 캐시 검사가 실패했습니다. 실행 패키지 재설치로 복구를 계속합니다."
+    fi
     install_dependencies
     write_progress 100 "복구 완료" "사용자 데이터는 유지하고 실행 패키지를 다시 구성했습니다." success
     echo "repaired=1"
@@ -2940,6 +3024,7 @@ update_st() {
     }
     free_bytes="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
     free_bytes="${free_bytes:-0}"
+    write_progress 0 "업데이트 공간 계산" "기존 Node 모듈의 실제 용량을 계산하고 있습니다. 전체 용량 검사 명령의 완료를 기다립니다."
     modules_bytes="$(du -sk "$ST_HOME/node_modules" 2>/dev/null | awk '{print $1 * 1024}' | cut -d. -f1)"
     modules_bytes="${modules_bytes:-0}"
     required_bytes=$((modules_bytes + 536870912))
@@ -2957,9 +3042,10 @@ update_st() {
     mkdir -p "$rollback_dir"
     if [[ -n "$dirty_files" ]]; then
         local modified_backup="$BACKUP_DIR/before-forced-update-$timestamp.tar.gz"
-        write_progress 8 "수정 파일 보호" "현재 수정 내용을 별도 안전 파일로 보관하고 있습니다."
-        tar --exclude='node_modules' --exclude='.git' -czf "$modified_backup" -C "$ST_HOME" .
+        write_progress 8 "수정 파일 보호" "사용자 데이터를 포함한 현재 설치를 별도 안전 파일로 압축하고 있습니다."
+        SAFETY_PHASE="수정 파일 보호" safety_backup "$modified_backup" contents "$required_bytes" || exit $?
         record_processing "수정 파일 안전 보관 완료 · Git 작업 트리 정리 시작"
+        write_progress 0 "Git 작업 트리 정리" "안전 백업을 저장했습니다. Git 수정 파일 정리 명령의 완료를 기다립니다."
         git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
         git -C "$ST_HOME" clean -fd >> "$LOG_FILE" 2>&1
         echo "[launcher] Modified files saved to $modified_backup" >> "$LOG_FILE"
@@ -3041,17 +3127,17 @@ switch_branch() {
         exit 10
     fi
     [[ "$allow_dirty" == "0" || "$allow_dirty" == "1" ]] || { echo "수정 파일 진행 설정이 올바르지 않습니다." >&2; exit 64; }
+    begin_operation "switch-branch"
+    write_progress 0 "브랜치 변경 준비 검사" "Git 수정 파일을 검사하고 있습니다. 검사 명령의 완료를 기다립니다."
     local dirty_files
     dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || true)"
     if [[ -n "$dirty_files" && "$allow_dirty" != "1" ]]; then
         echo "수정된 파일이 있어 브랜치를 변경할 수 없습니다." >&2
         exit 9
     fi
-    begin_operation "switch-branch"
     write_progress 10 "안전 백업" "브랜치 변경 전 현재 설정을 백업하고 있습니다."
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
-    tar --exclude='SillyTavern/node_modules' --exclude='SillyTavern/.git' \
-        -czf "$safety_backup" -C "$HOME" SillyTavern
+    SAFETY_PHASE="브랜치 변경 안전 백업" safety_backup "$safety_backup" directory || exit $?
     record_processing "브랜치 변경 전 안전 백업 생성 완료"
     if [[ -n "$dirty_files" ]]; then
         write_progress 24 "수정 파일 정리" "확인된 수정 내용을 안전 백업 후 Git 작업 트리에서 정리합니다."

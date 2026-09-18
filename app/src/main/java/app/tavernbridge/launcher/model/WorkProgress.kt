@@ -18,6 +18,7 @@ data class WorkProgress(
     val heartbeatAtMillis: Long = 0L,
     val activityAtMillis: Long = 0L,
     val phaseStartedAtMillis: Long = 0L,
+    val operationStartedAtMillis: Long = 0L,
 ) {
     /** Measured progress within the current phase, never the old phase-weighted percentage. */
     val measuredPercent: Int?

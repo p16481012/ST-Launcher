@@ -27,7 +27,9 @@ export PREFIX="$TEST_ROOT/prefix"
 source "$ROOT_DIR/app/src/main/assets/manager.sh"
 
 CURRENT_OPERATION=restore
+OPERATION_STARTED_EPOCH=12345
 write_progress 26 "구조 확인" "구조를 확인하고 있습니다."
+[[ "$(value "$PROGRESS_FILE" operation_started_at)" == 12345 ]] || fail "operation start is missing"
 phase_started="$(value "$PROGRESS_FILE" phase_started_at)"
 [[ "$phase_started" =~ ^[0-9]+$ ]] || fail "phase start is missing"
 [[ "$(value "$PROGRESS_FILE" progress_mode)" == indeterminate ]] || fail "legacy stage percent was presented as measured"
@@ -56,11 +58,24 @@ wait_greater "$HEARTBEAT_FILE" monitor_heartbeat_at 0
 first_heartbeat="$(value "$HEARTBEAT_FILE" monitor_heartbeat_at)"
 first_activity="$(value "$HEARTBEAT_FILE" observed_activity_at)"
 [[ "$(value "$HEARTBEAT_FILE" monitor_operation)" == restore ]] || fail "monitor operation identity is missing"
+[[ "$(value "$HEARTBEAT_FILE" monitor_started_at)" == 12345 ]] || fail "monitor operation start is missing"
 before_log="$(< "$LOG_FILE")"
 write_progress 31 "복사 대기" "응답 대기 시간이 늘었지만 실제 출력은 없습니다."
 wait_greater "$HEARTBEAT_FILE" monitor_heartbeat_at "$first_heartbeat"
 [[ "$(value "$HEARTBEAT_FILE" observed_activity_at)" == "$first_activity" ]] || fail "heartbeat-only tick was falsely counted as processing activity"
 [[ "$(< "$LOG_FILE")" == "$before_log" ]] || fail "monitor wrote synthetic activity to operation log"
+for ((attempt = 0; attempt < 140; attempt++)); do
+    [[ "$(value "$HEARTBEAT_FILE" monitor_wait_seconds)" == 10 ]] && break
+    sleep 0.1
+done
+[[ "$(value "$HEARTBEAT_FILE" monitor_wait_seconds)" == 10 ]] || fail "silent live command did not publish separate waiting metadata"
+[[ -n "$(value "$HEARTBEAT_FILE" monitor_wait_detail_b64)" ]] || fail "waiting explanation missing"
+[[ "$(value "$HEARTBEAT_FILE" observed_activity_at)" == "$first_activity" && "$(< "$LOG_FILE")" == "$before_log" ]] || fail "waiting explanation fabricated processing activity"
+printf 'activity_at=%s\n' "$(date +%s)" >> "$PROGRESS_FILE"
+wait_greater "$HEARTBEAT_FILE" observed_activity_at "$first_activity"
+[[ "$(value "$HEARTBEAT_FILE" monitor_wait_seconds)" == 0 ]] || fail "measured worker activity did not clear waiting state"
+first_activity="$(value "$HEARTBEAT_FILE" observed_activity_at)"
+sleep 1.1
 printf 'actual child process output\n' >> "$LOG_FILE"
 wait_greater "$HEARTBEAT_FILE" observed_activity_at "$first_activity"
 stop_progress_monitor
@@ -75,7 +90,7 @@ printf 'PASS: monitor heartbeat is separate from observed output activity and st
 
 CURRENT_OPERATION=start
 write_progress 0 "서버 응답 대기" "서버 출력을 기다립니다."
-: > "$SERVER_LOG"
+reset_server_log
 start_progress_monitor
 # A preceding operation's heartbeat file must not satisfy this monitor check.
 for ((attempt = 0; attempt < 80; attempt++)); do
@@ -89,6 +104,32 @@ printf 'actual server startup output\n' >> "$SERVER_LOG"
 wait_greater "$HEARTBEAT_FILE" observed_activity_at "$server_activity"
 stop_progress_monitor
 printf 'PASS: server output changes are observed during startup\n'
+
+CURRENT_OPERATION=update
+OPERATION_STARTED_EPOCH=23456
+write_progress 0 "수정 파일 보호" "현재 서버 출력은 이 작업에 속하지 않습니다."
+start_progress_monitor
+for ((attempt = 0; attempt < 80; attempt++)); do
+    [[ "$(value "$HEARTBEAT_FILE" monitor_operation)" == update ]] && break
+    sleep 0.1
+done
+stale_activity="$(value "$HEARTBEAT_FILE" observed_activity_at)"
+sleep 1.1
+printf 'output from a previous server context\n' >> "$SERVER_LOG"
+sleep 2.2
+[[ "$(value "$HEARTBEAT_FILE" observed_activity_at)" == "$stale_activity" ]] || fail "stale server output counted as current update activity"
+stop_progress_monitor
+printf 'PASS: unrelated server context is excluded from current operation activity\n'
+
+CURRENT_OPERATION=start
+OPERATION_STARTED_EPOCH=34567
+write_progress 0 "서버 작업 준비" "준비가 완료되었습니다."
+CURRENT_OPERATION=server-task
+OPERATION_STARTED_EPOCH=0
+reset_server_log
+[[ "$(value "$SERVER_LOG_CONTEXT" operation)" == start && "$(value "$SERVER_LOG_CONTEXT" operation_started_at)" == 34567 ]] || fail "persistent server log did not inherit preparation identity"
+CURRENT_OPERATION=start
+OPERATION_STARTED_EPOCH=34567
 
 (
     # Exercise begin_operation's stale-state reset without acquiring a real
@@ -128,6 +169,7 @@ printf 'PASS: new operation resets stale phase, heartbeat, and log deduplication
     printf 'prior server preparation output\n' > "$LOG_FILE"
     printf 'monitor_operation=old-fixture\nmonitor_heartbeat_at=1\n' > "$HEARTBEAT_FILE"
     finish_persistent_start
+    [[ "$OPERATION_STARTED_EPOCH" == 34567 ]] || fail "persistent completion reset preparation start time"
     [[ "$(value "$PROGRESS_FILE" status)" == success ]] || fail "persistent-start completion did not preserve success"
     stop_progress_monitor
 )

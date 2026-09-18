@@ -6,6 +6,15 @@ import org.junit.Test
 
 class TermuxCommandResultTest {
     @Test
+    fun `safety backup failures never masquerade as branch or command errors`() {
+        mapOf(35 to "SAFETY_BACKUP_NO_SPACE", 36 to "SAFETY_BACKUP_FAILED", 37 to "SAFETY_BACKUP_SOURCE_CHANGED")
+            .forEach { (exitCode, code) ->
+                val result = TermuxCommandResult("test", "", "안전 백업에 실패했습니다.", exitCode, -1, "")
+                assertTrue(result.readableError().startsWith("[$code]"))
+            }
+    }
+
+    @Test
     fun `truncated protocol output is distinguishable from complete or legacy output`() {
         val result = TermuxCommandResult("test", "tail", "", 0, -1, "")
         assertFalse(result.stdoutTruncated)

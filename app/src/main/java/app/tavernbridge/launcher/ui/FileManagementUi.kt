@@ -21,6 +21,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
+import app.tavernbridge.launcher.ui.components.WorkElapsedTime
 import java.util.Locale
 
 @Composable
@@ -200,7 +201,10 @@ internal fun TavernFileManagerDialog(
                     Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
                 if (state.fileBrowserMutating) {
                     Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
-                        FileOperationProgress(state.workProgress, state.workingLabel)
+                        // The text editor is a separate dialog and owns the visible progress panel while open.
+                        if (state.editingFile == null) {
+                            FileOperationProgress(state.workProgress, state.workingLabel, state.workingStartedAtMillis)
+                        }
                     }
                 } else {
                     if (state.fileBrowserLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -299,7 +303,7 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
                 if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
                 if (state.fileBrowserMutating) {
                     Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
-                        FileOperationProgress(state.workProgress, state.workingLabel)
+                        FileOperationProgress(state.workProgress, state.workingLabel, state.workingStartedAtMillis)
                     }
                 } else {
                     OutlinedTextField(value = content, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 65_536) content = it },
@@ -320,7 +324,7 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
 }
 
 @Composable
-private fun FileOperationProgress(progress: WorkProgress?, label: String) {
+private fun FileOperationProgress(progress: WorkProgress?, label: String, startedAtMillis: Long) {
     val measuredPercent = progress?.measuredPercent
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -336,6 +340,7 @@ private fun FileOperationProgress(progress: WorkProgress?, label: String) {
         } else {
             LinearProgressIndicator(progress = { measuredPercent / 100f }, modifier = Modifier.fillMaxWidth())
         }
+        WorkElapsedTime(startedAtMillis)
         WorkProgressLog(progress?.logText.orEmpty())
     }
 }

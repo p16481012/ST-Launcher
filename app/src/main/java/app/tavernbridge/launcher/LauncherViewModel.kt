@@ -20,9 +20,12 @@ import app.tavernbridge.launcher.model.SettingsPanel
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.WorkProgress
 import app.tavernbridge.launcher.model.LocalProgressJournal
+import app.tavernbridge.launcher.model.ProgressLogHistory
 import app.tavernbridge.launcher.model.belongsToStartedOperation
 import app.tavernbridge.launcher.model.RecoveredOperationStatus
 import app.tavernbridge.launcher.model.recoveredOperationStatus
+import app.tavernbridge.launcher.model.reconnectingAfterTimeout
+import app.tavernbridge.launcher.model.resolveWorkingStartedAtMillis
 import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
 import app.tavernbridge.launcher.model.retryActionAfterFailure
 import app.tavernbridge.launcher.model.ExistingInstallation
@@ -49,6 +52,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val themePreferences = ThemePreferences(application)
     private val mutableState = MutableStateFlow(
         LauncherUiState(
+            workingStartedAtMillis = System.currentTimeMillis(),
             theme = themePreferences.loadTheme(),
             configuredPort = repository.configuredPort(),
             autoBackupBeforeUpdate = repository.autoBackupBeforeUpdate(),
@@ -63,6 +67,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val logReadErrorRequests = mutableSetOf<DiagnosticPanel>()
     private var refreshJob: Job? = null
     private val environmentRefreshGate = EnvironmentRefreshGate()
+    private val progressLogHistory = ProgressLogHistory()
     private var fileBrowserJob: Job? = null
     @Volatile private var operationCancellationRequested = false
     @Volatile private var appInForeground = false
@@ -172,7 +177,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             }
         viewModelScope.launch {
             val started = System.currentTimeMillis()
-            mutableState.update { it.copy(isWorking = true, workingLabel = "서버 연결 설정 저장 중", workProgress = null) }
+            progressLogHistory.clear()
+            mutableState.update { it.copy(isWorking = true, workingLabel = "서버 연결 설정 저장 중",
+                workingStartedAtMillis = started, workProgress = null) }
             val journal = LocalProgressJournal("save-server-connection", ::publishProgress)
             journal.phase("서버 연결 설정 저장", "포트·외부 접속·접근 허용 설정을 Termux에 전달하고 있습니다.")
             val progressJob = pollOperationProgress("save-server-connection", started)
@@ -212,7 +219,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             )) return
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
-            mutableState.update { it.copy(isWorking = true, workingLabel = "환경 확인 중", workProgress = null) }
+            val started = System.currentTimeMillis()
+            progressLogHistory.clear()
+            mutableState.update { it.copy(isWorking = true, workingLabel = "환경 확인 중",
+                workingStartedAtMillis = started, workProgress = null) }
             val journal = LocalProgressJournal("refresh", ::publishProgress)
             try {
                 val environment = repository.inspect(::publishProgress)
@@ -265,6 +275,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     state.value.lastOperationResult
                 }
                 val initialSection = if (!environment.sillyTavernInstalled) MainSection.SETUP else state.value.section
+                val recoveredProgress = progress?.let(progressLogHistory::merge)
                 mutableState.update {
                     it.copy(
                         environment = environment,
@@ -273,7 +284,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         section = initialSection,
                         isWorking = environment.operationActive,
                         workingLabel = progress?.phase.orEmpty(),
-                        workProgress = if (environment.operationActive) progress else null,
+                        workingStartedAtMillis = if (environment.operationActive) resolveWorkingStartedAtMillis(
+                            0L, progress?.operationStartedAtMillis ?: 0L, started,
+                        ) else it.workingStartedAtMillis,
+                        workProgress = if (environment.operationActive) recoveredProgress else null,
                         error = if (recoveredFailure) progress?.detail else it.error,
                         message = if (recoveredTerminal && !recoveredFailure) "앱이 종료된 동안 완료된 작업 결과를 복원했습니다." else it.message,
                         lastOperationResult = recoveredSummary,
@@ -363,12 +377,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 if (environment.operationActive) {
+                    val mergedProgress = progress?.let(progressLogHistory::merge)
                     mutableState.update {
                         it.copy(
                             environment = environment,
                             isWorking = true,
                             workingLabel = progress?.phase ?: it.workingLabel,
-                            workProgress = progress ?: it.workProgress,
+                            workingStartedAtMillis = resolveWorkingStartedAtMillis(
+                                startedAtMillis ?: 0L, progress?.operationStartedAtMillis ?: 0L,
+                                it.workingStartedAtMillis,
+                            ),
+                            workProgress = mergedProgress ?: it.workProgress,
                         )
                     }
                     continue
@@ -385,6 +404,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     progress
                 }
                 val recoveredStatus = recoveredOperationStatus(progress?.status)
+                val mergedProgress = progress?.let(progressLogHistory::merge)
                 val failed = recoveredStatus != RecoveredOperationStatus.SUCCESS
                 val interrupted = recoveredStatus == RecoveredOperationStatus.INTERRUPTED
                 val latestLogs = if (failed) {
@@ -399,10 +419,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     state.value.logs
                 }
                 val operation = progress?.operation.orEmpty().ifBlank { "unknown" }
+                val reportUnavailable = operation in setOf("update-preflight", "diagnose")
                 val resultDetail = when {
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
                     failed -> progress?.detail?.ifBlank { "작업이 실패했습니다. 로그를 확인해 주세요." }
                         ?: "작업이 실패했습니다. 로그를 확인해 주세요."
+                    operation == "update-preflight" -> "작업은 완료됐지만 업데이트 검사 결과를 받지 못했습니다. 업데이트 확인을 다시 실행해 주세요."
+                    operation == "diagnose" -> "작업은 완료됐지만 진단 보고서를 받지 못했습니다. 전체 환경 진단을 다시 실행해 주세요."
                     else -> "진행 중이던 작업을 완료했습니다."
                 }
                 val recoveredSummary = operationSummary(
@@ -437,10 +460,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     } else {
                         it.copy(
                             environment = environment,
-                            section = if (environment.sillyTavernInstalled) MainSection.HOME else it.section,
+                            section = if (environment.sillyTavernInstalled && !reportUnavailable) MainSection.HOME else it.section,
                             isWorking = true,
                             workingLabel = "작업 완료",
-                            workProgress = completionProgress(progress, "진행 중이던 작업을 완료했습니다."),
+                            workingStartedAtMillis = resolveWorkingStartedAtMillis(
+                                startedAtMillis ?: 0L, progress?.operationStartedAtMillis ?: 0L,
+                                it.workingStartedAtMillis,
+                            ),
+                            workProgress = completionProgress(mergedProgress, resultDetail),
                             error = null,
                             logs = latestLogs,
                             lastOperationResult = recoveredSummary,
@@ -465,7 +492,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             workingLabel = "",
                             workProgress = null,
                             fileBrowserMutating = if (fileBrowserPath != null) false else it.fileBrowserMutating,
-                            message = "진행 중이던 작업을 완료했습니다.",
+                            message = resultDetail,
                         )
                     }
                 }
@@ -651,7 +678,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (state.value.isWorking) return
         viewModelScope.launch {
             val started = System.currentTimeMillis()
-            mutableState.update { it.copy(isWorking = true, workingLabel = "업데이트 안전 검사 중", workProgress = null) }
+            progressLogHistory.clear()
+            mutableState.update { it.copy(isWorking = true, workingLabel = "업데이트 안전 검사 중",
+                workingStartedAtMillis = started, workProgress = null) }
             LocalProgressJournal("update-preflight", ::publishProgress).phase(
                 "업데이트 검사 준비", "Termux에 최신 커밋·Node 호환성·공간 검사 요청을 전달합니다.")
             val progressJob = pollOperationProgress("update-preflight", started)
@@ -674,14 +703,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 throw cancelled
             } catch (error: Exception) {
                 val diagnostic = error.userMessage()
+                val errorCode = errorCodeFrom(diagnostic)
+                if (reconnectTimedOutOperation(errorCode, "update-preflight", started)) return@launch
                 val summary = operationSummary(
                     operation = "update-preflight",
                     label = "업데이트 안전 검사 중",
                     detail = diagnostic,
                     succeeded = false,
-                    startedAtMillis = System.currentTimeMillis(),
-                    errorCode = errorCodeFrom(diagnostic),
-                    retryAction = retryActionAfterFailure(errorCodeFrom(diagnostic), RetryAction.CHECK_UPDATE),
+                    startedAtMillis = started,
+                    errorCode = errorCode,
+                    retryAction = retryActionAfterFailure(errorCode, RetryAction.CHECK_UPDATE),
                 )
                 mutableState.update {
                     it.copy(
@@ -800,12 +831,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             mutableState.update { it.copy(error = "기존 설치를 가져오려면 먼저 서버를 종료해 주세요.") }
             return
         }
+        val started = System.currentTimeMillis()
+        progressLogHistory.clear()
         mutableState.update {
             it.copy(isWorking = true, workingLabel = "기존 설치 폴더 검사 중", workProgress = null,
-                pendingInstallation = null)
+                workingStartedAtMillis = started, pendingInstallation = null)
         }
         viewModelScope.launch {
-            val progressJob = pollOperationProgress("inspect-install", System.currentTimeMillis())
+            val progressJob = pollOperationProgress("inspect-install", started)
             try {
                 val candidate = block()
                 mutableState.update { it.copy(pendingInstallation = candidate) }
@@ -998,12 +1031,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (state.value.isWorking) return
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()
+            progressLogHistory.clear()
             mutableState.update {
                 it.copy(
                     section = MainSection.LOGS,
                     diagnosticPanel = DiagnosticPanel.OVERVIEW,
                     isWorking = true,
                     workingLabel = "전체 환경 진단 중",
+                    workingStartedAtMillis = operationStartedAt,
                     workProgress = null,
                 )
             }
@@ -1014,6 +1049,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val report = repository.diagnose()
                 val finalProgress = try {
                     repository.readProgress()?.takeIf { it.belongsToStartedOperation("diagnose", operationStartedAt) }
+                        ?.let(progressLogHistory::merge)
                         ?: state.value.workProgress
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -1050,14 +1086,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 throw cancelled
             } catch (error: Exception) {
                 val diagnostic = error.userMessage()
+                val errorCode = errorCodeFrom(diagnostic)
+                if (reconnectTimedOutOperation(errorCode, "diagnose", operationStartedAt)) return@launch
                 val summary = operationSummary(
                     operation = "diagnose",
                     label = "전체 환경 진단 중",
                     detail = diagnostic,
                     succeeded = false,
                     startedAtMillis = operationStartedAt,
-                    errorCode = errorCodeFrom(diagnostic),
-                    retryAction = RetryAction.DIAGNOSE,
+                    errorCode = errorCode,
+                    retryAction = retryActionAfterFailure(errorCode, RetryAction.DIAGNOSE),
                 )
                 mutableState.update {
                     it.copy(
@@ -1249,11 +1287,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             mutableState.update { it.copy(fileBrowserError = "파일을 변경하려면 서버와 다른 작업을 먼저 종료해 주세요.") }
             return
         }
+        val started = System.currentTimeMillis()
+        progressLogHistory.clear()
         mutableState.update { it.copy(fileBrowserMutating = true, isWorking = true, workingLabel = label,
-            fileBrowserError = "", fileBrowserNotice = "", workProgress = null) }
+            workingStartedAtMillis = started, fileBrowserError = "", fileBrowserNotice = "", workProgress = null) }
         val fileBrowserPath = state.value.fileBrowserPath
         viewModelScope.launch {
-            val started = System.currentTimeMillis()
             val journal = LocalProgressJournal(operation, ::publishProgress)
             journal.phase("파일 작업 준비", "$label 요청을 Termux에 전달합니다.")
             val progressJob = pollOperationProgress(operation, started)
@@ -1353,7 +1392,26 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun publishProgress(progress: WorkProgress) {
-        mutableState.update { it.copy(workProgress = progress) }
+        val merged = progressLogHistory.merge(progress)
+        mutableState.update { it.copy(workProgress = merged) }
+    }
+
+    private suspend fun reconnectTimedOutOperation(errorCode: String, operation: String, startedAtMillis: Long): Boolean {
+        if (errorCode != "TERMUX_TIMEOUT") return false
+        val environment = try {
+            repository.inspect()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return false
+        }
+        if (!environment.operationActive) {
+            mutableState.update { it.copy(environment = environment) }
+            return false
+        }
+        mutableState.update { it.reconnectingAfterTimeout(environment, operation) }
+        resumeDetachedOperation(startedAtMillis = startedAtMillis)
+        return true
     }
 
     private fun CoroutineScope.pollOperationProgress(operation: String, startedAtMillis: Long): Job = launch {
@@ -1362,7 +1420,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 try {
                     val progress = repository.readProgress()
                     if (appInForeground && isActive && progress?.belongsToStartedOperation(operation, startedAtMillis) == true) {
-                        mutableState.update { it.copy(workProgress = progress) }
+                        publishProgress(progress)
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -1387,8 +1445,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         operationCancellationRequested = false
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()
+            progressLogHistory.clear()
             mutableState.update {
-                it.copy(isWorking = true, workingLabel = label, workProgress = null)
+                it.copy(isWorking = true, workingLabel = label,
+                    workingStartedAtMillis = operationStartedAt, workProgress = null)
             }
             LocalProgressJournal(operation, ::publishProgress).phase(
                 "작업 요청 준비", "$label 요청을 Termux에 전달하고 있습니다.")
@@ -1434,7 +1494,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     return@launch
                 }
                 progressJob.cancel()
-                val finalProgress = state.value.workProgress
                 val environment = repository.inspect(::publishProgress, operation)
                 mutableState.update {
                     it.copy(
@@ -1443,7 +1502,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         section = if (environment.sillyTavernInstalled) MainSection.HOME else it.section,
                         isWorking = true,
                         workingLabel = "작업 완료",
-                        workProgress = completionProgress(finalProgress, resolvedSuccessMessage),
+                        workProgress = completionProgress(it.workProgress, resolvedSuccessMessage),
                     )
                 }
                 delay(COMPLETION_ANIMATION_MILLIS)
@@ -1463,27 +1522,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             } catch (error: Exception) {
                 val diagnostic = error.userMessage()
                 val errorCode = errorCodeFrom(diagnostic)
-                val timedOut = errorCode == "TERMUX_TIMEOUT"
-                val checkedEnvironment = if (timedOut) {
-                    // The RUN_COMMAND process may outlive our callback wait. Reconnect to
-                    // its existing operation instead of enabling an immediate duplicate.
-                    try {
-                        repository.inspect()
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                        null
-                    }
-                } else {
-                    null
-                }
-                val stillRunning = checkedEnvironment?.operationActive == true
+                if (reconnectTimedOutOperation(errorCode, operation, operationStartedAt)) return@launch
                 mutableState.update {
                     it.copy(
-                        environment = checkedEnvironment ?: it.environment,
-                        isWorking = stillRunning,
-                        workingLabel = if (stillRunning) "진행 중인 작업에 다시 연결 중" else "",
-                        workProgress = if (stillRunning) it.workProgress else null,
+                        isWorking = false,
+                        workingLabel = "",
+                        workProgress = null,
                         error = diagnostic,
                         lastOperationResult = operationSummary(
                             operation = operation,
@@ -1497,7 +1541,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         logs = "최근 작업 실패\n\n$diagnostic",
                     )
                 }
-                if (stillRunning) resumeDetachedOperation()
             } finally {
                 operationCancellationRequested = false
                 progressJob.cancel()
