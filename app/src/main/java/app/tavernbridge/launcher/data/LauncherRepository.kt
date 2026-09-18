@@ -315,7 +315,7 @@ class LauncherRepository(private val context: Context) {
     /** Resolve the selected local folder directly: no duplicate SAF staging tree is created. */
     suspend fun stageInstallationFolder(uri: Uri): ExistingInstallation {
         require(uri.scheme == "content" && DocumentsContract.isTreeUri(uri)) { "설치 폴더를 선택해 주세요." }
-        return inspectExistingInstallation(installationPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri)))
+        return inspectExistingInstallation(localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri)))
     }
 
     suspend fun importExistingInstallation(path: String): TermuxCommandResult =
@@ -381,6 +381,17 @@ class LauncherRepository(private val context: Context) {
         val result = runManager("import-st-file ${shellQuote(encodeFileArgument(destination))} ${shellQuote(transfer.name)}", 15 * 60_000L)
         importStaging.remove(transfer)
         return result
+    }
+
+    suspend fun importSillyTavernFolder(parent: String, uri: Uri): TermuxCommandResult {
+        require(uri.scheme == "content" && DocumentsContract.isTreeUri(uri)) { "가져올 폴더를 선택해 주세요." }
+        val source = localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri))
+        val destination = fileChildPath(parent, source.substringAfterLast('/'))
+        // Copy directly in Termux; no intermediate ZIP or duplicate shared-storage staging tree.
+        return runManager(
+            "import-st-folder ${shellQuote(encodeFileArgument(destination))} ${shellQuote(encodeFileArgument(source))}",
+            45 * 60_000L,
+        )
     }
 
     fun openSillyTavernDirectory(): Boolean = DirectoryAppLauncher(context).openRecommended()

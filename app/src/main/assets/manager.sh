@@ -185,7 +185,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|create-st-file|import-st-file|mkdir-st|rename-st|delete-st|restore-st-trash)
+        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash)
             return 0
             ;;
         *)
@@ -1814,7 +1814,7 @@ begin_st_file_mutation() {
     # Check after acquiring the shared lock so another launcher operation cannot
     # start the server between the check and the file change. A reachable server
     # also covers installations started outside the launcher without its PID file.
-    if is_running || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+    if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
         echo "파일을 변경하려면 먼저 SillyTavern 서버를 종료해 주세요." >&2
         exit 10
     fi
@@ -1862,6 +1862,12 @@ import_st_file() {
     write_progress 100 "파일 가져오기 완료" "선택한 파일을 기존 항목을 덮어쓰지 않고 가져왔습니다." success
 }
 
+import_st_folder() {
+    begin_st_file_mutation import-st-folder
+    st_file_action import-folder "${1:-}" "${2:-}"
+    write_progress 100 "폴더 가져오기 완료" "선택한 폴더와 하위 내용을 복사했습니다. 원본 폴더는 그대로 유지했습니다." success
+}
+
 st_file_action() {
     command -v node >/dev/null 2>&1 || { echo "파일 관리에 필요한 Node.js를 찾을 수 없습니다." >&2; return 12; }
     # Keep the text limit below Linux's per-argument limit after base64 expansion
@@ -1869,13 +1875,13 @@ st_file_action() {
     ST_PROGRESS_HELPER="$PROGRESS_HELPER" ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" \
         ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
         ST_PROGRESS_PHASE="SillyTavern에 파일 저장" ST_PROGRESS_DETAIL="실제 기록한 용량을 세며 선택한 파일을 가져옵니다." \
-        node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$@" <<'ST_LAUNCHER_FILES_JS'
+        node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$HOME" "$@" <<'ST_LAUNCHER_FILES_JS'
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { TextDecoder } = require('util');
-const [rootArgument, launcherArgument, downloadArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
+const [rootArgument, launcherArgument, downloadArgument, homeArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
 const MAX_TEXT_BYTES = 65536;
 const fail = (code, message) => { const error = new Error(message); error.fileCode = code; throw error; };
 const exists = filename => { try { fs.lstatSync(filename); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
@@ -1955,6 +1961,38 @@ function trashRoot() {
 function directoryIdentity(stat) {
     return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].map(value => value.toString()).join(':');
 }
+function within(parent, candidate) {
+    return candidate === parent || candidate.startsWith(parent + path.sep);
+}
+function folderImportSource(encodedSource) {
+    const supplied = utf8(decode(encodedSource));
+    if (!path.isAbsolute(supplied) || /[\\\x00-\x1f\x7f]/.test(supplied) || supplied.split('/').some(part => part === '.' || part === '..')) fail(64, '가져올 폴더의 안전한 전체 경로가 필요합니다.');
+    const absolute = path.resolve(supplied);
+    // DOWNLOAD_DIR and ST_HOME are trusted configured roots too (and allow the
+    // isolated regression harness to run without Android-specific directories).
+    // Check only roots that lexically contain the requested source. An unrelated
+    // shared-storage permission denial must not break a Termux-local import.
+    const candidates = [homeArgument, '/storage/emulated/0', downloadArgument, rootArgument]
+        .map(candidate => path.resolve(candidate)).filter(candidate => within(candidate, absolute))
+        .sort((a, b) => b.length - a.length);
+    const suppliedBase = candidates.find(candidate => exists(candidate));
+    const base = suppliedBase ? { supplied: suppliedBase, real: fs.realpathSync(suppliedBase) } : null;
+    if (!base) fail(44, '내부 저장소 또는 Termux 홈에서 접근 가능한 폴더만 가져올 수 있습니다.');
+    let current = base.real;
+    const components = path.relative(base.supplied, absolute).split(path.sep).filter(Boolean);
+    for (const component of components) {
+        current = path.join(current, component);
+        const stat = fs.lstatSync(current);
+        if (stat.isSymbolicLink()) fail(44, '심볼릭 링크 경로의 폴더는 가져올 수 없습니다.');
+        if (!stat.isDirectory()) fail(64, '일반 폴더를 선택해 주세요.');
+    }
+    if (!fs.lstatSync(current).isDirectory()) fail(64, '일반 폴더를 선택해 주세요.');
+    const launcher = fs.realpathSync(launcherArgument);
+    if (within(launcher, current) || within(current, launcher) || current === path.parse(current).root) fail(44, '런처 관리 폴더 또는 저장소 전체는 가져올 수 없습니다.');
+    if (current === fs.realpathSync(homeArgument) || absolute === path.resolve('/storage/emulated/0')) fail(44, '저장소 전체 대신 가져올 하위 폴더를 선택해 주세요.');
+    if (components.some(component => component === '.git' || component === 'node_modules')) fail(44, 'Git 정보 또는 node_modules 폴더는 가져올 수 없습니다.');
+    return current;
+}
 try {
     root = fs.realpathSync(rootArgument);
     if (!fs.statSync(root).isDirectory()) fail(8, 'SillyTavern 폴더를 찾을 수 없습니다.');
@@ -1977,7 +2015,7 @@ try {
         console.log(`restored_b64=${b64(relative)}`);
     } else {
         const relative = relativePath(encoded, action === 'list');
-        const target = resolve(relative, action === 'mkdir' || action === 'create-file' || action === 'import');
+        const target = resolve(relative, action === 'mkdir' || action === 'create-file' || action === 'import' || action === 'import-folder');
         if (action === 'list') {
             if (!/^(0|[1-9][0-9]{0,9})$/.test(value)) fail(64, '올바르지 않은 목록 페이지입니다.');
             const before = fs.lstatSync(target, { bigint: true });
@@ -2075,6 +2113,57 @@ try {
                 fs.closeSync(input);
                 if (output !== undefined) fs.closeSync(output);
                 if (exists(temporary)) fs.unlinkSync(temporary);
+            }
+            console.log(`imported_b64=${b64(relative)}`);
+        } else if (action === 'import-folder') {
+            writable(relative);
+            const sourcePermissionMessage = '선택한 원본 폴더를 Termux에서 읽을 권한이 없습니다. 내부 저장소 폴더라면 Termux에서 termux-setup-storage를 실행하고 저장소 접근 권한을 확인해 주세요.';
+            let source;
+            try { source = folderImportSource(value); }
+            catch (error) {
+                if (error.code === 'EACCES' || error.code === 'EPERM') fail(44, sourcePermissionMessage);
+                throw error;
+            }
+            if (path.basename(source) !== path.basename(target)) fail(64, '선택한 원본 폴더 이름으로 가져와야 합니다.');
+            if (within(source, target) || within(target, source)) fail(44, '원본과 대상 폴더가 같거나 서로 포함되어 있어 복사할 수 없습니다.');
+            if (exists(target)) fail(43, '같은 이름의 항목이 이미 있습니다. 덮어쓰지 않았습니다.');
+            const parent = path.dirname(target);
+            const parentBefore = fs.lstatSync(parent);
+            const container = fs.mkdtempSync(path.join(parent, '.st-launcher-folder-'));
+            fs.chmodSync(container, 0o700);
+            const containerBefore = fs.lstatSync(container);
+            const staged = path.join(container, 'item');
+            try {
+                try {
+                    execFileSync('bash', [process.env.ST_PROGRESS_HELPER, 'copy', source, staged, '', 'reject-links'], {
+                        env: { ...process.env, ST_PROGRESS_PHASE: 'SillyTavern에 폴더 복사',
+                            ST_PROGRESS_DETAIL: '원본 폴더를 유지하면서 하위 파일과 용량을 세어 복사합니다.',
+                            ST_PROGRESS_MIN_FREE_BYTES: '33554432', ST_PROGRESS_BLOCK_PROTECTED_NAMES: '1' },
+                        stdio: ['ignore', 'ignore', 'pipe'],
+                    });
+                } catch (error) {
+                    const detail = String(error.stderr || '');
+                    if (/COPY_NO_SPACE|ENOSPC/.test(detail)) fail(30, '폴더를 안전하게 가져올 저장 공간이 부족합니다.');
+                    if (/COPY_SOURCE_ACCESS_DENIED/.test(detail)) fail(44, sourcePermissionMessage);
+                    if (/COPY_SOURCE_CHANGED/.test(detail)) fail(42, '복사 중 원본 폴더가 변경되었습니다. 다시 가져와 주세요.');
+                    if (/COPY_UNSAFE|COPY_OVERLAP|COPY_PROTECTED/.test(detail)) fail(44, '폴더에 심볼릭 링크, 특수 파일 또는 보호된 경로가 있어 가져오기를 중단했습니다.');
+                    fail(45, '폴더를 복사하지 못했습니다. 원본과 기존 항목은 유지했습니다.');
+                }
+                const parentAfter = fs.lstatSync(path.dirname(resolve(relative, true)));
+                if (parentAfter.ino !== parentBefore.ino || parentAfter.dev !== parentBefore.dev) fail(44, '대상 폴더가 변경되어 가져오기를 중단했습니다.');
+                moveNoReplace(staged, target);
+            } finally {
+                // Only this command's randomly-created staging container is
+                // removed, never the selected source or an existing destination.
+                if (exists(container)) {
+                    const parentNow = fs.lstatSync(parent);
+                    const containerNow = fs.lstatSync(container);
+                    if (parentNow.ino !== parentBefore.ino || parentNow.dev !== parentBefore.dev || parentNow.isSymbolicLink() ||
+                        containerNow.ino !== containerBefore.ino || containerNow.dev !== containerBefore.dev || containerNow.isSymbolicLink()) {
+                        fail(44, '임시 폴더 위치가 변경되어 자동 정리하지 않았습니다.');
+                    }
+                    fs.rmSync(container, { recursive: true, force: true });
+                }
             }
             console.log(`imported_b64=${b64(relative)}`);
         } else if (action === 'create-file') {
@@ -3205,6 +3294,7 @@ case "${1:-doctor}" in
     write-st-file) write_st_file "${2:-}" "${3:-}" "${4:-}" ;;
     create-st-file) create_st_file "${2:-}" ;;
     import-st-file) import_st_file "${2:-}" "${3:-}" ;;
+    import-st-folder) import_st_folder "${2:-}" "${3:-}" ;;
     mkdir-st) mkdir_st "${2:-}" ;;
     rename-st) rename_st "${2:-}" "${3:-}" ;;
     delete-st) delete_st "${2:-}" ;;

@@ -341,13 +341,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun resumeDetachedOperation() {
+    private fun resumeDetachedOperation(fileBrowserPath: String? = null, startedAtMillis: Long? = null) {
         if (detachedOperationMonitor?.isActive == true) return
         detachedOperationMonitor = viewModelScope.launch {
             while (true) {
                 delay(1_500)
                 if (!appInForeground) continue
-                val progress = try {
+                var progress = try {
                     repository.readProgress()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -374,6 +374,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     continue
                 }
 
+                // The operation can finish between the progress read and the
+                // environment response. Re-read its terminal state before
+                // treating the earlier running snapshot as an interruption.
+                progress = try {
+                    repository.readProgress() ?: progress
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    progress
+                }
                 val recoveredStatus = recoveredOperationStatus(progress?.status)
                 val failed = recoveredStatus != RecoveredOperationStatus.SUCCESS
                 val interrupted = recoveredStatus == RecoveredOperationStatus.INTERRUPTED
@@ -400,12 +410,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     label = operationLabel(operation),
                     detail = resultDetail,
                     succeeded = !failed,
-                    startedAtMillis = System.currentTimeMillis(),
+                    startedAtMillis = startedAtMillis ?: System.currentTimeMillis(),
                     errorCode = if (interrupted) "OPERATION_INTERRUPTED" else progress?.errorCode.orEmpty(),
                     retryAction = if (failed && !interrupted) retryActionFor(operation) else RetryAction.NONE,
                 )
+                val refreshedFileEntries = if (fileBrowserPath != null && !failed) {
+                    try {
+                        repository.listSillyTavernFiles(fileBrowserPath)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else null
                 mutableState.update {
-                    if (failed) {
+                    val recovered = if (failed) {
                         it.copy(
                             environment = environment,
                             isWorking = false,
@@ -427,6 +446,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             lastOperationResult = recoveredSummary,
                         )
                     }
+                    if (fileBrowserPath == null) recovered else recovered.copy(
+                        section = it.section,
+                        error = null,
+                        fileBrowserMutating = !failed,
+                        fileBrowserLoading = false,
+                        fileBrowserEntries = refreshedFileEntries ?: it.fileBrowserEntries,
+                        fileBrowserError = if (failed) resultDetail else "",
+                        fileBrowserNotice = if (failed) "" else if (refreshedFileEntries != null) resultDetail
+                            else "$resultDetail 목록을 새로고침해 주세요.",
+                    )
                 }
                 if (!failed) {
                     delay(COMPLETION_ANIMATION_MILLIS)
@@ -435,6 +464,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             isWorking = false,
                             workingLabel = "",
                             workProgress = null,
+                            fileBrowserMutating = if (fileBrowserPath != null) false else it.fileBrowserMutating,
                             message = "진행 중이던 작업을 완료했습니다.",
                         )
                     }
@@ -1201,6 +1231,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun importSillyTavernFolder(uri: Uri) {
+        val parent = state.value.fileBrowserPath
+        mutateTavernFiles("import-st-folder", "폴더 가져오기", "하위 파일과 함께 폴더를 가져왔습니다. 원본 폴더는 그대로 유지됩니다.") {
+            repository.importSillyTavernFolder(parent, uri)
+        }
+    }
+
     private fun checkEntryName(name: String): Boolean {
         if (validTavernEntryName(name)) return true
         mutableState.update { it.copy(fileBrowserError = "빈 이름, . 또는 .., 경로 구분자와 제어 문자는 사용할 수 없습니다.") }
@@ -1214,6 +1251,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
         mutableState.update { it.copy(fileBrowserMutating = true, isWorking = true, workingLabel = label,
             fileBrowserError = "", fileBrowserNotice = "", workProgress = null) }
+        val fileBrowserPath = state.value.fileBrowserPath
         viewModelScope.launch {
             val started = System.currentTimeMillis()
             val journal = LocalProgressJournal(operation, ::publishProgress)
@@ -1245,15 +1283,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     } catch (cancelled: CancellationException) { throw cancelled
                     } catch (_: Exception) { /* The backend also guards against concurrent writes. */ }
                 }
-                mutableState.update { it.copy(fileBrowserError = detail,
-                    lastOperationResult = operationSummary(operation, label, detail, false, started,
-                        errorCode = errorCodeFrom(detail))) }
+                if (reconnecting) {
+                    // A callback timeout is not a failed copy while Termux still owns the operation.
+                    mutableState.update { it.copy(fileBrowserError = "",
+                        fileBrowserNotice = "Termux 응답 대기 시간이 지나 진행 중인 파일 작업에 다시 연결하고 있습니다.") }
+                } else {
+                    mutableState.update { it.copy(fileBrowserError = detail,
+                        lastOperationResult = operationSummary(operation, label, detail, false, started,
+                            errorCode = errorCodeFrom(detail))) }
+                }
             } finally {
                 progressJob.cancel()
-                mutableState.update { it.copy(fileBrowserMutating = false, isWorking = reconnecting,
+                mutableState.update { it.copy(fileBrowserMutating = reconnecting, isWorking = reconnecting,
                     workingLabel = if (reconnecting) "진행 중인 파일 작업에 다시 연결 중" else "",
-                    workProgress = null) }
-                if (reconnecting) resumeDetachedOperation()
+                    workProgress = if (reconnecting) it.workProgress else null) }
+                if (reconnecting) resumeDetachedOperation(fileBrowserPath, started)
             }
         }
     }
@@ -1501,6 +1545,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "rename-st" -> "이름 변경"
         "delete-st" -> "휴지통으로 이동"
         "import-st-file" -> "파일 가져오기"
+        "import-st-folder" -> "폴더 가져오기"
         "restore-st-trash" -> "휴지통 항목 복구"
         "restore" -> "백업 복원"
         "delete-backup" -> "백업 삭제"

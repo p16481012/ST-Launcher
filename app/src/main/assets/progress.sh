@@ -15,6 +15,11 @@ const CHUNK_SIZE = 128 * 1024;
 const testDelay = process.env.ST_PROGRESS_TEST_MODE === '1'
     ? Math.min(50, Math.max(0, Number(process.env.ST_PROGRESS_TEST_CHUNK_DELAY_MS) || 0)) : 0;
 const testWait = testDelay ? new Int32Array(new SharedArrayBuffer(4)) : null;
+const minimumFreeArgument = process.env.ST_PROGRESS_MIN_FREE_BYTES || '';
+const blockProtectedNames = process.env.ST_PROGRESS_BLOCK_PROTECTED_NAMES === '1';
+let minimumFreeBytes = null;
+let spaceCheckPath = '';
+let lastSpaceCheck = 0;
 const unsafeText = /[\u0000-\u001f\u007f]/;
 const cleanLine = value => String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ');
 const phase = cleanLine(process.env.ST_PROGRESS_PHASE || '파일 복사');
@@ -178,8 +183,16 @@ function equivalent(planned, current) {
         planned.mtimeMs === current.mtimeMs && planned.ctimeMs === current.ctimeMs;
 }
 
+function sourceAccess(action) {
+    try { return action(); }
+    catch (error) {
+        if (error.code === 'EACCES' || error.code === 'EPERM') fail('COPY_SOURCE_ACCESS_DENIED');
+        throw error;
+    }
+}
+
 function verifySource(entry) {
-    const current = fs.lstatSync(entry.source);
+    const current = sourceAccess(() => fs.lstatSync(entry.source));
     if (!equivalent(entry.stat, current)) fail('COPY_SOURCE_CHANGED');
 }
 
@@ -192,7 +205,8 @@ function addSafeSize(value) {
 
 function planEntry(filename, relative, entries) {
     if (unsafeText.test(relative)) fail('COPY_UNSAFE_ENTRY');
-    const stat = fs.lstatSync(filename);
+    if (blockProtectedNames && relative.split(path.sep).some(part => part === '.git' || part === 'node_modules')) fail('COPY_PROTECTED_ENTRY');
+    const stat = sourceAccess(() => fs.lstatSync(filename));
     const entry = { source: filename, relative, stat };
     if (stat.isDirectory()) entry.kind = 'directory';
     else if (stat.isFile()) {
@@ -208,7 +222,7 @@ function planEntry(filename, relative, entries) {
     activity(relative || path.basename(filename));
     publish();
     if (entry.kind === 'directory') {
-        for (const name of fs.readdirSync(filename)) {
+        for (const name of sourceAccess(() => fs.readdirSync(filename))) {
             if (name === excluded) continue;
             if (unsafeText.test(name)) fail('COPY_UNSAFE_ENTRY');
             planEntry(path.join(filename, name), relative ? path.join(relative, name) : name, entries);
@@ -244,6 +258,15 @@ function temporaryFor(destination) {
     return filename;
 }
 
+function checkFreeSpace(requiredBytes = 0n, force = false) {
+    if (minimumFreeBytes === null || !spaceCheckPath) return;
+    const now = Date.now();
+    if (!force && now - lastSpaceCheck < 1000) return;
+    const stat = fs.statfsSync(spaceCheckPath, { bigint: true });
+    if (stat.bavail * stat.bsize < requiredBytes + minimumFreeBytes) fail('COPY_NO_SPACE');
+    lastSpaceCheck = now;
+}
+
 function applyMetadata(filename, stat) {
     fs.chmodSync(filename, stat.mode & 0o777);
     fs.utimesSync(filename, stat.atimeMs / 1000, stat.mtimeMs / 1000);
@@ -273,7 +296,7 @@ function copyFile(entry, destination, destinationRoot, buffer, hardLinks) {
     let input;
     let output;
     try {
-        input = fs.openSync(entry.source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+        input = sourceAccess(() => fs.openSync(entry.source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)));
         if (!equivalent(entry.stat, fs.fstatSync(input))) fail('COPY_SOURCE_CHANGED');
         output = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
         let remaining = entry.stat.size;
@@ -286,6 +309,7 @@ function copyFile(entry, destination, destinationRoot, buffer, hardLinks) {
                 if (count === 0) fail('COPY_WRITE_FAILED');
                 written += count;
                 state.completedBytes += count;
+                checkFreeSpace();
                 activity();
                 publish();
             }
@@ -318,10 +342,14 @@ try {
         !['reject-links', 'preserve-links'].includes(linkPolicy)) {
         fail('COPY_INVALID_ARGUMENT');
     }
+    if (minimumFreeArgument) {
+        if (!/^[0-9]{1,16}$/.test(minimumFreeArgument)) fail('COPY_INVALID_ARGUMENT');
+        minimumFreeBytes = BigInt(minimumFreeArgument);
+    }
     const source = path.resolve(sourceArgument);
     const destination = path.resolve(destinationArgument);
     if (source === path.parse(source).root || destination === path.parse(destination).root) fail('COPY_UNSAFE_ROOT');
-    const sourceStat = fs.lstatSync(source);
+    const sourceStat = sourceAccess(() => fs.lstatSync(source));
     // Android's selected file is staged under a random transport name. A label
     // may identify its real destination in the UI, but never affects file I/O.
     // Directory copies always show their actual individual relative entries.
@@ -330,7 +358,7 @@ try {
         state.currentItem = displayItem;
     }
     const sourceCanonical = sourceStat.isSymbolicLink()
-        ? path.join(fs.realpathSync(path.dirname(source)), path.basename(source)) : fs.realpathSync(source);
+        ? path.join(sourceAccess(() => fs.realpathSync(path.dirname(source))), path.basename(source)) : sourceAccess(() => fs.realpathSync(source));
     const destinationCanonical = canonicalFuture(destination);
     if (within(sourceCanonical, destinationCanonical) || within(destinationCanonical, sourceCanonical)) {
         fail('COPY_OVERLAP');
@@ -349,15 +377,23 @@ try {
     // Never recursively create or traverse an unvalidated arbitrary ancestor.
     const destinationParent = path.dirname(destination);
     if (!fs.statSync(destinationParent).isDirectory()) fail('COPY_INVALID_DESTINATION');
+    spaceCheckPath = destinationParent;
     progressReady = true;
     publish(true);
     const entries = [];
     planEntry(source, '', entries);
+    if (minimumFreeBytes !== null) {
+        const stat = fs.statfsSync(destinationParent, { bigint: true });
+        // Include a filesystem block per entry for allocation/metadata overhead;
+        // logical sizes intentionally overestimate hard-link/sparse copies.
+        checkFreeSpace(BigInt(state.totalBytes) + BigInt(entries.length) * stat.bsize, true);
+    }
     const directorySource = sourceStat.isDirectory();
     if (!directorySource && excluded) fail('COPY_INVALID_ARGUMENT');
     const destinationRoot = directorySource ? destination : destinationParent;
     // Validate every existing destination component before writing the first byte.
     for (const entry of entries) {
+        checkFreeSpace();
         const target = directorySource ? path.join(destination, entry.relative) : destination;
         let ancestor = target;
         while (within(destinationRoot, ancestor)) {
@@ -379,6 +415,7 @@ try {
     const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
     const hardLinks = new Map();
     for (const entry of entries) {
+        checkFreeSpace();
         const target = directorySource ? path.join(destination, entry.relative) : destination;
         activity(entry.relative || path.basename(source));
         verifySource(entry);

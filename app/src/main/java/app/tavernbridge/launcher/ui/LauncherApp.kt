@@ -283,6 +283,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     val fileImportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(viewModel::importSillyTavernFile)
     }
+    val folderImportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let(viewModel::importSillyTavernFolder)
+    }
     val pickInstallation = {
         runCatching { installationPicker.launch(null) }
             .onFailure { viewModel.showMessage("폴더 선택 화면을 열 수 없습니다. Termux 폴더 경로 입력을 사용해 주세요.") }
@@ -637,6 +640,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onImport = {
                         runCatching { fileImportPicker.launch(arrayOf("*/*")) }
                             .onFailure { viewModel.showMessage("파일 선택 화면을 열 수 없습니다.") }
+                    },
+                    onImportFolder = {
+                        runCatching { folderImportPicker.launch(null) }
+                            .onFailure { viewModel.showMessage("폴더 선택 화면을 열 수 없습니다.") }
                     },
                     onClose = viewModel::closeSillyTavernFolder,
                 )

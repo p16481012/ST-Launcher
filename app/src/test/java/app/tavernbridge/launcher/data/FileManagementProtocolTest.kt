@@ -5,10 +5,10 @@ import org.junit.Test
 
 class FileManagementProtocolTest {
     @Test fun mapsLocalTreesWithoutMakingCopies() {
-        assertEquals("/storage/emulated/0/Documents/SillyTavern", installationPathForTree(
+        assertEquals("/storage/emulated/0/Documents/SillyTavern", localFolderPathForTree(
             "com.android.externalstorage.documents", "primary:Documents/SillyTavern"))
         val termux = "/data/data/com.termux/files/home/SillyTavern"
-        assertEquals(termux, installationPathForTree("com.termux.documents", termux))
+        assertEquals(termux, localFolderPathForTree("com.termux.documents", termux))
     }
 
     @Test fun rejectsUnknownProvidersAndEscapes() {
@@ -17,7 +17,20 @@ class FileManagementProtocolTest {
             "com.android.externalstorage.documents" to "primary:../SillyTavern",
             "com.termux.documents" to "/data/data/com.termux/files/home/../usr",
             "com.termux.documents" to "/data/data/com.termux/files/home-other/SillyTavern",
-        )) assertThrows(IllegalArgumentException::class.java) { installationPathForTree(provider, path) }
+            "com.android.externalstorage.documents" to "primary:",
+            "com.android.externalstorage.documents" to "primary:/",
+            "com.android.externalstorage.documents" to "secondary:Documents/Folder",
+            "com.android.externalstorage.documents" to "primary:Documents/bad\\name",
+            "com.android.externalstorage.documents" to "primary:Documents/bad\nname",
+            "com.termux.documents" to "/data/data/com.termux/files/home/",
+        )) assertThrows(IllegalArgumentException::class.java) { localFolderPathForTree(provider, path) }
+    }
+
+    @Test fun folderImportKeepsSelectedFolderNameUnderCurrentLocation() {
+        val source = localFolderPathForTree("com.android.externalstorage.documents", "primary:Download/새 폴더/")
+        assertEquals("/storage/emulated/0/Download/새 폴더", source)
+        assertEquals("data/default-user/새 폴더", fileChildPath("data/default-user", source.substringAfterLast('/')))
+        assertEquals("새 폴더", fileChildPath("", source.substringAfterLast('/')))
     }
 
     @Test fun preservesUnicodeAndEmptyText() {

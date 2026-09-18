@@ -111,6 +111,7 @@ internal fun TavernFileManagerDialog(
     onTrash: (String) -> Unit,
     onUndoTrash: () -> Unit,
     onImport: () -> Unit,
+    onImportFolder: () -> Unit,
     onClose: () -> Unit,
 ) {
     var selected by remember { mutableStateOf<TavernFileEntry?>(null) }
@@ -159,9 +160,11 @@ internal fun TavernFileManagerDialog(
                     OutlinedButton(onClick = { newFolder = true }, enabled = canModify, modifier = Modifier.weight(1f)) { Text("새 폴더") }
                     OutlinedButton(onClick = { newFile = true }, enabled = canModify, modifier = Modifier.weight(1f)) { Text("새 파일") }
                 }
-                OutlinedButton(onClick = onImport, enabled = canModify,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-                    Text("파일 가져오기")
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onImport, enabled = canModify, modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp)) { Text("파일 가져오기") }
+                    OutlinedButton(onClick = onImportFolder, enabled = canModify, modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp)) { Text("폴더 가져오기") }
                 }
                 if (state.environment.processRunning || state.environment.operationActive) Text(
                     "서버 또는 작업 실행 중에는 탐색만 가능합니다. 변경하려면 먼저 종료하세요.",

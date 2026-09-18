@@ -19,24 +19,28 @@ internal fun fileChildPath(parent: String, name: String): String {
 }
 
 /** Only documented local providers have paths that Termux can access directly. */
-internal fun installationPathForTree(authority: String?, documentId: String): String {
+internal fun localFolderPathForTree(authority: String?, documentId: String): String {
     val path = when (authority) {
         "com.android.externalstorage.documents" -> {
-            require(documentId.startsWith("primary:")) { "내부 저장소의 설치 폴더를 선택해 주세요." }
+            require(documentId.startsWith("primary:")) { "내부 저장소의 폴더를 선택해 주세요." }
             "/storage/emulated/0/" + documentId.removePrefix("primary:")
         }
         "com.termux.documents" -> {
             require(documentId.startsWith("/data/data/com.termux/files/home/")) {
-                "Termux 홈 안의 설치 폴더를 선택해 주세요."
+                "Termux 홈 안의 폴더를 선택해 주세요."
             }
             documentId
         }
-        else -> throw IllegalArgumentException("내부 저장소 또는 Termux의 설치 폴더를 선택해 주세요. 클라우드 폴더는 지원하지 않습니다.")
+        else -> throw IllegalArgumentException("내부 저장소 또는 Termux의 폴더를 선택해 주세요. 클라우드 폴더는 지원하지 않습니다.")
     }
     require(path.none { it.isISOControl() || it == '\\' } && path.split('/').none { it == ".." || it == "." }) {
         "안전하지 않은 폴더 경로입니다."
     }
-    return path.trimEnd('/')
+    val folder = path.trimEnd('/')
+    require(folder != "/storage/emulated/0" && folder != "/data/data/com.termux/files/home") {
+        "저장소 전체가 아닌 가져올 폴더를 선택해 주세요."
+    }
+    return folder
 }
 
 internal object FileManagementProtocol {

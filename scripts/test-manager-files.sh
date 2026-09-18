@@ -13,6 +13,9 @@ source "$ROOT_DIR/app/src/main/assets/manager.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 b64() { printf '%s' "$1" | base64 -w 0; }
+path_b64() {
+    if command -v cygpath >/dev/null 2>&1; then b64 "$(cygpath -m "$1")"; else b64 "$1"; fi
+}
 expect_code() {
     local expected="$1" result code
     shift
@@ -99,6 +102,79 @@ expect_code 43 st_file_action import "$(b64 'data/imported image.png')" "$staged
 expect_code 64 st_file_action import "$(b64 data/escape)" '../outside.txt'
 [[ -f "$ST_DOWNLOAD_DIR/$staged" ]] || fail 'import removed Android-owned staging before MediaStore cleanup'
 
+# Import the selected folder itself, not only its children, and keep the source.
+folder_source="$ST_DOWNLOAD_DIR/가져올 folder"
+mkdir -p "$folder_source/nested/empty" "$ST_HOME/data/folder-imports"
+printf '\000\377binary\n' > "$folder_source/nested/image.png"
+printf 'source unchanged' > "$folder_source/settings.txt"
+folder_destination='data/folder-imports/가져올 folder'
+folder_result="$(st_file_action import-folder "$(b64 "$folder_destination")" "$(path_b64 "$folder_source")")"
+[[ "$folder_result" == "imported_b64=$(b64 "$folder_destination")" ]] || fail 'folder import returned the wrong destination'
+[[ -d "$ST_HOME/$folder_destination/nested/empty" ]] || fail 'folder import lost nested empty directories'
+cmp "$folder_source/nested/image.png" "$ST_HOME/$folder_destination/nested/image.png" || fail 'folder import changed binary bytes'
+cmp "$folder_source/settings.txt" "$ST_HOME/$folder_destination/settings.txt" || fail 'folder import changed text'
+[[ "$(cat "$folder_source/settings.txt")" == 'source unchanged' ]] || fail 'folder import changed or removed its source'
+grep -Fq 'SillyTavern에 폴더 복사' "$LOG_FILE" || fail 'folder import did not log measured copy progress'
+grep -Fxq 'completed_files=2' "$PROGRESS_FILE" || fail 'folder copy did not count actual files'
+expect_code 43 st_file_action import-folder "$(b64 "$folder_destination")" "$(path_b64 "$folder_source")"
+expect_code 64 st_file_action import-folder "$(b64 data/wrong-name)" "$(path_b64 "$folder_source")"
+expect_code 64 st_file_action import-folder "$(b64 ../outside)" "$(path_b64 "$folder_source")"
+expect_code 44 st_file_action import-folder "$(b64 .git/test)" "$(path_b64 "$folder_source")"
+expect_code 64 st_file_action import-folder "$(b64 data/file)" "$(b64 relative/source)"
+expect_code 44 st_file_action import-folder "$(b64 data/escape)" "$(path_b64 "$LAUNCHER_HOME")"
+mkdir -p "$ST_HOME/data/local-folder/nested"
+printf local > "$ST_HOME/data/local-folder/nested/data.txt"
+st_file_action import-folder "$(b64 data/folder-imports/local-folder)" "$(path_b64 "$ST_HOME/data/local-folder")" >/dev/null
+[[ "$(cat "$ST_HOME/data/local-folder/nested/data.txt")" == local &&
+   "$(cat "$ST_HOME/data/folder-imports/local-folder/nested/data.txt")" == local ]] || fail 'Termux-local folder copy lost content or source'
+# Simulate denied Android shared storage: importing a Termux-local source must
+# not probe an unrelated root at all, regardless of the host running this test.
+printf '%s\n' \
+    "const fs = require('fs');" \
+    "for (const name of ['lstatSync', 'realpathSync']) {" \
+    "  const original = fs[name];" \
+    "  fs[name] = function (filename, ...args) {" \
+    "    if (String(filename).replace(/\\\\/g, '/').endsWith('/storage/emulated/0')) {" \
+    "      const error = new Error('fixture shared storage denied'); error.code = 'EACCES'; throw error;" \
+    "    }" \
+    "    return original.call(this, filename, ...args);" \
+    "  };" \
+    "}" > "$TEST_ROOT/deny-shared-storage.cjs"
+patch_path="$TEST_ROOT/deny-shared-storage.cjs"
+if command -v cygpath >/dev/null 2>&1; then patch_path="$(cygpath -m "$patch_path")"; fi
+mkdir "$ST_HOME/data/other-imports"
+NODE_OPTIONS="--require=\"$patch_path\"" st_file_action import-folder \
+    "$(b64 data/other-imports/local-folder)" "$(path_b64 "$ST_HOME/data/local-folder")" >/dev/null
+[[ "$(cat "$ST_HOME/data/other-imports/local-folder/nested/data.txt")" == local ]] || fail 'unrelated shared-storage denial blocked a Termux-local folder'
+expect_code 44 st_file_action import-folder "$(b64 data/local-folder/local-folder)" "$(path_b64 "$ST_HOME/data/local-folder")"
+mkdir -p "$ST_DOWNLOAD_DIR/protected-folder/.git"
+printf protected > "$ST_DOWNLOAD_DIR/protected-folder/.git/config"
+expect_code 44 st_file_action import-folder "$(b64 data/protected-folder)" "$(path_b64 "$ST_DOWNLOAD_DIR/protected-folder")"
+[[ ! -e "$ST_HOME/data/protected-folder" ]] || fail 'protected folder failure committed partial data'
+
+# The copy helper checks total planned allocation before creating the copy root.
+expect_code 1 env ST_PROGRESS_MIN_FREE_BYTES=9999999999999999 \
+    bash "$PROGRESS_HELPER" copy "$folder_source" "$TEST_ROOT/no-space-target" '' reject-links
+[[ ! -e "$TEST_ROOT/no-space-target" ]] || fail 'space preflight wrote into its destination'
+# A failed helper after staging content must not publish a partial folder.
+mkdir "$ST_DOWNLOAD_DIR/failure-source"
+printf original > "$ST_DOWNLOAD_DIR/failure-source/original.txt"
+printf '#!/usr/bin/env bash\nmkdir -p "$3"\nprintf partial > "$3/partial.txt"\nprintf "progress-copy: COPY_FAILED\\n" >&2\nexit 1\n' > "$TEST_ROOT/failing-copy.sh"
+saved_progress_helper="$PROGRESS_HELPER"
+PROGRESS_HELPER="$TEST_ROOT/failing-copy.sh"
+expect_code 45 st_file_action import-folder "$(b64 data/failure-source)" "$(path_b64 "$ST_DOWNLOAD_DIR/failure-source")"
+printf '#!/usr/bin/env bash\nprintf "progress-copy: COPY_SOURCE_ACCESS_DENIED\\n" >&2\nexit 1\n' > "$TEST_ROOT/failing-copy.sh"
+set +e
+permission_error="$(st_file_action import-folder "$(b64 data/failure-source)" "$(path_b64 "$ST_DOWNLOAD_DIR/failure-source")" 2>&1)"
+permission_status=$?
+set -e
+[[ "$permission_status" == 44 && "$permission_error" == *termux-setup-storage* ]] || fail 'source read permissions did not produce actionable Termux storage guidance'
+PROGRESS_HELPER="$saved_progress_helper"
+[[ ! -e "$ST_HOME/data/failure-source" ]] || fail 'failed folder import published partial output'
+[[ "$(cat "$ST_DOWNLOAD_DIR/failure-source/original.txt")" == original ]] || fail 'failed folder import changed its source'
+[[ -z "$(find "$ST_HOME" -name '.st-launcher-folder-*' -print -quit)" ]] || fail 'folder import left an owned staging directory after failure'
+should_record_operation import-st-folder || fail 'folder import is not recorded as an operation'
+
 # Long names make this listing larger than Termux's entire callback budget.
 # Every page must remain complete and bounded, with a stable revision and no gaps.
 mkdir "$ST_HOME/many-files"
@@ -151,6 +227,25 @@ if [[ "$OSTYPE" != msys* ]]; then
     expect_code 44 st_file_action create-file "$(b64 escape/new-file)"
     [[ -L "$ST_HOME/data/linked.txt" && -L "$ST_HOME/data/dangling.txt" ]] || fail 'new file creation replaced a symlink'
     [[ ! -e "$TEST_ROOT/does-not-exist.txt" && ! -e "$TEST_ROOT/new-file" ]] || fail 'new file creation followed an outside symlink'
+    mkdir "$ST_DOWNLOAD_DIR/linked-folder"
+    ln -s "$TEST_ROOT/outside.txt" "$ST_DOWNLOAD_DIR/linked-folder/outside.txt"
+    expect_code 44 st_file_action import-folder "$(b64 data/linked-folder)" "$(path_b64 "$ST_DOWNLOAD_DIR/linked-folder")"
+    ln -s "$folder_source" "$ST_DOWNLOAD_DIR/source-link"
+    expect_code 44 st_file_action import-folder "$(b64 data/source-link)" "$(path_b64 "$ST_DOWNLOAD_DIR/source-link")"
+    mkdir "$ST_DOWNLOAD_DIR/special-folder"
+    mkfifo "$ST_DOWNLOAD_DIR/special-folder/pipe"
+    expect_code 44 st_file_action import-folder "$(b64 data/special-folder)" "$(path_b64 "$ST_DOWNLOAD_DIR/special-folder")"
+    if [[ "$(id -u)" != 0 ]]; then
+        mkdir "$ST_DOWNLOAD_DIR/no-access-folder"
+        chmod 000 "$ST_DOWNLOAD_DIR/no-access-folder"
+        set +e
+        permission_error="$(st_file_action import-folder "$(b64 data/no-access-folder)" "$(path_b64 "$ST_DOWNLOAD_DIR/no-access-folder")" 2>&1)"
+        permission_status=$?
+        set -e
+        chmod 700 "$ST_DOWNLOAD_DIR/no-access-folder"
+        [[ "$permission_status" == 44 && "$permission_error" == *termux-setup-storage* ]] || fail 'actual unreadable source did not produce Termux access guidance'
+    fi
+    [[ ! -e "$ST_HOME/data/linked-folder" && ! -e "$ST_HOME/data/special-folder" ]] || fail 'unsafe folder import published output'
     [[ "$(cat "$TEST_ROOT/outside.txt")" == SECRET ]] || fail 'outside file changed'
 else
     echo 'NOTE: Windows symlink privileges unavailable; Linux CI checks symlink boundaries.'
@@ -176,6 +271,28 @@ expect_code 10 bash -c '
     is_running() { return 0; }
     st_file_action() { exit 99; }
     create_st_file unused
+' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
+
+expect_code 10 bash -c '
+    source "$1"
+    begin_operation() { [[ "$1" == import-st-folder ]] || exit 99; }
+    is_running() { return 0; }
+    st_file_action() { exit 99; }
+    import_st_folder unused unused
+' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
+expect_code 10 bash -c '
+    source "$1"
+    begin_operation() { :; }
+    is_running() { return 1; }
+    installation_server_running() { [[ "$1" == "$ST_HOME" ]] || exit 99; return 0; }
+    st_file_action() { exit 99; }
+    import_st_folder unused unused
+' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
+expect_code 11 bash -c '
+    source "$1"
+    begin_operation() { exit 11; }
+    st_file_action() { exit 99; }
+    import_st_folder unused unused
 ' _ "$ROOT_DIR/app/src/main/assets/manager.sh"
 expect_code 11 bash -c '
     source "$1"
