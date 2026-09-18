@@ -1377,13 +1377,6 @@ private fun ManagementScreen(
         ) {
             if (selectedPanel == ManagementPanel.INSTALL) {
         item {
-            ExistingInstallationImportCard(
-                enabled = !state.isWorking && !environment.processRunning && !environment.operationActive,
-                onPickFolder = onPickInstallation,
-                onInspectPath = onInspectInstallation,
-            )
-        }
-        item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
                 shape = RoundedCornerShape(24.dp),
@@ -1401,6 +1394,13 @@ private fun ManagementScreen(
                     InfoRow("커밋", environment.commit.ifBlank { "알 수 없음" }, monospace = true)
                 }
             }
+        }
+        item {
+            ExistingInstallationImportCard(
+                enabled = !state.isWorking && !environment.processRunning && !environment.operationActive,
+                onPickFolder = onPickInstallation,
+                onInspectPath = onInspectInstallation,
+            )
         }
         item {
             Card(shape = RoundedCornerShape(22.dp)) {
