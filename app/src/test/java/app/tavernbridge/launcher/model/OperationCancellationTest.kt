@@ -222,7 +222,15 @@ class OperationCancellationTest {
             } catch (error: Exception) {
                 caught = error
             }
-            assertSame(failure, caught)
+            // Coroutine stack-trace recovery may copy the exception while
+            // retaining the original as its cause. Its identity need not be
+            // the outer throwable, but its type, payload and provenance must survive.
+            assertEquals(failure.javaClass, caught?.javaClass)
+            assertEquals(failure.message, caught?.message)
+            assertTrue(
+                "The real failure must remain in the propagated cause chain",
+                generateSequence<Throwable>(caught) { it.cause }.take(8).any { it === failure },
+            )
             assertSame(control, currentCoroutineContext().operationCancellationControl())
             assertTrue(currentCoroutineContext().isActive)
         }
