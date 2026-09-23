@@ -2806,8 +2806,10 @@ private fun WorkingOverlay(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
                 WorkElapsedTime(startedAtMillis)
-                OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel)
-                WorkProgressLog(progress?.logText.orEmpty())
+                WorkProgressLog(progress?.logText.orEmpty()) {
+                    OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel,
+                        modifier = Modifier.weight(1f))
+                }
             }
         }
     }

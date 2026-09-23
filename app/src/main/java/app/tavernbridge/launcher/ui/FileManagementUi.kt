@@ -346,8 +346,10 @@ private fun FileOperationProgress(state: LauncherUiState, onCancel: () -> Unit) 
             LinearProgressIndicator(progress = { measuredPercent / 100f }, modifier = Modifier.fillMaxWidth())
         }
         WorkElapsedTime(state.workingStartedAtMillis)
-        OperationCancelControl(progress, state.cancellationRequested, state.workingStartedAtMillis, onCancel)
-        WorkProgressLog(progress?.logText.orEmpty())
+        WorkProgressLog(progress?.logText.orEmpty()) {
+            OperationCancelControl(progress, state.cancellationRequested, state.workingStartedAtMillis, onCancel,
+                modifier = Modifier.weight(1f))
+        }
     }
 }
 
