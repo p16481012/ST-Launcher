@@ -18,6 +18,8 @@ import app.tavernbridge.launcher.model.BrowserOption
 import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.BackupCategory
+import app.tavernbridge.launcher.model.BackupRequest
+import app.tavernbridge.launcher.model.BackupRequestCodec
 import app.tavernbridge.launcher.model.CustomBackupFolder
 import app.tavernbridge.launcher.model.backupFolderLabel
 import app.tavernbridge.launcher.model.DiagnosticItem
@@ -50,6 +52,7 @@ class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
     private val preferences = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
     private val importStaging = SharedImportStaging(context)
+    private val backupRequestStore = BackupRequestStore(context)
     @Volatile private var localOperationProgress: WorkProgress? = null
 
     companion object {
@@ -224,19 +227,27 @@ class LauncherRepository(private val context: Context) {
     suspend fun resetInstallation(): TermuxCommandResult =
         runManager("reset-installation", timeoutMillis = 30 * 60_000L)
 
-    suspend fun backup(): TermuxCommandResult =
-        runManager("backup", timeoutMillis = 15 * 60_000L)
+    fun savedBackupRequest(): BackupRequest? = backupRequestStore.load()
 
     suspend fun createBackup(
         categories: Set<BackupCategory>,
         includeSecrets: Boolean,
         customFolders: Set<String>,
-    ): TermuxCommandResult {
-        val kinds = categories.joinToString(",") { it.key }
-        val folders = customFolders.joinToString(",")
+    ): TermuxCommandResult = createBackup(BackupRequest(UUID.randomUUID().toString(), categories,
+        includeSecrets, customFolders))
+
+    suspend fun createBackup(request: BackupRequest): TermuxCommandResult {
+        require(BackupRequestCodec.decode(BackupRequestCodec.encode(request)) == request) {
+            "백업 선택 정보가 올바르지 않습니다. 백업 항목을 다시 선택해 주세요."
+        }
+        // Commit before dispatch so process death cannot lose the selected scope.
+        backupRequestStore.save(request)
+        val kinds = request.categories.joinToString(",") { it.key }
+        val folders = request.customFolders.joinToString(",")
         return runManager(
-            "backup-select ${shellQuote(kinds)} ${if (includeSecrets) 1 else 0} ${shellQuote(folders)}",
+            "backup-select ${shellQuote(kinds)} ${if (request.includeSecrets) 1 else 0} ${shellQuote(folders)}",
             timeoutMillis = 30 * 60_000L,
+            backupRequestId = request.id,
         )
     }
 
@@ -887,8 +898,8 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
-    private suspend fun runManager(arguments: String, timeoutMillis: Long): TermuxCommandResult {
-        val command = "${managerBootstrapCommand()} && ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
+    private suspend fun runManager(arguments: String, timeoutMillis: Long, backupRequestId: String = ""): TermuxCommandResult {
+        val command = "${managerBootstrapCommand()} && ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_BACKUP_REQUEST_ID=${shellQuote(backupRequestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
         return runBash(
             command = command,
             label = "실리태번 관리",
@@ -908,11 +919,12 @@ class LauncherRepository(private val context: Context) {
     }
 
     private fun managerBootstrapCommand(): String {
-        return managerAssetNames.joinToString(" && ") { name ->
-            val script = context.assets.open(name).bufferedReader().use { it.readText() }
-            val path = TermuxContract.MANAGER_PATH.substringBeforeLast('/') + "/$name"
-            createManagerBootstrapCommand(path, encodeManagerScript(script))
-        }
+        return createManagerBundleBootstrapCommand(
+            TermuxContract.MANAGER_PATH.substringBeforeLast('/'),
+            managerAssetNames.associateWith { name ->
+                context.assets.open(name).bufferedReader().use { it.readText() }
+            },
+        )
     }
 
     private suspend fun stageTransfer(uri: Uri, backup: Boolean): SharedImportStaging.Transfer {

@@ -39,6 +39,7 @@ LAST_LOGGED_PROGRESS=""
 OPERATION_STARTED_EPOCH=0
 CURRENT_WORK_DIR=""
 CURRENT_IMPORT_ARCHIVE=""
+CURRENT_BACKUP_OUTPUT_DIR=""
 TEMP_APT_SOURCES=""
 OPERATION_LOCK_START=""
 RESTORE_TRANSACTION_ACTIVE=0
@@ -82,6 +83,7 @@ write_progress() {
     # presents them as measured work. Only the transfer helpers provide totals.
     printf 'percent=%s\nphase=%s\ndetail=%s\nstatus=%s\noperation=%s\nerror_code=%s\nprogress_mode=%s\nphase_started_at=%s\noperation_started_at=%s\n' \
         "$percent" "$phase" "$detail" "$status" "$operation" "$error_code" "$mode" "$phase_started" "$OPERATION_STARTED_EPOCH" > "$temp"
+    if [[ "${ST_BACKUP_REQUEST_ID:-}" =~ ^[0-9a-fA-F-]{36}$ ]]; then printf 'backup_request_id=%s\n' "$ST_BACKUP_REQUEST_ID" >> "$temp"; fi
     mv -f "$temp" "$PROGRESS_FILE"
 
     local progress_key="$operation|$phase|$status"
@@ -141,6 +143,7 @@ manager_error_code() {
         *:15) echo "TERMUX_TOOL_INSTALL_FAILED" ;;
         *:16) echo "ESBUILD_INSTALL_FAILED" ;;
         *:17) echo "GIT_DOWNLOAD_FAILED" ;;
+        backup:18) echo "BACKUP_CREATE_FAILED" ;;
         *:18) echo "NETWORK_FETCH_FAILED" ;;
         *:19) echo "BACKUP_INTEGRITY_FAILED" ;;
         *:20) echo "ZIP_DAMAGED" ;;
@@ -169,6 +172,9 @@ manager_error_code() {
         *:45) echo "FILE_OPERATION_FAILED" ;;
         *:56) echo "NODE_VERSION_UNSUPPORTED" ;;
         *:57) echo "NODE_VERSION_CHECK_FAILED" ;;
+        *:58) echo "BACKUP_NO_SPACE" ;;
+        *:59) echo "BACKUP_CREATE_FAILED" ;;
+        *:60) echo "BACKUP_SOURCE_CHANGED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
         *) echo "UNKNOWN_COMMAND_FAILURE" ;;
@@ -377,6 +383,10 @@ track_current_work_dir() {
 }
 
 cleanup_current_work_dir() {
+    if [[ -n "$CURRENT_BACKUP_OUTPUT_DIR" ]]; then
+        case "$CURRENT_BACKUP_OUTPUT_DIR" in "$DOWNLOAD_DIR/.SillyTavern-backup."*) rm -rf -- "$CURRENT_BACKUP_OUTPUT_DIR" ;; esac
+        CURRENT_BACKUP_OUTPUT_DIR=""
+    fi
     # The Android picker creates this disposable copy; never remove its source URI.
     if [[ -n "$CURRENT_IMPORT_ARCHIVE" && "$CURRENT_IMPORT_ARCHIVE" == "$DOWNLOAD_DIR/SillyTavern-Import-"*.zip ]]; then
         rm -f -- "$CURRENT_IMPORT_ARCHIVE"
@@ -1383,6 +1393,20 @@ ensure_restore_space() {
     echo "restore_free_bytes=$free_bytes"
 }
 
+backup_failure() {
+    local code="$1" message="$2" details="${3:-}"
+    if [[ "$code" == 29 || "$message" == *"No space left"* || "$message" == *ENOSPC* ]] ||
+        { [[ -s "$details" ]] && grep -Eqi 'no space left|ENOSPC' "$details"; }; then code=58; fi
+    case "$code" in 58|59|60|130) ;; *) code=59 ;; esac
+    echo "$message" >&2
+    printf '%s\n' "$message" >> "$LOG_FILE" || true
+    if [[ -s "$details" ]]; then
+        cat "$details" >> "$LOG_FILE" || true
+        tail -n 12 "$details" >&2 || true
+    fi
+    exit "$code"
+}
+
 backup_selected() {
     local kinds="${1:-}"
     local include_secrets="${2:-0}"
@@ -1409,13 +1433,14 @@ backup_selected() {
     ensure_import_runtime
     write_progress 12 "백업 항목 확인" "선택한 파일과 폴더를 확인하고 있습니다."
 
-    local work="$BACKUP_DIR/backup-work-$$"
+    local work="$BACKUP_DIR/backup-work-$$" work_error
+    work_error="$(LC_ALL=C mkdir -m 700 "$work" 2>&1)" || backup_failure 59 "백업 임시 작업 폴더를 만들지 못했습니다. $work_error"
     track_current_work_dir "$work"
     local output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S).zip"
     local manifest="$work/.st-launcher-manifest"
+    local error_log="$work/create-error.log" code=0 archive
     local created_at
     created_at="$(date '+%Y-%m-%d %H:%M:%S')"
-    mkdir -p "$work"
     while [[ -e "$output" ]]; do
         sleep 1
         output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S).zip"
@@ -1468,49 +1493,59 @@ backup_selected() {
         exit 8
     fi
 
-    printf 'format=st-launcher-backup-v1\ncreated_at=%s\nitems=%s\ncustom=%s\nsecrets=%s\nst_version=%s\nbranch=%s\nlauncher_version=%s\nintegrity=zip-crc32\n' \
-        "$created_at" "$kinds" "$(IFS=','; echo "${custom_paths[*]}")" "$include_secrets" \
-        "$(version_from_file "$ST_HOME/package.json")" "$(current_branch)" "$LAUNCHER_VERSION" > "$manifest"
-
-    write_progress 28 "ZIP 생성" "선택한 항목을 휴대폰 Download 폴더에 압축하고 있습니다."
-    (cd "$work" && zip -q "$output" .st-launcher-manifest) || {
-        rm -rf "$work"; rm -f "$output"
-        echo "백업 manifest 압축에 실패했습니다." >&2
-        exit 18
-    }
     local -a excludes=("node_modules/*" "*/node_modules/*" ".st-launcher-manifest")
     if [[ "$include_secrets" != "1" ]]; then
         excludes+=("data/*/secrets.json")
     fi
+    measured_archive "백업 용량 확인" "선택한 파일과 Download의 실제 여유 공간을 확인합니다." \
+        backup-plan "$ST_HOME" "$DOWNLOAD_DIR" "$work/source-plan.json" "${paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    (( code == 0 )) || backup_failure "$code" "백업 준비 검사에 실패했습니다." "$error_log"
+    { printf 'format=st-launcher-backup-v1\ncreated_at=%s\nitems=%s\ncustom=%s\nsecrets=%s\nst_version=%s\nbranch=%s\nlauncher_version=%s\nintegrity=zip-crc32\n' \
+        "$created_at" "$kinds" "$(IFS=','; echo "${custom_paths[*]}")" "$include_secrets" \
+        "$(version_from_file "$ST_HOME/package.json")" "$(current_branch)" "$LAUNCHER_VERSION" > "$manifest"; } 2> "$error_log" || \
+        backup_failure 59 "백업 정보를 작성하지 못했습니다." "$error_log"
+    CURRENT_BACKUP_OUTPUT_DIR="$(LC_ALL=C mktemp -d "$DOWNLOAD_DIR/.SillyTavern-backup.XXXXXXXX" 2> "$error_log")" || backup_failure 59 "Download에 백업 임시 폴더를 만들지 못했습니다." "$error_log"
+    archive="$CURRENT_BACKUP_OUTPUT_DIR/archive.zip"
+    write_progress 28 "ZIP 생성" "선택한 항목을 휴대폰 Download 폴더에 압축하고 있습니다."
     measured_archive "ZIP 생성" "압축 도구가 완료한 파일 수를 표시합니다. 큰 파일 하나를 처리할 때는 파일 수가 유지될 수 있습니다." \
-        compress "$ST_HOME" "$output" "${paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2>&1 || {
-        rm -rf "$work"; rm -f "$output"
-        echo "선택한 파일을 ZIP으로 만드는 데 실패했습니다." >&2
-        exit 18
-    }
+        compress "$ST_HOME" "$archive" "${paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    (( code == 0 )) || backup_failure "$code" "선택한 파일을 ZIP으로 만드는 데 실패했습니다." "$error_log"
     write_progress 0 "백업 메타데이터 기록" "압축 정보와 항목 수를 기록하고 있습니다. ZIP 후처리 명령의 완료를 기다립니다."
     local expanded_bytes entry_count
-    expanded_bytes="$(archive_expanded_size "$output")"
-    entry_count="$(unzip -Z1 "$output" 2>/dev/null | grep -Fvx '.st-launcher-manifest' | wc -l | tr -d ' ')"
-    printf 'expanded_bytes=%s\nentry_count=%s\n' "${expanded_bytes:-0}" "${entry_count:-0}" >> "$manifest"
-    # Replace this entry explicitly: -u can skip a just-edited manifest when
-    # both writes fall within the ZIP timestamp's two-second resolution.
-    (cd "$work" && zip -q "$output" .st-launcher-manifest) >> "$LOG_FILE" 2>&1 || {
-        rm -rf "$work"; rm -f "$output"
-        echo "백업 메타데이터를 기록하지 못했습니다." >&2
-        exit 18
-    }
+    expanded_bytes="$(archive_expanded_size "$archive")" || backup_failure 59 "생성한 ZIP의 용량 정보를 읽지 못했습니다."
+    entry_count="$(unzip -Z1 "$archive" 2>/dev/null | wc -l | tr -d ' ')" || backup_failure 59 "생성한 ZIP의 항목 정보를 읽지 못했습니다."
+    { printf 'expanded_bytes=%s\nentry_count=%s\n' "${expanded_bytes:-0}" "${entry_count:-0}" >> "$manifest"; } 2> "$error_log" || \
+        backup_failure 59 "백업 용량 정보를 기록하지 못했습니다." "$error_log"
+    # The entry did not exist during compression. -g appends the final manifest
+    # in place, avoiding Info-ZIP's full-archive rewrite for a replaced entry.
+    measured_archive "백업 메타데이터 기록" "완료된 ZIP에 백업 정보를 추가합니다." \
+        backup-manifest "$work" "$archive" .st-launcher-manifest >> "$LOG_FILE" 2> "$error_log" || code=$?
+    (( code == 0 )) || backup_failure "$code" "백업 메타데이터를 기록하지 못했습니다." "$error_log"
 
     write_progress 88 "ZIP 검사" "ZIP CRC와 확장 메타데이터를 확인하고 있습니다."
-    if ! validate_restore_archive "$output" "$work/verify-index.json" >> "$LOG_FILE" 2>&1 ||
-        ! measured_archive "ZIP 검사" "실제 검사한 용량과 파일을 표시합니다. 파일을 다시 풀어 저장하지 않습니다." \
-            verify "$output" "$work/verify-index.json" >> "$LOG_FILE" 2>&1; then
-        rm -rf "$work"; rm -f "$output"
-        echo "생성된 ZIP 검증에 실패하여 불완전한 파일을 삭제했습니다." >&2
+    validate_restore_archive "$archive" "$work/verify-index.json" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    if (( code == 0 )); then
+        measured_archive "ZIP 검사" "실제 검사한 용량과 파일을 표시합니다. 파일을 다시 풀어 저장하지 않습니다." \
+            verify "$archive" "$work/verify-index.json" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    fi
+    if (( code != 0 )); then
+        if [[ "$code" == 29 || "$code" == 58 ]]; then backup_failure 58 "백업 검사를 위한 저장 공간이 부족합니다." "$error_log"; fi
+        cat "$error_log" >> "$LOG_FILE" || true
+        tail -n 12 "$error_log" >&2 || true
+        echo "생성된 ZIP 검증에 실패했습니다. 불완전한 임시 파일은 정리됩니다." >&2
         exit 19
     fi
+    measured_archive "백업 원본 확인" "압축 중 원본 파일이 변경되지 않았는지 확인합니다." \
+        backup-source-check "$work/source-plan.json" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    (( code == 0 )) || backup_failure "$code" "백업 원본 확인에 실패했습니다." "$error_log"
     local size
-    size="$(stat -c %s "$output" 2>/dev/null || wc -c < "$output")"
+    size="$(stat -c %s "$archive" 2>/dev/null || wc -c < "$archive")"
+    # Preserve an unrelated file that appeared while compression was running.
+    while [[ -e "$output" ]]; do output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S)-$RANDOM.zip"; done
+    LC_ALL=C mv -n -- "$archive" "$output" 2> "$error_log" || backup_failure 59 "검증한 백업의 최종 저장에 실패했습니다." "$error_log"
+    [[ ! -e "$archive" ]] || backup_failure 59 "백업 파일 이름이 충돌하여 기존 파일을 보호했습니다."
+    rmdir "$CURRENT_BACKUP_OUTPUT_DIR"
+    CURRENT_BACKUP_OUTPUT_DIR=""
     rm -rf "$work"
     write_progress 100 "백업 완료" "검증된 ZIP을 휴대폰 Download 폴더에 저장했습니다." success
     echo "backup=$output"
@@ -1732,6 +1767,7 @@ const publishScan = (completed, total, item = '', force = false) => {
         percent: total > 0 ? Math.floor(completed * 100 / total) : 0,
         phase: 'ZIP 구조 검사', detail: '실제 ZIP 항목의 경로·크기·압축 정보를 검사하고 있습니다.',
         status: 'running', operation: cleanProgress(process.env.ST_PROGRESS_OPERATION), error_code: '',
+        backup_request_id: /^[0-9a-f-]{36}$/i.test(process.env.ST_BACKUP_REQUEST_ID || '') ? process.env.ST_BACKUP_REQUEST_ID : '',
         progress_mode: 'files', completed_bytes: 0, total_bytes: 0,
         completed_files: completed, total_files: total,
         current_item_b64: Buffer.from(cleanProgress(item)).toString('base64'),

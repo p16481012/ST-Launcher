@@ -51,7 +51,7 @@ jobs:
           bash scripts/test-progress-checks.sh
           bash scripts/test-safe-backup.sh
 
-      - name: Repeat isolated import and interrupted-restore simulations
+      - name: Repeat isolated backup, import and recovery simulations
         run: |
           for pass in 1 2; do
             echo "Safety simulation pass $pass"
@@ -60,6 +60,7 @@ jobs:
             bash scripts/test-install-validation.sh
             bash scripts/test-restore-recovery.sh
             bash scripts/test-restore-work-collision.sh
+            bash scripts/test-backup-create.sh
           done
 
       - name: Test, lint, and build debug and unsigned release APKs

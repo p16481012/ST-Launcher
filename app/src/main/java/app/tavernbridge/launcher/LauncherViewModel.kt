@@ -9,6 +9,11 @@ import app.tavernbridge.launcher.data.OperationResultStore
 import app.tavernbridge.launcher.data.ThemePreferences
 import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupCategory
+import app.tavernbridge.launcher.model.BackupRequest
+import app.tavernbridge.launcher.model.BackupRequestCodec
+import app.tavernbridge.launcher.model.backupFailureDetail
+import app.tavernbridge.launcher.model.backupFailureLog
+import app.tavernbridge.launcher.model.checkCompletedBackup
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.EnvironmentRefreshGate
@@ -46,6 +51,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LauncherRepository(application)
@@ -251,7 +257,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     progress?.status in setOf("success", "error", "cancelled") &&
                     (progress?.finishedAtMillis ?: 0L) > (state.value.lastOperationResult?.completedAtMillis ?: 0L)
                 val recoveredFailure = recoveredTerminal && progress?.status != "success"
-                val recoveredLogs = if (recoveredFailure) {
+                val recoveredLogs = if (recoveredFailure && progress?.operation == "backup") {
+                    backupFailureLog(progress.detail, progress.logText)
+                } else if (recoveredFailure) {
                     try {
                         repository.logs().stdout.ifBlank { state.value.logs }
                     } catch (_: Exception) {
@@ -264,13 +272,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     operationSummary(
                         operation = progress.operation,
                         label = operationLabel(progress.operation),
-                        detail = progress.detail.ifBlank {
+                        detail = if (recoveredFailure && progress.operation == "backup")
+                            backupFailureDetail(progress.detail, progress.logText) else progress.detail.ifBlank {
                             if (recoveredFailure) "작업이 실패했습니다. 로그를 확인해 주세요." else "작업을 완료했습니다."
                         },
                         succeeded = !recoveredFailure,
-                        startedAtMillis = progress.finishedAtMillis,
+                        startedAtMillis = progress.operationStartedAtMillis.takeIf { it > 0L } ?: progress.finishedAtMillis,
                         errorCode = progress.errorCode,
                         retryAction = if (recoveredFailure) retryActionFor(progress.operation) else RetryAction.NONE,
+                        backupRequest = BackupRequestCodec.matching(repository.savedBackupRequest(), progress),
                     )
                 } else {
                     state.value.lastOperationResult
@@ -412,7 +422,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val mergedProgress = progress?.let(progressLogHistory::merge)
                 val failed = recoveredStatus != RecoveredOperationStatus.SUCCESS
                 val interrupted = recoveredStatus == RecoveredOperationStatus.INTERRUPTED
-                val latestLogs = if (failed) {
+                val latestLogs = if (failed && progress?.operation == "backup") {
+                    backupFailureLog(progress.detail, progress.logText)
+                } else if (failed) {
                     try {
                         repository.logs().stdout.ifBlank { state.value.logs }
                     } catch (cancelled: CancellationException) {
@@ -428,6 +440,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val substepNotice = recoveredSubstepNotice(requestedOperation, operation, progress?.status)
                 val resultDetail = when {
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
+                    failed && operation == "backup" -> backupFailureDetail(progress?.detail.orEmpty(), latestLogs)
                     failed -> progress?.detail?.ifBlank { "작업이 실패했습니다. 로그를 확인해 주세요." }
                         ?: "작업이 실패했습니다. 로그를 확인해 주세요."
                     substepNotice != null -> substepNotice
@@ -440,9 +453,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     label = operationLabel(operation),
                     detail = resultDetail,
                     succeeded = !failed,
-                    startedAtMillis = startedAtMillis ?: System.currentTimeMillis(),
+                    startedAtMillis = startedAtMillis ?: progress?.operationStartedAtMillis?.takeIf { it > 0L }
+                        ?: System.currentTimeMillis(),
                     errorCode = if (interrupted) "OPERATION_INTERRUPTED" else progress?.errorCode.orEmpty(),
                     retryAction = if (failed && !interrupted) retryActionFor(operation) else RetryAction.NONE,
+                    backupRequest = BackupRequestCodec.matching(repository.savedBackupRequest(), progress),
                 )
                 val refreshedFileEntries = if (fileBrowserPath != null && !failed) {
                     try {
@@ -771,12 +786,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         result
     }
 
-    fun backup() = perform(
-        operation = "backup",
-        label = "백업 생성 중",
-        successMessage = "다운로드 폴더에 백업을 생성했습니다.",
-        retryAction = RetryAction.BACKUP,
-    ) { repository.backup() }
+    fun backup() = createBackup(setOf(BackupCategory.FULL), false, emptySet())
 
     fun loadBackups() {
         if (!state.value.environment.managerConnected) return
@@ -897,21 +907,31 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         includeSecrets: Boolean,
         customFolders: Set<String>,
     ) {
+        if (state.value.isWorking) return
         val normalized = if (BackupCategory.FULL in categories) setOf(BackupCategory.FULL) else categories
-        if (normalized.isEmpty() || (normalized == setOf(BackupCategory.CUSTOM) && customFolders.isEmpty())) {
+        if (normalized.isEmpty()) {
             mutableState.update { it.copy(error = "백업할 항목을 하나 이상 선택해 주세요.") }
+            return
+        }
+        if (BackupCategory.CUSTOM in normalized && customFolders.isEmpty()) {
+            mutableState.update { it.copy(error = "직접 항목 선택에서 백업할 폴더를 하나 이상 선택해 주세요.") }
             return
         }
         if (state.value.environment.processRunning) {
             mutableState.update { it.copy(error = "일관된 백업을 위해 먼저 SillyTavern 서버를 종료해 주세요.") }
             return
         }
+        val request = BackupRequest(UUID.randomUUID().toString(), normalized,
+            includeSecrets && (BackupCategory.FULL in normalized || BackupCategory.USER_DATA in normalized),
+            if (BackupCategory.CUSTOM in normalized) customFolders else emptySet())
         perform(
             operation = "backup",
             label = "선택 백업 생성 중",
             successMessage = "검증된 ZIP 백업을 휴대폰 Download 폴더에 저장했습니다.",
+            retryAction = RetryAction.BACKUP,
+            backupRequest = request,
         ) {
-            val result = repository.createBackup(normalized, includeSecrets, customFolders)
+            val result = repository.createBackup(request)
             if (result.isSuccess) refreshBackupListAfterOperation()
             result
         }
@@ -1377,7 +1397,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             RetryAction.STOP -> stop()
             RetryAction.RESTART -> restart()
             RetryAction.CHECK_UPDATE -> checkForUpdates()
-            RetryAction.BACKUP -> backup()
+            RetryAction.BACKUP -> {
+                val request = state.value.lastOperationResult?.backupRequest
+                if (request == null) {
+                    mutableState.update { it.copy(section = MainSection.SETUP, managementPanel = ManagementPanel.BACKUP,
+                        error = null, message = "이전 백업의 선택 정보가 없습니다. 백업할 항목을 다시 선택해 주세요.") }
+                    loadBackups()
+                } else createBackup(request.categories, request.includeSecrets, request.customFolders)
+            }
             RetryAction.REPAIR -> repair()
             RetryAction.DIAGNOSE -> runDiagnostics()
         }
@@ -1446,6 +1473,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         successMessage: String,
         successMessageForResult: (TermuxCommandResult) -> String = { successMessage },
         retryAction: RetryAction = RetryAction.NONE,
+        backupRequest: BackupRequest? = null,
         block: suspend () -> TermuxCommandResult,
     ) {
         if (state.value.isWorking) return
@@ -1462,7 +1490,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val progressJob = pollOperationProgress(operation, operationStartedAt)
             try {
                 val result = block()
-                val resolvedSuccessMessage = successMessageForResult(result)
+                var resolvedSuccessMessage = successMessageForResult(result)
                 if (!result.isSuccess && operationCancellationRequested && result.exitCode == 130) {
                     progressJob.cancel()
                     val environment = runCatching { repository.inspect() }.getOrElse { state.value.environment }
@@ -1480,6 +1508,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                                 succeeded = false,
                                 startedAtMillis = operationStartedAt,
                                 errorCode = "OPERATION_CANCELLED",
+                                backupRequest = backupRequest,
                             ),
                         )
                     }
@@ -1495,13 +1524,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             message = "$resolvedSuccessMessage 앱으로 돌아오면 설치 상태를 다시 확인합니다.",
                             lastOperationResult = operationSummary(
                                 operation, label, resolvedSuccessMessage, true, operationStartedAt,
+                                backupRequest = backupRequest,
                             ),
                         )
                     }
                     return@launch
                 }
                 progressJob.cancel()
-                val environment = repository.inspect(::publishProgress, operation)
+                val environment = if (operation == "backup") {
+                    val check = checkCompletedBackup(state.value.environment) {
+                        repository.inspect(::publishProgress, operation)
+                    }
+                    if (check.refreshFailed) resolvedSuccessMessage += " 상태 확인 응답은 받지 못했습니다. 새로고침해 주세요."
+                    check.value
+                } else repository.inspect(::publishProgress, operation)
                 mutableState.update {
                     it.copy(
                         environment = environment,
@@ -1521,13 +1557,23 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         message = resolvedSuccessMessage,
                         lastOperationResult = operationSummary(
                             operation, label, resolvedSuccessMessage, true, operationStartedAt,
+                            backupRequest = backupRequest,
                         ),
                     )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                val diagnostic = error.userMessage()
+                val backupProgress = if (operation == "backup" && backupRequest != null) {
+                    val current = try { repository.readProgress() }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                    sequenceOf(current, state.value.workProgress).firstOrNull {
+                        BackupRequestCodec.matching(backupRequest, it) != null
+                    }
+                } else null
+                val diagnostic = if (operation == "backup") backupFailureDetail(error.userMessage(), backupProgress?.logText.orEmpty())
+                    else error.userMessage()
                 val errorCode = errorCodeFrom(diagnostic)
                 if (reconnectTimedOutOperation(errorCode, operation, operationStartedAt)) return@launch
                 // Rollback can succeed even when a subsequent repair step fails.
@@ -1559,8 +1605,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             startedAtMillis = operationStartedAt,
                             errorCode = errorCode,
                             retryAction = retryActionAfterFailure(errorCode, retryAction),
+                            backupRequest = backupRequest,
                         ),
-                        logs = "최근 작업 실패\n\n$diagnostic",
+                        logs = if (operation == "backup") backupFailureLog(diagnostic, backupProgress?.logText.orEmpty())
+                            else "최근 작업 실패\n\n$diagnostic",
                     )
                 }
             } finally {
@@ -1578,6 +1626,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         startedAtMillis: Long,
         errorCode: String = "",
         retryAction: RetryAction = RetryAction.NONE,
+        backupRequest: BackupRequest? = null,
     ): OperationResultSummary {
         val completedAtMillis = System.currentTimeMillis()
         return OperationResultSummary(
@@ -1590,6 +1639,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             completedAtMillis = completedAtMillis,
             durationSeconds = ((completedAtMillis - startedAtMillis) / 1_000).coerceAtLeast(0),
             retryAction = retryAction,
+            backupRequest = backupRequest,
         ).also(operationResultStore::save)
     }
 

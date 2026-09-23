@@ -129,7 +129,7 @@ if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
     [[ "$(read_progress completed_bytes)" == 0 ]] || fail 'compression invented byte progress'
     unzip -tq "$TEST_ROOT/output.zip"
     ! unzip -Z1 "$TEST_ROOT/output.zip" | grep -Fxq raw.bin || fail 'ZIP exclude argument was lost'
-    expect_exit 18 bash "$WORKER" compress "$TEST_ROOT/extracted" "$TEST_ROOT/missing.zip" 'not-present'
+    expect_exit 59 bash "$WORKER" compress "$TEST_ROOT/extracted" "$TEST_ROOT/missing.zip" 'not-present'
     echo 'PASS: native compression measured counts, exclusions and failure propagation'
 else
     echo 'SKIP: native compression test needs zip and unzip (required in CI)'

@@ -25,6 +25,7 @@ data class OperationResultSummary(
     val completedAtMillis: Long,
     val durationSeconds: Long,
     val retryAction: RetryAction = RetryAction.NONE,
+    val backupRequest: BackupRequest? = null,
 ) {
     val canRetry: Boolean
         get() = !succeeded && retryAction != RetryAction.NONE

@@ -6,6 +6,18 @@ import org.junit.Test
 
 class TermuxCommandResultTest {
     @Test
+    fun `backup failures preserve actionable codes instead of network failure`() {
+        mapOf(58 to "BACKUP_NO_SPACE", 59 to "BACKUP_CREATE_FAILED", 60 to "BACKUP_SOURCE_CHANGED")
+            .forEach { (exitCode, code) ->
+                val result = TermuxCommandResult("test", "", "백업 작업의 원본 오류입니다.", exitCode, -1, "")
+                assertFalse(result.isSuccess)
+                assertTrue(result.readableError().startsWith("[$code]"))
+                assertTrue(result.readableError().contains("원본 오류"))
+                assertFalse(result.readableError().contains("NETWORK_FETCH_FAILED"))
+            }
+    }
+
+    @Test
     fun `runtime validation and interrupted restore retain actionable error codes`() {
         mapOf(25 to "RESTORE_ROLLBACK_REQUIRED", 56 to "NODE_VERSION_UNSUPPORTED", 57 to "NODE_VERSION_CHECK_FAILED")
             .forEach { (exitCode, code) ->

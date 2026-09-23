@@ -38,7 +38,12 @@ setup_case() {
     ensure_restore_target_stopped() { :; }
     # Git Bash cannot set RLIMIT_FSIZE for native Windows Node. The production
     # helper's per-entry streamed size checks still run; Linux keeps ulimit.
-    if command -v cygpath >/dev/null 2>&1; then ulimit() { :; }; fi
+    if command -v cygpath >/dev/null 2>&1; then
+        ulimit() { :; }
+        # MSYS cannot apply Unix directory modes on every Windows host.
+        # The real private-mode path remains covered by Linux CI.
+        mkdir() { if [[ "${1:-}" == -m ]]; then shift 2; fi; command mkdir "$@"; }
+    fi
     begin_operation() {
         CURRENT_OPERATION="$1"; OPERATION_STARTED_EPOCH="$(date +%s)"
         trap 'operation_cleanup $?' EXIT
@@ -133,10 +138,9 @@ backup_items() {
     # Real Info-ZIP is used when available. The dependency-free fallback only
     # creates Store ZIP bytes; all production archive/CRC validation still runs.
     if ! command -v zip >/dev/null 2>&1; then
-        zip() { [[ "$1" == -q && "$3" == .st-launcher-manifest ]] || return 99; fixture_zip "$2" "$PWD" "$3"; }
         eval "$(declare -f measured_archive | sed '1s/measured_archive/original_measured_archive/')"
         measured_archive() {
-            if [[ "$3" == compress ]]; then fixture_zip "$5" "$4" "${@:6}";
+            if [[ "$3" == compress || "$3" == backup-manifest ]]; then fixture_zip "$5" "$4" "${@:6}";
             else original_measured_archive "$@"; fi
         }
     fi

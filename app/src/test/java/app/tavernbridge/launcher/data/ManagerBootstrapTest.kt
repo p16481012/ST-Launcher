@@ -19,12 +19,10 @@ class ManagerBootstrapTest {
 
     @Test
     fun bundledManagerAndHelpersFitSingleShellArgumentAfterCompression() {
-        val command = bundledAssets().joinToString(" && ") { source ->
-            createManagerBootstrapCommand(
-                "/data/data/com.termux/files/home/.st-launcher/${source.name}",
-                encodeManagerScript(source.readText()),
-            )
-        }
+        val command = createManagerBundleBootstrapCommand(
+            "/data/data/com.termux/files/home/.st-launcher",
+            bundledAssets().associate { it.name to it.readText() },
+        )
         assertTrue("Combined manager/helper bootstrap exceeds safe argument size", command.toByteArray(Charsets.UTF_8).size < 100_000)
     }
 
@@ -33,9 +31,7 @@ class ManagerBootstrapTest {
         assumeLinuxShell()
         val directory = temporary.newFolder("bundled ' helpers")
         val sources = bundledAssets()
-        val command = sources.joinToString(" && ") { source ->
-            createManagerBootstrapCommand(directory.resolve(source.name).path, encodeManagerScript(source.readText()))
-        }
+        val command = createManagerBundleBootstrapCommand(directory.path, sources.associate { it.name to it.readText() })
         // Each production bootstrap validates bash syntax before replacing its
         // file. Exercise the complete chained payload, not only a sample script.
         assertEquals(0, runShell(command))
@@ -100,6 +96,49 @@ class ManagerBootstrapTest {
         assertTrue(runShell(createManagerBootstrapCommand(target.path, encodeManagerScript(invalidScript))) != 0)
         assertEquals("old version\n", target.readText())
         assertEquals(setOf("manager.sh"), temporary.root.list().orEmpty().toSet())
+    }
+
+    @Test
+    fun bundleKeepsScriptTextLiteralAndCleansTemporaryFiles() {
+        assumeLinuxShell()
+        val directory = temporary.newFolder("bundle ' quoted")
+        val marker = directory.resolve("must-not-execute")
+        val script = "#!/bin/bash\nprintf '%s' \"${'$'}(touch \"${marker.path}\")\"\n"
+        assertEquals(0, runShell(createManagerBundleBootstrapCommand(directory.path, mapOf("manager.sh" to script))))
+        assertEquals(script, directory.resolve("manager.sh").readText())
+        assertFalse(marker.exists())
+        assertEquals(setOf("manager.sh"), directory.list().orEmpty().toSet())
+    }
+
+    @Test
+    fun corruptBundleDoesNotExecuteEvenIfItDecompressesSomeInstructions() {
+        assumeLinuxShell()
+        val directory = temporary.newFolder("corrupt bundle")
+        val marker = directory.resolve("must-not-execute")
+        val encoded = encodeManagerScript("touch '${marker.path}'\n")
+        val bytes = Base64.getDecoder().decode(encoded)
+        bytes[bytes.lastIndex - 7] = (bytes[bytes.lastIndex - 7].toInt() xor 1).toByte()
+        val after = directory.resolve("after")
+        val command = createEncodedManagerBundleCommand(directory.path, Base64.getEncoder().encodeToString(bytes)) +
+            " && touch '${after.path}'"
+        assertTrue(runShell(command) != 0)
+        assertFalse(marker.exists())
+        assertFalse(after.exists())
+        assertTrue(directory.list().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun invalidAssetStopsBundleAndDoesNotReplaceExistingTarget() {
+        assumeLinuxShell()
+        val directory = temporary.newFolder("invalid asset")
+        val target = directory.resolve("manager.sh").apply { writeText("old version\n") }
+        val command = createManagerBundleBootstrapCommand(directory.path, linkedMapOf(
+            "manager.sh" to "#!/bin/bash\nif then\n",
+            "later.sh" to "#!/bin/bash\ntrue\n",
+        ))
+        assertTrue(runShell(command) != 0)
+        assertEquals("old version\n", target.readText())
+        assertEquals(setOf("manager.sh"), directory.list().orEmpty().toSet())
     }
 
     private fun bundledAssets(): List<File> = managerAssetNames.map { name ->

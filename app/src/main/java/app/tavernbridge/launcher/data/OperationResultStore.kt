@@ -3,6 +3,7 @@ package app.tavernbridge.launcher.data
 import android.content.Context
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
+import app.tavernbridge.launcher.model.BackupRequestCodec
 import app.tavernbridge.launcher.security.redactSensitiveText
 
 class OperationResultStore(context: Context) {
@@ -22,6 +23,7 @@ class OperationResultStore(context: Context) {
             retryAction = runCatching {
                 RetryAction.valueOf(preferences.getString(KEY_RETRY_ACTION, RetryAction.NONE.name).orEmpty())
             }.getOrDefault(RetryAction.NONE),
+            backupRequest = BackupRequestCodec.decode(preferences.getString(KEY_BACKUP_REQUEST, null)),
         )
     }
 
@@ -29,13 +31,14 @@ class OperationResultStore(context: Context) {
         preferences.edit()
             .putString(KEY_OPERATION, summary.operation)
             .putString(KEY_TITLE, summary.title)
-            .putString(KEY_DETAIL, redactSensitiveText(summary.detail))
+            .putString(KEY_DETAIL, redactSensitiveText(summary.detail, maxLength = 6_000))
             .putBoolean(KEY_SUCCEEDED, summary.succeeded)
             .putString(KEY_ERROR_CODE, summary.errorCode)
             .putString(KEY_COMPLETED_AT, summary.completedAt)
             .putLong(KEY_COMPLETED_AT_MILLIS, summary.completedAtMillis)
             .putLong(KEY_DURATION_SECONDS, summary.durationSeconds)
             .putString(KEY_RETRY_ACTION, summary.retryAction.name)
+            .putString(KEY_BACKUP_REQUEST, summary.backupRequest?.let(BackupRequestCodec::encode))
             .commit()
     }
 
@@ -50,5 +53,6 @@ class OperationResultStore(context: Context) {
         const val KEY_COMPLETED_AT_MILLIS = "completed_at_millis"
         const val KEY_DURATION_SECONDS = "duration_seconds"
         const val KEY_RETRY_ACTION = "retry_action"
+        const val KEY_BACKUP_REQUEST = "backup_request"
     }
 }

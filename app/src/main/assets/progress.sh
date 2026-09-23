@@ -137,6 +137,8 @@ function publish(force = false) {
         activity_at: state.activityAt,
         phase_started_at: phaseStartedAt,
         operation_started_at: Number(process.env.ST_OPERATION_STARTED_EPOCH) || 0,
+        backup_request_id: /^[a-f0-9-]{36}$/.test(process.env.ST_BACKUP_REQUEST_ID || '')
+            ? process.env.ST_BACKUP_REQUEST_ID : '',
     };
     const temporary = `${progressFile}.tmp.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
     temporaryFiles.add(temporary);

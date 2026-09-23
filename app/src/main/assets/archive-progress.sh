@@ -76,6 +76,7 @@ function writeProgress(force = false) {
     const values = {
         percent, phase: clean(process.env.ST_PROGRESS_PHASE), detail: clean(process.env.ST_PROGRESS_DETAIL),
         status: 'running', operation: clean(process.env.ST_PROGRESS_OPERATION), error_code: '', ...progress,
+        backup_request_id: /^[0-9a-f-]{36}$/i.test(process.env.ST_BACKUP_REQUEST_ID || '') ? process.env.ST_BACKUP_REQUEST_ID : '',
         operation_started_at: Number(process.env.ST_OPERATION_STARTED_EPOCH) || 0,
     };
     const temporary = `${target}.archive.${process.pid}.tmp`;
@@ -247,6 +248,78 @@ async function extract(archive, destination, indexPath, verifyOnly = false) {
     } finally { fs.closeSync(fd); }
 }
 
+// A metadata snapshot is not a lock against other apps. Check it again after
+// ZIP creation; never publish an archive if selected files changed meanwhile.
+function backupSnapshot(root, selection, checking = false) {
+    const split = selection.indexOf('-x'), selected = split < 0 ? selection : selection.slice(0, split);
+    const exclusions = (split < 0 ? [] : selection.slice(split + 1)).map(pattern =>
+        new RegExp('^' + pattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$'));
+    const entries = new Map(); let bytes = 0, overhead = 65536;
+    const visit = relative => {
+        const absolute = path.join(root, relative), stat = fs.lstatSync(absolute, { bigint: true });
+        if (relative && exclusions.some(pattern => pattern.test(relative + (stat.isDirectory() ? '/' : '')))) return;
+        if (entries.has(relative)) return;
+        if (relative && !safeRelative(relative)) fail(59, `백업할 수 없는 파일 이름입니다: ${clean(relative)}`);
+        if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) fail(59, `링크 또는 특수 파일은 백업하지 않습니다: ${clean(relative)}`);
+        const identity = ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'].map(key => String(stat[key]));
+        entries.set(relative, identity);
+        if (entries.size > 500000) fail(59, '백업 항목 수가 안전 한도를 초과합니다.');
+        overhead += 1024 + Buffer.byteLength(relative) * 6;
+        if (stat.isDirectory()) {
+            for (const name of fs.readdirSync(absolute).sort()) visit(relative ? `${relative}/${name}` : name);
+        } else {
+            // Opening detects unreadable files before a long compression run.
+            const fd = fs.openSync(absolute, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+            try {
+                const opened = fs.fstatSync(fd, { bigint: true });
+                if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => opened[key] !== stat[key])) fail(60, '백업 검사 중 원본 파일이 변경되었습니다.');
+            } finally { fs.closeSync(fd); }
+            bytes += Number(stat.size);
+        }
+        if (!Number.isSafeInteger(bytes + overhead)) fail(59, '백업 크기가 안전 한도를 초과합니다.');
+        progress.completed_files = entries.size; progress.completed_bytes = bytes;
+        activity(relative || 'SillyTavern'); writeProgress();
+    };
+    try {
+        for (const item of selected) {
+            if (item !== '.' && !safeRelative(item)) fail(59, '백업 선택 경로가 올바르지 않습니다.');
+            visit(item === '.' ? '' : item);
+        }
+    } catch (error) {
+        if (checking && !error.exitCode) error.exitCode = 60;
+        throw error;
+    }
+    return { entries: [...entries].sort(([a], [b]) => a.localeCompare(b)), bytes, overhead };
+}
+function backupPlan(root, destination, planFile, ...selection) {
+    const source = fs.realpathSync(root), target = fs.realpathSync(destination);
+    if (source === target || target.startsWith(source + path.sep)) fail(59, '백업 저장 위치가 설치 폴더 안에 있습니다.');
+    const snapshot = backupSnapshot(root, selection);
+    // Stored (incompressible) data + ZIP headers/central directory + metadata,
+    // with headroom for filesystem allocation. The manifest is appended once,
+    // so a second full archive is not needed.
+    const plan = JSON.stringify({ root, selection, snapshot });
+    const scratch = BigInt(Buffer.byteLength(plan) + snapshot.overhead + 8388608);
+    const sameVolume = fs.statSync(destination).dev === fs.statSync(path.dirname(planFile)).dev;
+    // Android's shared-storage FUSE mount may use a different st_dev while
+    // consuming the same /data capacity. Reserve scratch here in either case.
+    const required = BigInt(snapshot.bytes + snapshot.overhead) + 33554432n + scratch;
+    const space = fs.statfsSync(destination, { bigint: true }), available = space.bavail * space.bsize;
+    if (available < required) fail(58, `Download 저장 공간이 부족합니다. 필요 ${required}바이트, 여유 ${available}바이트`);
+    if (!sameVolume) {
+        const temp = fs.statfsSync(path.dirname(planFile), { bigint: true });
+        if (temp.bavail * temp.bsize < scratch) fail(58, `Termux 임시 검사 공간이 부족합니다. 필요 ${scratch}바이트`);
+    }
+    fs.writeFileSync(planFile, plan, { flag: 'wx', mode: 0o600 });
+    console.log(`backup_selected_bytes=${snapshot.bytes}\nbackup_required_bytes=${required}\nbackup_free_bytes=${available}`);
+}
+function backupSourceCheck(planFile) {
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    if (JSON.stringify(backupSnapshot(plan.root, plan.selection, true)) !== JSON.stringify(plan.snapshot)) {
+        fail(60, '백업 중 원본 파일이 변경되었습니다. 파일을 변경하는 앱을 종료하고 다시 시도해 주세요.');
+    }
+}
+
 async function compress(root, archive, ...selection) {
     if (!root || !archive || !selection.length) fail(64, 'ZIP 생성 인수가 부족합니다.');
     let buffer = '', outputTail = '';
@@ -273,22 +346,28 @@ async function compress(root, archive, ...selection) {
         writeProgress();
     };
     writeProgress(true);
+    const appendManifest = action === 'backup-manifest';
     const exitCode = await new Promise((resolve, reject) => {
-        child = spawn('zip', ['-r', '-dc', '-dd', '-ds', '1m', '-MM', archive, ...selection], {
+        child = spawn('zip', [...(appendManifest ? ['-g'] : ['-r', '-dc', '-dd', '-ds', '1m']), '-MM', archive, ...selection], {
             cwd: root, env: { ...process.env, LC_ALL: 'C', ZIPOPT: '' }, stdio: ['ignore', 'pipe', 'pipe'],
         });
         child.stdout.on('data', chunk => {
             outputTail = (outputTail + chunk.toString('utf8')).slice(-8192);
             inspectOutput(chunk);
         });
-        child.stderr.on('data', chunk => { process.stderr.write(chunk); activity(); writeProgress(); });
+        child.stderr.on('data', chunk => {
+            outputTail = (outputTail + chunk.toString('utf8')).slice(-8192);
+            activity(); writeProgress();
+        });
         child.once('error', reject);
         child.once('close', (code, signal) => resolve(signal ? 130 : (code ?? 18)));
     });
     child = null;
     if (exitCode !== 0) {
-        if (outputTail) console.error(outputTail);
-        fail(exitCode, 'ZIP 생성 작업을 완료하지 못했습니다.');
+        console.error(`zip_exit_code=${exitCode}`);
+        if (outputTail) console.error(outputTail.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').trim());
+        const code = /no space left|ENOSPC/i.test(outputTail) ? 58 : 59;
+        fail(code, `ZIP 생성 작업을 완료하지 못했습니다. (zip 종료 코드 ${exitCode})`);
     }
     progress.completed_files = progress.total_files;
     activity();
@@ -298,7 +377,7 @@ async function compress(root, archive, ...selection) {
 
 const timer = setInterval(() => {
     try { writeProgress(); }
-    catch (error) { console.error(clean(error.message)); if (child) child.kill('SIGTERM'); process.exit(error.code === 'ENOSPC' ? 29 : 18); }
+        catch (error) { console.error(clean(error.message)); if (child) child.kill('SIGTERM'); process.exit(error.code === 'ENOSPC' ? (process.env.ST_PROGRESS_OPERATION === 'backup' ? 58 : 29) : 18); }
 }, 500);
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
     if (child) child.kill(signal);
@@ -308,7 +387,9 @@ for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
 (async () => {
     if (action === 'extract') await extract(...args);
     else if (action === 'verify') await extract(args[0], null, args[1], true);
-    else if (action === 'compress') await compress(...args);
+    else if (action === 'compress' || action === 'backup-manifest') await compress(...args);
+    else if (action === 'backup-plan') backupPlan(...args);
+    else if (action === 'backup-source-check') backupSourceCheck(...args);
     else if (action === 'crc-self-test') {
         if (crcFallback(Buffer.from('123456789')) !== 0xcbf43926) fail(20, 'CRC self-test failed');
         const part = crcFallback(Buffer.from('1234'));
@@ -321,6 +402,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
     } else fail(64, '지원하지 않는 ZIP 작업입니다.');
 })().catch(error => {
     console.error(clean(error.message));
-    process.exitCode = error.code === 'ENOSPC' ? 29 : (error.exitCode || 20);
+    process.exitCode = error.code === 'ENOSPC' ? (process.env.ST_PROGRESS_OPERATION === 'backup' ? 58 : 29) :
+        (error.exitCode || (process.env.ST_PROGRESS_OPERATION === 'backup' ? 59 : 20));
 }).finally(() => clearInterval(timer));
 NODE

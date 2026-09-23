@@ -92,6 +92,7 @@ object WorkProgressParser {
             activityAtMillis = maxOf(timestamp("activity_at"), observedActivity),
             phaseStartedAtMillis = phaseStartedAt,
             operationStartedAtMillis = operationStartedAt,
+            backupRequestId = values["backup_request_id"].orEmpty(),
         )
     }
 }
