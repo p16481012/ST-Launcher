@@ -223,7 +223,8 @@ async function main() {
     const required = Math.ceil((state.total_bytes + metadata) * 1.02) + reserve;
     checkSpace(required, true);
     log(`대상 확인 완료 · 원본 ${bytes(state.total_bytes)} · 파일 ${state.total_files}개 · 안전 여유 포함 필요 공간 ${bytes(required)}`);
-    work = fs.mkdtempSync(path.join(parent, '.st-safety-')); fs.chmodSync(work, 0o700); workIdentity = fs.lstatSync(work);
+    const workParent = process.env.ST_SAFETY_WORK_PARENT || parent;
+    work = fs.mkdtempSync(path.join(workParent, '.st-safety-')); fs.chmodSync(work, 0o700); workIdentity = fs.lstatSync(work);
     const list = path.join(work, 'paths'), temporary = path.join(work, 'archive.tar.gz');
     const prefix = layout === 'directory' ? path.basename(root) : '.';
     fs.writeFileSync(list, Buffer.from(entries.map(entry => `${prefix}${entry.relative ? `/${entry.relative}` : ''}\0`).join('')), { mode: 0o600 });

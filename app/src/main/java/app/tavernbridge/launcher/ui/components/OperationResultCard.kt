@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -32,12 +33,18 @@ fun OperationResultCard(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val container = if (summary.succeeded) {
+    val cancelled = summary.errorCode == "OPERATION_CANCELLED"
+    val outcome = when {
+        cancelled -> "중단됨"
+        summary.succeeded -> "완료"
+        else -> "실패"
+    }
+    val container = if (summary.succeeded || cancelled) {
         MaterialTheme.colorScheme.secondaryContainer
     } else {
         MaterialTheme.colorScheme.errorContainer
     }
-    val content = if (summary.succeeded) {
+    val content = if (summary.succeeded || cancelled) {
         MaterialTheme.colorScheme.onSecondaryContainer
     } else {
         MaterialTheme.colorScheme.onErrorContainer
@@ -50,19 +57,23 @@ fun OperationResultCard(
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    if (summary.succeeded) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
+                    when {
+                        cancelled -> Icons.Outlined.Stop
+                        summary.succeeded -> Icons.Outlined.CheckCircle
+                        else -> Icons.Outlined.ErrorOutline
+                    },
                     contentDescription = null,
                     tint = content,
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    if (summary.succeeded) "${summary.title} 완료" else "${summary.title} 실패",
+                    "${summary.title} $outcome",
                     color = content,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
             Text(summary.detail, color = content.copy(alpha = .82f), style = MaterialTheme.typography.bodyMedium)
-            if (summary.errorCode.isNotBlank()) {
+            if (summary.errorCode.isNotBlank() && !cancelled) {
                 Text(
                     "오류 코드 ${summary.errorCode}",
                     color = content,

@@ -20,6 +20,10 @@ data class WorkProgress(
     val phaseStartedAtMillis: Long = 0L,
     val operationStartedAtMillis: Long = 0L,
     val backupRequestId: String = "",
+    val operationId: String = "",
+    val operationRequestId: String = "",
+    val cancellationRequested: Boolean = false,
+    val cancellationMode: String = "none",
 ) {
     /** Measured progress within the current phase, never the old phase-weighted percentage. */
     val measuredPercent: Int?

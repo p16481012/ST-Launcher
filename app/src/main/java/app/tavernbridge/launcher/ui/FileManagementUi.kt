@@ -22,6 +22,7 @@ import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import app.tavernbridge.launcher.ui.components.WorkElapsedTime
+import app.tavernbridge.launcher.ui.components.OperationCancelControl
 import java.util.Locale
 
 @Composable
@@ -114,6 +115,7 @@ internal fun TavernFileManagerDialog(
     onImport: () -> Unit,
     onImportFolder: () -> Unit,
     onClose: () -> Unit,
+    onCancelOperation: () -> Unit,
 ) {
     var selected by remember { mutableStateOf<TavernFileEntry?>(null) }
     var renameTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
@@ -203,7 +205,7 @@ internal fun TavernFileManagerDialog(
                     Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
                         // The text editor is a separate dialog and owns the visible progress panel while open.
                         if (state.editingFile == null) {
-                            FileOperationProgress(state.workProgress, state.workingLabel, state.workingStartedAtMillis)
+                            FileOperationProgress(state, onCancelOperation)
                         }
                     }
                 } else {
@@ -269,7 +271,7 @@ internal fun TavernFileManagerDialog(
                 confirmButton = { Button(enabled = canModify, onClick = { trashTarget = null; onTrash(entry.relativePath) }) { Text("휴지통으로 이동") } },
                 dismissButton = { TextButton(onClick = { trashTarget = null }) { Text("취소") } })
         }
-        state.editingFile?.let { file -> TavernTextEditor(file, state, onSave, onCloseEditor) }
+        state.editingFile?.let { file -> TavernTextEditor(file, state, onSave, onCloseEditor, onCancelOperation) }
     }
 }
 
@@ -287,7 +289,8 @@ private fun EntryNameDialog(title: String, initial: String, onDismiss: () -> Uni
 }
 
 @Composable
-private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSave: (String) -> Unit, onClose: () -> Unit) {
+private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSave: (String) -> Unit, onClose: () -> Unit,
+    onCancelOperation: () -> Unit) {
     // Deliberately not saveable: file contents may include credentials and must not enter saved state.
     var content by remember(file.relativePath, file.revision) { mutableStateOf(file.content) }
     var discard by remember { mutableStateOf(false) }
@@ -303,7 +306,7 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
                 if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
                 if (state.fileBrowserMutating) {
                     Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
-                        FileOperationProgress(state.workProgress, state.workingLabel, state.workingStartedAtMillis)
+                        FileOperationProgress(state, onCancelOperation)
                     }
                 } else {
                     OutlinedTextField(value = content, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 65_536) content = it },
@@ -324,7 +327,9 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
 }
 
 @Composable
-private fun FileOperationProgress(progress: WorkProgress?, label: String, startedAtMillis: Long) {
+private fun FileOperationProgress(state: LauncherUiState, onCancel: () -> Unit) {
+    val progress = state.workProgress
+    val label = state.workingLabel
     val measuredPercent = progress?.measuredPercent
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -340,7 +345,8 @@ private fun FileOperationProgress(progress: WorkProgress?, label: String, starte
         } else {
             LinearProgressIndicator(progress = { measuredPercent / 100f }, modifier = Modifier.fillMaxWidth())
         }
-        WorkElapsedTime(startedAtMillis)
+        WorkElapsedTime(state.workingStartedAtMillis)
+        OperationCancelControl(progress, state.cancellationRequested, state.workingStartedAtMillis, onCancel)
         WorkProgressLog(progress?.logText.orEmpty())
     }
 }

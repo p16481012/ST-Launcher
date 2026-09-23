@@ -20,6 +20,11 @@ import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupRequest
 import app.tavernbridge.launcher.model.BackupRequestCodec
+import app.tavernbridge.launcher.model.OperationCancellationControl
+import app.tavernbridge.launcher.model.UserOperationCancelled
+import app.tavernbridge.launcher.model.operationCheckpoint
+import app.tavernbridge.launcher.model.operationCancellationControl
+import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.CustomBackupFolder
 import app.tavernbridge.launcher.model.backupFolderLabel
 import app.tavernbridge.launcher.model.DiagnosticItem
@@ -47,6 +52,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
 
 class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
@@ -131,20 +137,10 @@ class LauncherRepository(private val context: Context) {
         val progress = LocalProgressJournal(progressOperation, { localOperationProgress = it })
         progress.phase("런처 연결 준비", "관리 스크립트 묶음을 준비하고 있습니다.")
         try {
-            val command = buildString {
-                append(managerBootstrapCommand())
-                append(" && ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ")
-                append(shellQuote(TermuxContract.MANAGER_PATH))
-                append(" doctor")
-            }
             progress.completedItem("관리 스크립트 묶음 준비")
             progress.phase("Termux 연결 확인", "관리 스크립트를 전달하고 Termux 환경 검사 응답을 기다립니다.")
-            return runBash(
-                command = command,
-                label = "실리태번 런처 연결",
-                description = "관리 스크립트를 설치하고 환경을 확인합니다.",
-                timeoutMillis = 30_000,
-            ).also { if (it.isSuccess) progress.completedItem("관리 스크립트 전달·연결 확인") }
+            return runManager("doctor", 30_000)
+                .also { if (it.isSuccess) progress.completedItem("관리 스크립트 전달·연결 확인") }
         } finally { localOperationProgress = null }
     }
 
@@ -156,7 +152,9 @@ class LauncherRepository(private val context: Context) {
         if (!prepared.isSuccess || prepared.stdout.lineSequence().any { it == "already_running=1" }) {
             return prepared
         }
-        val command = "ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ${shellQuote(TermuxContract.MANAGER_PATH)} server-task"
+        operationCheckpoint()
+        val requestId = currentCoroutineContext()[OperationCancellationControl]?.requestId.orEmpty()
+        val command = "ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_OPERATION_REQUEST_ID=${shellQuote(requestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} server-task"
         executor.executeLongRunningBash(
             command = command,
             label = "SillyTavern 서버",
@@ -173,8 +171,9 @@ class LauncherRepository(private val context: Context) {
         return if (stopped.isSuccess) start() else stopped
     }
 
-    suspend fun cancelOperation(): TermuxCommandResult =
-        runManager("cancel", timeoutMillis = 30_000L)
+    suspend fun cancelOperation(operationId: String, requestId: String): TermuxCommandResult =
+        // Cancellation/control reads run outside the user's business-operation context.
+        runExistingManager("cancel ${shellQuote(operationId)} ${shellQuote(requestId)}", timeoutMillis = 30_000L)
 
     suspend fun update(keepRunning: Boolean, allowModifiedFiles: Boolean): TermuxCommandResult {
         val result = runManager(
@@ -182,11 +181,23 @@ class LauncherRepository(private val context: Context) {
             timeoutMillis = 45 * 60_000L,
         )
         if (!result.isSuccess || !keepRunning) return result
-
-        val stopped = stop()
-        if (!stopped.isSuccess) return stopped
-        if (wakeLockEnabled()) setTermuxWakeLock(true).let { if (!it.isSuccess) return it }
-        return start()
+        try {
+            val stopped = stop()
+            if (!stopped.isSuccess) return stopped
+            if (wakeLockEnabled()) setTermuxWakeLock(true).let { if (!it.isSuccess) return it }
+            return start()
+        } catch (cancelled: UserOperationCancelled) {
+            // The update is already committed. Stop only its temporary/start
+            // server; do not turn a committed update into a failed update.
+            val control = currentCoroutineContext()[OperationCancellationControl]
+            withoutOperationCancellation {
+                if (control != null) cancelOperation("", control.requestId).let {
+                    if (!it.isSuccess) throw IllegalStateException(it.readableError())
+                }
+                stop().let { if (!it.isSuccess) throw IllegalStateException(it.readableError()) }
+            }
+            return result.copy(stdout = result.stdout + "\nfollowup_cancelled=1\n")
+        }
     }
 
     suspend fun checkUpdate(): UpdatePreflight {
@@ -386,12 +397,10 @@ class LauncherRepository(private val context: Context) {
     }
 
     suspend fun importSillyTavernFile(parent: String, uri: Uri): TermuxCommandResult {
-        val destination = withContext(Dispatchers.IO) { fileChildPath(parent, importStaging.displayName(uri)) }
+        val destination = fileChildPath(parent, importStaging.displayNameCancellable(uri))
         val transfer = stageTransfer(uri, backup = false)
         // On timeout/process death the manager may still be reading; idle cleanup handles those later.
-        val result = runManager("import-st-file ${shellQuote(encodeFileArgument(destination))} ${shellQuote(transfer.name)}", 15 * 60_000L)
-        importStaging.remove(transfer)
-        return result
+        return dispatchStagedTransfer(transfer, "import-st-file ${shellQuote(encodeFileArgument(destination))} ${shellQuote(transfer.name)}", 15 * 60_000L)
     }
 
     suspend fun importSillyTavernFolder(parent: String, uri: Uri): TermuxCommandResult {
@@ -447,9 +456,19 @@ class LauncherRepository(private val context: Context) {
 
     suspend fun importBackup(uri: Uri): TermuxCommandResult {
         val transfer = stageTransfer(uri, backup = true)
-        val result = runManager("import-backup ${shellQuote(transfer.name)}", timeoutMillis = 45 * 60_000L)
-        importStaging.remove(transfer)
-        return result
+        return dispatchStagedTransfer(transfer, "import-backup ${shellQuote(transfer.name)}", 45 * 60_000L)
+    }
+
+    private suspend fun dispatchStagedTransfer(transfer: SharedImportStaging.Transfer, arguments: String, timeout: Long): TermuxCommandResult {
+        try {
+            operationCheckpoint()
+            return runManager(arguments, timeout).also { importStaging.remove(transfer) }
+        } catch (cancelled: UserOperationCancelled) {
+            // Only thrown before dispatch or after a terminal 130 callback. A timeout/lost
+            // callback deliberately leaves this staging file for idle cleanup.
+            importStaging.remove(transfer)
+            throw cancelled
+        }
     }
 
     suspend fun repair(): TermuxCommandResult =
@@ -704,10 +723,10 @@ class LauncherRepository(private val context: Context) {
         )
     }
 
-    suspend fun readProgress(): WorkProgress? {
-        localOperationProgress?.let { return it }
+    suspend fun readProgress(backendOnly: Boolean = false): WorkProgress? {
+        if (!backendOnly) localOperationProgress?.let { return it }
         val command = buildString {
-            append("test -f ${shellQuote(TermuxContract.PROGRESS_PATH)} && cat ${shellQuote(TermuxContract.PROGRESS_PATH)} || true")
+            append("if test -x ${shellQuote(TermuxContract.MANAGER_PATH)}; then ${shellQuote(TermuxContract.MANAGER_PATH)} progress; else cat ${shellQuote(TermuxContract.PROGRESS_PATH)} 2>/dev/null; fi || true")
             append("; printf '\\n'; cat ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/run/progress-heartbeat.env")} 2>/dev/null || true")
             append("; printf '\\n'; sed 's/^/server_/' ${shellQuote("${TermuxContract.HOME_PATH}/.st-launcher/run/server-log-context.env")} 2>/dev/null || true")
             append("; printf '\\n__ST_LAUNCHER_SERVER_LOG__\\n'")
@@ -899,23 +918,33 @@ class LauncherRepository(private val context: Context) {
     }
 
     private suspend fun runManager(arguments: String, timeoutMillis: Long, backupRequestId: String = ""): TermuxCommandResult {
-        val command = "${managerBootstrapCommand()} && ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_BACKUP_REQUEST_ID=${shellQuote(backupRequestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
-        return runBash(
-            command = command,
-            label = "실리태번 관리",
-            description = arguments,
-            timeoutMillis = timeoutMillis,
-        )
+        return runManagedCommand(arguments, timeoutMillis, managerBootstrapCommand() + " && ", backupRequestId)
     }
 
     private suspend fun runExistingManager(arguments: String, timeoutMillis: Long): TermuxCommandResult {
-        val command = "ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
-        return runBash(
+        return runManagedCommand(arguments, timeoutMillis)
+    }
+
+    private suspend fun runManagedCommand(arguments: String, timeoutMillis: Long, bootstrap: String = "", backupRequestId: String = ""): TermuxCommandResult {
+        val operation = arguments.substringBefore(' ')
+        val control = currentCoroutineContext().operationCancellationControl()
+        control?.beginDispatch(operation)
+        val requestId = control?.requestId.orEmpty()
+        val command = "${bootstrap}ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_BACKUP_REQUEST_ID=${shellQuote(backupRequestId)} ST_OPERATION_REQUEST_ID=${shellQuote(requestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
+        val result = runBash(
             command = command,
-            label = "실리태번 로그 확인",
-            description = "저장된 로그를 불러옵니다.",
+            label = "실리태번 관리",
+            description = operation,
             timeoutMillis = timeoutMillis,
         )
+        // A callback is the terminal acknowledgement. A timeout leaves the
+        // dispatch recorded so cancellation/reconnection can still target it.
+        control?.finishDispatch()
+        if (result.exitCode == 130) throw UserOperationCancelled()
+        if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "list-backups", "list-user-folders", "last-update-record")) {
+            control?.checkpoint()
+        }
+        return result
     }
 
     private fun managerBootstrapCommand(): String {
@@ -928,6 +957,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     private suspend fun stageTransfer(uri: Uri, backup: Boolean): SharedImportStaging.Transfer {
+        operationCheckpoint()
         val started = System.currentTimeMillis()
         var activity = started
         var previousBytes = -1L

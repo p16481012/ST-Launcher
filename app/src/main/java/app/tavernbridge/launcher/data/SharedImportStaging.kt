@@ -6,13 +6,21 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.os.CancellationSignal
+import android.os.OperationCanceledException
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import app.tavernbridge.launcher.model.operationCancellationControl
+import java.io.InputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicReference
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /** App-owned transfer files only. The user-selected original is never removed here. */
 internal class SharedImportStaging(private val context: Context) {
@@ -21,14 +29,26 @@ internal class SharedImportStaging(private val context: Context) {
     private val pending = context.getSharedPreferences("pending_import_transfers", Context.MODE_PRIVATE)
 
     suspend fun copy(source: Uri, backup: Boolean, onProgress: (CopyProgress) -> Unit = {}): Transfer = withContext(Dispatchers.IO) {
+        val operation = currentCoroutineContext().operationCancellationControl()
+        operation?.checkpoint()
+        val providerCancellation = CancellationSignal()
+        val reading = AtomicReference<InputStream?>(null)
+        val writing = AtomicReference<OutputStream?>(null)
+        val cancellationWatcher = operation?.let { control -> launch(Dispatchers.IO) {
+            control.awaitCancellationRequested()
+            runCatching { providerCancellation.cancel() }
+            runCatching { reading.get()?.close() }
+            runCatching { writing.get()?.close() }
+        } }
+        try {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             throw IllegalStateException("파일 가져오기는 Android 10 이상에서 지원합니다.")
         }
         require(source.scheme == "content") { "파일 선택 화면에서 가져올 파일을 선택해 주세요." }
         val resolver = context.contentResolver
         onProgress(CopyProgress(0, -1, "선택한 파일 확인 중"))
-        val sourceName = displayName(source)
-        val declaredSize = resolver.query(source, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
+        val sourceName = displayName(source, providerCancellation)
+        val declaredSize = resolver.query(source, arrayOf(OpenableColumns.SIZE), null, null, null, providerCancellation)?.use {
             if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
         } ?: -1L
         onProgress(CopyProgress(0, declaredSize, sourceName))
@@ -50,14 +70,18 @@ internal class SharedImportStaging(private val context: Context) {
         pending.edit().putString(target.toString(), "${System.currentTimeMillis()}|$name").commit()
         try {
             val coroutine = currentCoroutineContext()
-            resolver.openInputStream(source)?.use { input ->
+            resolver.openAssetFileDescriptor(source, "r", providerCancellation)?.use { descriptor ->
+              descriptor.createInputStream().use { input ->
+                reading.set(input)
                 resolver.openOutputStream(target, "w")?.use { output ->
+                    writing.set(output)
                     val buffer = ByteArray(128 * 1024)
                     var total = 0L
                     var sinceCheck = 0L
                     var lastReport = 0L
                     while (true) {
                         coroutine.ensureActive()
+                        operation?.checkpoint()
                         val count = input.read(buffer)
                         if (count < 0) break
                         require(total + count <= maxBytes) { "가져올 파일은 8 GiB 이하여야 합니다." }
@@ -67,6 +91,7 @@ internal class SharedImportStaging(private val context: Context) {
                             sinceCheck = 0
                         }
                         output.write(buffer, 0, count)
+                        operation?.checkpoint()
                         total += count
                         val now = System.currentTimeMillis()
                         if (now - lastReport >= 250L) {
@@ -76,19 +101,51 @@ internal class SharedImportStaging(private val context: Context) {
                     }
                     check(declaredSize < 0 || total == declaredSize) { "가져오는 동안 원본 파일 크기가 바뀌었습니다. 다시 선택해 주세요." }
                     output.flush()
+                    operation?.checkpoint()
                     onProgress(CopyProgress(total, if (declaredSize >= 0) declaredSize else total, sourceName, true))
                 } ?: error("임시 파일에 쓸 수 없습니다.")
+              }
             } ?: error("선택한 파일을 읽을 수 없습니다.")
             resolver.update(target, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            operation?.checkpoint()
             transfer
         } catch (error: Exception) {
             remove(transfer)
             throw error
         }
+        } catch (error: Exception) {
+            // Closing a blocked provider read may surface as IOException rather
+            // than the cooperative exception; retain its intentional outcome.
+            if (error is OperationCanceledException ||
+                error is IOException && error.message.orEmpty().contains(Regex("(?i)closed|cancelled|canceled|interrupted|EBADF"))) {
+                operation?.checkpoint()
+            }
+            throw error
+        } finally {
+            cancellationWatcher?.cancel()
+            reading.set(null)
+            writing.set(null)
+        }
     }
 
-    fun displayName(source: Uri): String = context.contentResolver.query(
-        source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null,
+    suspend fun displayNameCancellable(source: Uri): String = withContext(Dispatchers.IO) {
+        val operation = currentCoroutineContext().operationCancellationControl()
+        operation?.checkpoint()
+        val signal = CancellationSignal()
+        val watcher = operation?.let { control -> launch(Dispatchers.IO) {
+            control.awaitCancellationRequested()
+            runCatching { signal.cancel() }
+        } }
+        try { displayName(source, signal).also { operation?.checkpoint() } }
+        catch (error: Exception) {
+            if (error is OperationCanceledException) operation?.checkpoint()
+            throw error
+        }
+        finally { watcher?.cancel() }
+    }
+
+    fun displayName(source: Uri, cancellationSignal: CancellationSignal? = null): String = context.contentResolver.query(
+        source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null, cancellationSignal,
     )?.use { if (it.moveToFirst()) it.getString(0) else null }
         ?: throw IllegalArgumentException("파일 이름을 확인할 수 없습니다.")
 

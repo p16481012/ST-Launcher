@@ -93,6 +93,10 @@ object WorkProgressParser {
             phaseStartedAtMillis = phaseStartedAt,
             operationStartedAtMillis = operationStartedAt,
             backupRequestId = values["backup_request_id"].orEmpty(),
+            operationId = values["operation_id"].orEmpty(),
+            operationRequestId = values["operation_request_id"].orEmpty(),
+            cancellationRequested = values["cancellation_requested"] == "1",
+            cancellationMode = values["cancellation_mode"].takeIf { it in setOf("immediate", "deferred", "none") } ?: "none",
         )
     }
 }

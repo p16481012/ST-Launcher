@@ -14,6 +14,12 @@ import app.tavernbridge.launcher.model.BackupRequestCodec
 import app.tavernbridge.launcher.model.backupFailureDetail
 import app.tavernbridge.launcher.model.backupFailureLog
 import app.tavernbridge.launcher.model.checkCompletedBackup
+import app.tavernbridge.launcher.model.OperationCancellationControl
+import app.tavernbridge.launcher.model.UserOperationCancelled
+import app.tavernbridge.launcher.model.cancellationTarget
+import app.tavernbridge.launcher.model.validOperationId
+import app.tavernbridge.launcher.model.operationCheckpoint
+import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.EnvironmentRefreshGate
@@ -48,6 +54,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -77,6 +85,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val progressLogHistory = ProgressLogHistory()
     private var fileBrowserJob: Job? = null
     @Volatile private var operationCancellationRequested = false
+    private var activeOperationControl: OperationCancellationControl? = null
+    private var cancellationRequestJob: Job? = null
+    private var pendingInitialCancellation = false
     @Volatile private var appInForeground = false
 
     val setupCommand: String get() = repository.setupCommand()
@@ -191,7 +202,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             journal.phase("서버 연결 설정 저장", "포트·외부 접속·접근 허용 설정을 Termux에 전달하고 있습니다.")
             val progressJob = pollOperationProgress("save-server-connection", started)
             try {
-                val result = repository.saveServerConnectionSettings(port, externalAccessEnabled, whitelist)
+                val result = cancellableOperation("save-server-connection", started) {
+                    repository.saveServerConnectionSettings(port, externalAccessEnabled, whitelist)
+                }
                 if (!result.isSuccess) throw IllegalStateException(result.readableError())
                 progressJob.cancel()
                 journal.completedItem("서버 연결 설정 저장")
@@ -208,12 +221,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                if (reconnectTimedOutOperation(errorCodeFrom(error.userMessage()), "save-server-connection", started)) return@launch
                 mutableState.update {
                     it.copy(isWorking = false, workingLabel = "", error = error.userMessage())
                 }
             } finally {
                 progressJob.cancel()
-                mutableState.update { it.copy(workProgress = null) }
+                mutableState.update { if (it.isWorking) it else it.copy(workProgress = null) }
             }
         }
     }
@@ -232,6 +246,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 workingStartedAtMillis = started, workProgress = null) }
             val journal = LocalProgressJournal("refresh", ::publishProgress)
             try {
+                cancellableOperation("refresh", started) {
                 val environment = repository.inspect(::publishProgress)
                 if (environment.processRunning && repository.wakeLockEnabled()) {
                     journal.phase("백그라운드 실행 설정 확인", "실행 중인 서버의 Termux Wake lock 설정을 적용합니다.")
@@ -257,6 +272,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     progress?.status in setOf("success", "error", "cancelled") &&
                     (progress?.finishedAtMillis ?: 0L) > (state.value.lastOperationResult?.completedAtMillis ?: 0L)
                 val recoveredFailure = recoveredTerminal && progress?.status != "success"
+                val recoveredCancellation = recoveredTerminal && progress?.status == "cancelled"
                 val recoveredLogs = if (recoveredFailure && progress?.operation == "backup") {
                     backupFailureLog(progress.detail, progress.logText)
                 } else if (recoveredFailure) {
@@ -278,8 +294,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         },
                         succeeded = !recoveredFailure,
                         startedAtMillis = progress.operationStartedAtMillis.takeIf { it > 0L } ?: progress.finishedAtMillis,
-                        errorCode = progress.errorCode,
-                        retryAction = if (recoveredFailure) retryActionFor(progress.operation) else RetryAction.NONE,
+                        errorCode = if (recoveredCancellation) "OPERATION_CANCELLED" else progress.errorCode,
+                        retryAction = if (recoveredFailure && !recoveredCancellation) retryActionFor(progress.operation) else RetryAction.NONE,
                         backupRequest = BackupRequestCodec.matching(repository.savedBackupRequest(), progress),
                     )
                 } else {
@@ -294,20 +310,24 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         termuxWakeBlocked = false,
                         section = initialSection,
                         isWorking = environment.operationActive,
+                        cancellationRequested = environment.operationActive && progress?.cancellationRequested == true,
                         workingLabel = progress?.phase.orEmpty(),
                         workingStartedAtMillis = if (environment.operationActive) resolveWorkingStartedAtMillis(
                             0L, progress?.operationStartedAtMillis ?: 0L, started,
                         ) else it.workingStartedAtMillis,
                         workProgress = if (environment.operationActive) recoveredProgress else null,
-                        error = if (recoveredFailure) progress?.detail else it.error,
-                        message = if (recoveredTerminal && !recoveredFailure) "앱이 종료된 동안 완료된 작업 결과를 복원했습니다." else it.message,
+                        error = if (recoveredCancellation) null else if (recoveredFailure) progress?.detail else it.error,
+                        message = if (recoveredCancellation) "작업이 중단되었습니다. 중단 결과를 복원했습니다."
+                            else if (recoveredTerminal && !recoveredFailure) "앱이 종료된 동안 완료된 작업 결과를 복원했습니다." else it.message,
                         lastOperationResult = recoveredSummary,
                         logs = recoveredLogs,
                         backupStorageReady = backupStorageReady ?: it.backupStorageReady,
                         backgroundStatus = repository.backgroundStatus(environment.processRunning),
                     )
                 }
+                operationCheckpoint()
                 if (environment.operationActive) resumeDetachedOperation()
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 val diagnostic = error.userMessage()
@@ -397,6 +417,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         it.copy(
                             environment = environment,
                             isWorking = true,
+                            cancellationRequested = operationCancellationRequested || progress?.cancellationRequested == true,
                             workingLabel = progress?.phase ?: it.workingLabel,
                             workingStartedAtMillis = resolveWorkingStartedAtMillis(
                                 startedAtMillis ?: 0L, progress?.operationStartedAtMillis ?: 0L,
@@ -422,6 +443,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val mergedProgress = progress?.let(progressLogHistory::merge)
                 val failed = recoveredStatus != RecoveredOperationStatus.SUCCESS
                 val interrupted = recoveredStatus == RecoveredOperationStatus.INTERRUPTED
+                val cancelled = progress?.status == "cancelled"
                 val latestLogs = if (failed && progress?.operation == "backup") {
                     backupFailureLog(progress.detail, progress.logText)
                 } else if (failed) {
@@ -439,6 +461,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val reportUnavailable = operation in setOf("update-preflight", "diagnose")
                 val substepNotice = recoveredSubstepNotice(requestedOperation, operation, progress?.status)
                 val resultDetail = when {
+                    cancelled -> progress?.detail?.ifBlank { "작업을 안전하게 중단했습니다." } ?: "작업을 안전하게 중단했습니다."
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
                     failed && operation == "backup" -> backupFailureDetail(progress?.detail.orEmpty(), latestLogs)
                     failed -> progress?.detail?.ifBlank { "작업이 실패했습니다. 로그를 확인해 주세요." }
@@ -455,8 +478,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     succeeded = !failed,
                     startedAtMillis = startedAtMillis ?: progress?.operationStartedAtMillis?.takeIf { it > 0L }
                         ?: System.currentTimeMillis(),
-                    errorCode = if (interrupted) "OPERATION_INTERRUPTED" else progress?.errorCode.orEmpty(),
-                    retryAction = if (failed && !interrupted) retryActionFor(operation) else RetryAction.NONE,
+                    errorCode = if (cancelled) "OPERATION_CANCELLED" else if (interrupted) "OPERATION_INTERRUPTED" else progress?.errorCode.orEmpty(),
+                    retryAction = if (failed && !interrupted && !cancelled) retryActionFor(operation) else RetryAction.NONE,
                     backupRequest = BackupRequestCodec.matching(repository.savedBackupRequest(), progress),
                 )
                 val refreshedFileEntries = if (fileBrowserPath != null && !failed) {
@@ -473,9 +496,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         it.copy(
                             environment = environment,
                             isWorking = false,
+                            cancellationRequested = false,
                             workingLabel = "",
                             workProgress = null,
-                            error = resultDetail,
+                            error = if (cancelled) null else resultDetail,
+                            message = if (cancelled) resultDetail else it.message,
                             logs = latestLogs,
                             lastOperationResult = recoveredSummary,
                         )
@@ -501,8 +526,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         fileBrowserMutating = !failed,
                         fileBrowserLoading = false,
                         fileBrowserEntries = refreshedFileEntries ?: it.fileBrowserEntries,
-                        fileBrowserError = if (failed) resultDetail else "",
-                        fileBrowserNotice = if (failed) "" else if (refreshedFileEntries != null) resultDetail
+                        fileBrowserError = if (failed && !cancelled) resultDetail else "",
+                        fileBrowserNotice = if (cancelled) resultDetail else if (failed) "" else if (refreshedFileEntries != null) resultDetail
                             else "$resultDetail 목록을 새로고침해 주세요.",
                     )
                 }
@@ -518,6 +543,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         )
                     }
                 }
+                operationCancellationRequested = false
+                cancellationRequestJob?.cancel()
+                mutableState.update { it.copy(cancellationRequested = false) }
                 break
             }
         }
@@ -579,28 +607,104 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun cancelCurrentOperation() {
-        val operation = state.value.workProgress?.operation
-        if (operation !in setOf("install", "start")) {
-            mutableState.update { it.copy(error = "현재 단계는 데이터 보호를 위해 중간에 중단할 수 없습니다.") }
+        if (!state.value.isWorking || cancellationRequestJob?.isActive == true) return
+        val control = activeOperationControl
+        val initialProgress = state.value.workProgress
+        val requestId = control?.requestId ?: initialProgress?.operationRequestId.orEmpty()
+        val detachedId = initialProgress?.operationId.orEmpty()
+        if (control == null && requestId.isBlank() && !validOperationId(detachedId)) {
+            if (state.value.workProgress == null && !state.value.environment.operationActive) {
+                pendingInitialCancellation = true
+                mutableState.update { it.copy(cancellationRequested = true) }
+                return
+            }
+            mutableState.update { it.copy(error = "현재 작업의 중단 정보를 아직 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.") }
             return
         }
-        if (operationCancellationRequested) return
+        control?.requestCancellation()
         operationCancellationRequested = true
         mutableState.update {
-            it.copy(
-                workProgress = it.workProgress?.copy(
-                    phase = "중단 요청 중",
-                    detail = "현재 단계를 정리한 뒤 안전하게 중단합니다.",
-                ),
-            )
+            it.copy(cancellationRequested = true, error = null,
+                workProgress = it.workProgress?.copy(logText = it.workProgress.logText + "\n[중단 요청] 현재 작업의 안전한 종료를 확인합니다."))
         }
-        viewModelScope.launch {
-            try {
-                val result = repository.cancelOperation()
-                if (!result.isSuccess) throw IllegalStateException(result.readableError())
-            } catch (error: Exception) {
+        cancellationRequestJob = viewModelScope.launch {
+            val requestedAt = System.currentTimeMillis()
+            var pendingSent = false
+            var lastTarget = ""
+            while (isActive && state.value.isWorking && operationCancellationRequested) {
+                try {
+                    // The UUID-only request prevents a command queued behind bootstrap
+                    // or a persistent-start substep from starting after cancellation.
+                    if (!pendingSent && requestId.isNotBlank() && (control == null || control.hasDispatched)) {
+                        repository.cancelOperation("", requestId).requireSuccess()
+                        pendingSent = true
+                    }
+                    if (control == null || control.hasDispatched) {
+                        val progress = repository.readProgress(backendOnly = true)
+                        val target = cancellationTarget(progress, requestId, detachedId)
+                        if (target != null && target != lastTarget) {
+                            repository.cancelOperation(target, requestId).requireSuccess()
+                            lastTarget = target
+                        }
+                        if (progress != null && (target != null || progress.operationRequestId == requestId && requestId.isNotBlank())) {
+                            publishProgress(progress)
+                        }
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (error: Exception) {
+                    val awaitingBootstrap = control != null && !pendingSent && lastTarget.isBlank() &&
+                        System.currentTimeMillis() - requestedAt < 60_000L
+                    if (errorCodeFrom(error.userMessage()) != "TERMUX_TIMEOUT" && !awaitingBootstrap) {
+                        mutableState.update { it.copy(cancellationRequested = false,
+                            error = "작업 중단 요청을 전달하지 못했습니다. 현재 작업의 결과를 기다립니다.\n${error.userMessage()}") }
+                        break
+                    }
+                    // An uncertain callback is not proof that the cancel request failed.
+                    // Repeat the same expected identity; never target another operation.
+                }
+                delay(1_500)
+            }
+        }
+    }
+
+    private suspend fun <T> cancellableOperation(
+        operation: String,
+        started: Long,
+        backupRequest: BackupRequest? = null,
+        block: suspend () -> T,
+    ): T {
+        val control = OperationCancellationControl()
+        activeOperationControl = control
+        operationCancellationRequested = pendingInitialCancellation
+        if (pendingInitialCancellation) control.requestCancellation()
+        pendingInitialCancellation = false
+        mutableState.update { it.copy(cancellationRequested = control.cancellationRequested) }
+        try {
+            return withContext(control) { operationCheckpoint(); block() }
+        } catch (cancelled: UserOperationCancelled) {
+            // The cooperative exception means either no dispatch occurred or a
+            // terminal callback arrived. Preserve the UUID tombstone for queued
+            // persistent-server substeps before reporting cancellation.
+            if (control.hasDispatched && control.cancellationRequested) {
+                repository.cancelOperation("", control.requestId).requireSuccess()
+            }
+            val environment = if (!control.hasDispatched) state.value.environment else try { repository.inspect() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { state.value.environment }
+            val detail = "요청에 따라 작업을 중단했습니다. 이미 완료된 변경은 유지됩니다."
+            val summary = operationSummary(operation, operationLabel(operation), detail, false, started,
+                errorCode = "OPERATION_CANCELLED", backupRequest = backupRequest)
+            mutableState.update { it.copy(environment = environment, isWorking = false,
+                cancellationRequested = false, workingLabel = "", workProgress = null, error = null,
+                message = detail, lastOperationResult = summary, fileBrowserMutating = false,
+                fileBrowserError = "", fileBrowserNotice = if (it.fileBrowserOpen) detail else it.fileBrowserNotice) }
+            throw cancelled
+        } finally {
+            if (activeOperationControl === control) activeOperationControl = null
+            if (!state.value.isWorking || control.dispatchedOperation == null) {
                 operationCancellationRequested = false
-                mutableState.update { it.copy(error = "작업 중단을 요청하지 못했습니다.\n${error.userMessage()}") }
+                cancellationRequestJob?.cancel()
+                mutableState.update { it.copy(cancellationRequested = false) }
             }
         }
     }
@@ -619,7 +723,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             successMessage = "업데이트·패키지 설치·서버 응답 검사를 완료했습니다.",
             retryAction = RetryAction.CHECK_UPDATE,
             successMessageForResult = { result ->
-                if (result.stdout.lineSequence().any { it == "updated=0" }) {
+                if (result.stdout.lineSequence().any { it == "followup_cancelled=1" }) {
+                    "업데이트 적용은 완료했습니다. 중단 요청에 따라 서버 재시작은 진행하지 않았습니다."
+                } else if (result.stdout.lineSequence().any { it == "updated=0" }) {
                     "이미 최신 커밋입니다. 패키지를 다시 설치하지 않았습니다."
                 } else {
                     "업데이트·패키지 설치·서버 응답 검사를 완료했습니다."
@@ -665,7 +771,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     keepRunning = wasRunning,
                     allowModifiedFiles = state.value.updatePreflight?.modifiedFiles?.isNotEmpty() == true,
                 )
-                val updateRecord = readUpdateRecordSafely()
+                val updateRecord = withoutOperationCancellation { readUpdateRecordSafely() }
                 mutableState.update { it.copy(lastUpdateRecord = updateRecord ?: it.lastUpdateRecord) }
                 result.requireSuccess()
                 mutableState.update { it.copy(updatePreflight = null) }
@@ -673,6 +779,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                if (currentCoroutineContext()[OperationCancellationControl]?.cancellationRequested == true) throw error
                 try {
                     recoverServerAfterFailure()
                 } catch (cancelled: CancellationException) {
@@ -707,7 +814,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 "업데이트 검사 준비", "Termux에 최신 커밋·Node 호환성·공간 검사 요청을 전달합니다.")
             val progressJob = pollOperationProgress("update-preflight", started)
             try {
-                val report = repository.checkUpdate()
+                val report = cancellableOperation("update-preflight", started) { repository.checkUpdate() }
                 progressJob.cancel()
                 mutableState.update {
                     it.copy(
@@ -755,6 +862,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         operation = "switch-branch",
         label = "${branch.label}로 전환 중",
         successMessage = "${branch.label} 브랜치로 전환했습니다.",
+        successMessageForResult = { result -> if (result.stdout.contains("followup_cancelled=1"))
+            "${branch.label} 브랜치로 전환했습니다. 중단 요청에 따라 서버 재시작은 진행하지 않았습니다."
+            else "${branch.label} 브랜치로 전환했습니다." },
     ) {
         val wasRunning = state.value.environment.processRunning
         if (wasRunning) {
@@ -768,7 +878,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (result.isSuccess) {
             mutableState.update { it.copy(updatePreflight = null) }
             if (wasRunning) {
-                startServerWithWakeLock().requireSuccess()
+                try { startServerWithWakeLock().requireSuccess() }
+                catch (cancelled: UserOperationCancelled) {
+                    val control = currentCoroutineContext()[OperationCancellationControl]
+                    withoutOperationCancellation {
+                        if (control != null) repository.cancelOperation("", control.requestId).requireSuccess()
+                        repository.stop().requireSuccess()
+                    }
+                    return@perform result.copy(stdout = result.stdout + "\nfollowup_cancelled=1\n")
+                }
             }
         }
         result
@@ -856,16 +974,19 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
         viewModelScope.launch {
             val progressJob = pollOperationProgress("inspect-install", started)
+            var reconnecting = false
             try {
-                val candidate = block()
+                val candidate = cancellableOperation("inspect-install", started) { block() }
                 mutableState.update { it.copy(pendingInstallation = candidate) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                reconnecting = reconnectTimedOutOperation(errorCodeFrom(error.userMessage()), "inspect-install", started)
+                if (reconnecting) return@launch
                 mutableState.update { it.copy(error = error.userMessage()) }
             } finally {
                 progressJob.cancel()
-                mutableState.update { it.copy(isWorking = false, workingLabel = "", workProgress = null) }
+                if (!reconnecting) mutableState.update { it.copy(isWorking = false, workingLabel = "", workProgress = null) }
             }
         }
     }
@@ -978,7 +1099,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun refreshBackupListAfterOperation() {
         try {
-            val backups = repository.listBackups()
+            // This read follows a committed backup/restore. Do not relabel that
+            // completed operation as cancelled while merely refreshing its list.
+            val backups = withoutOperationCancellation { repository.listBackups() }
             mutableState.update { it.copy(backups = backups, backupsLoaded = true) }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -1073,7 +1196,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 "진단 준비", "Android 설정과 Termux 환경을 차례로 검사합니다.")
             val progressJob = pollOperationProgress("diagnose", operationStartedAt)
             try {
-                val report = repository.diagnose()
+                val report = cancellableOperation("diagnose", operationStartedAt) { repository.diagnose() }
                 val finalProgress = try {
                     repository.readProgress()?.takeIf { it.belongsToStartedOperation("diagnose", operationStartedAt) }
                         ?.let(progressLogHistory::merge)
@@ -1325,7 +1448,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val progressJob = pollOperationProgress(operation, started)
             var reconnecting = false
             try {
-                block().requireSuccess()
+                cancellableOperation(operation, started) { block().requireSuccess() }
                 progressJob.cancel()
                 journal.completedItem(label)
                 mutableState.update { it.copy(fileBrowserNotice = success,
@@ -1489,7 +1612,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 "작업 요청 준비", "$label 요청을 Termux에 전달하고 있습니다.")
             val progressJob = pollOperationProgress(operation, operationStartedAt)
             try {
-                val result = block()
+                val result = cancellableOperation(operation, operationStartedAt, backupRequest) { block() }
                 var resolvedSuccessMessage = successMessageForResult(result)
                 if (!result.isSuccess && operationCancellationRequested && result.exitCode == 130) {
                     progressJob.cancel()
@@ -1612,7 +1735,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     )
                 }
             } finally {
-                operationCancellationRequested = false
+                if (!state.value.isWorking) {
+                    operationCancellationRequested = false
+                    cancellationRequestJob?.cancel()
+                    mutableState.update { it.copy(cancellationRequested = false) }
+                }
                 progressJob.cancel()
             }
         }

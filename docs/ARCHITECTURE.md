@@ -58,10 +58,19 @@ Every managed operation writes its final operation name, status, and stable erro
 - Invalid, legacy, ambiguous, or unverifiable recovery records block modifying operations and retain the protected copies for inspection. Committed and completed-rollback journals do not cause a second rollback. Recovery interruption, missing copies, path substitution, and storage/device failure can still require manual recovery; do not delete the reported recovery directory.
 - Internal safety copies live under `~/.st-launcher/backups`, may contain user data and secrets, are not encrypted, and have no automatic retention policy. They are separate from user-selected ZIP backups in Download.
 
+## Operation cancellation
+
+The main operation panel and file-management progress panels share a confirmation-based cancellation control. A request remains pending until the worker and any required cleanup have finished; accepting a request is not a completion result. A user cancellation is presented separately from an error.
+
+Cancellation follows the user operation across its Android transfers and Termux subcommands. Android uses cooperative checkpoints rather than cancelling the callback-waiting coroutine while a Termux command may still be writing. A request between subcommands prevents the remaining stages from being dispatched. Reconnected work is targeted by the manager's recorded process identity, not by a guessed PID or operation name.
+
+The manager exposes a process-identity `operation_id` and cancellation state with progress. Disposable compression, transfer and inspection workers may be stopped after identifying their process tree. Package application and installation-data replacement use deferred cancellation and explicit safe boundaries. Cleanup must finish after writers have stopped; rollback failures retain their recovery state and must not be reported as a successful cancellation. A completed operation remains completed if cancellation arrives too late.
+
 ## Build verification
 
 CI runs the manager shell tests, JVM unit tests, Android lint, and both debug and unsigned release builds.
 Import normalization, ambiguous native archives, source/runtime validation, and interrupted-restore recovery each have isolated regression suites. Windows runs adapt unsupported OS resource limits only in the test harness; Linux CI keeps real limits and Unix filesystem semantics.
+Cancellation simulations run twice alongside the existing backup/import/recovery regressions, including real worker processes and isolated temporary data. Android unit tests cover cancellation targeting, cooperative checkpoints, and progress/result handling. These checks do not replace Android/Termux device testing of OS scheduling and document-provider behavior.
 The release build exercises R8; CI does not receive a production signing key. Production APKs are signed separately before publication.
 Debug builds use the `.debug` application ID suffix and the local Android debug key; they cannot replace a production installation.
 CI preserves unit test and lint reports alongside the explicitly unsigned release artifact. See [release preparation](RELEASE.md).

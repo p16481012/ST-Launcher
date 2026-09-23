@@ -40,8 +40,14 @@ OPERATION_STARTED_EPOCH=0
 CURRENT_WORK_DIR=""
 CURRENT_IMPORT_ARCHIVE=""
 CURRENT_BACKUP_OUTPUT_DIR=""
+CURRENT_SAFETY_WORK_DIR=""
 TEMP_APT_SOURCES=""
 OPERATION_LOCK_START=""
+CANCELLATION_GUARD=0
+CANCELLATION_CLEANUP=0
+CANCELLATION_COMMITTED=0
+CANCELLABLE_CHILD=""
+CANCELLABLE_CHILD_START=""
 RESTORE_TRANSACTION_ACTIVE=0
 RESTORE_TRANSACTION_KIND=""
 RESTORE_ROLLBACK_DIR=""
@@ -72,6 +78,8 @@ write_progress() {
     local status="${4:-running}"
     local operation="${5:-$CURRENT_OPERATION}"
     local error_code="${6:-}"
+    [[ "$status" == running ]] && cancellation_checkpoint
+    if [[ "$status" == success && "$operation" == start ]]; then commit_start_request || exit $?; fi
     local temp="$PROGRESS_FILE.tmp.$$"
     local now previous_phase phase_started mode=indeterminate
     now="$(date +%s)"
@@ -201,8 +209,12 @@ attach_progress_result() {
     local error_code="${1:-}"
     [[ -f "$PROGRESS_FILE" ]] || return 0
     local temp="$PROGRESS_FILE.tmp.$$"
-    grep -vE '^(error_code|finished_at)=' "$PROGRESS_FILE" > "$temp" || true
+    grep -vE '^(error_code|finished_at|operation_id|operation_request_id|cancellation_mode|cancellation_requested)=' "$PROGRESS_FILE" > "$temp" || true
     printf 'error_code=%s\nfinished_at=%s\n' "$error_code" "$(date +%s)" >> "$temp"
+    if [[ -n "$OPERATION_LOCK_START" ]]; then
+        printf 'operation_id=%s:%s\noperation_request_id=%s\ncancellation_mode=none\ncancellation_requested=%s\n' \
+            "$$" "$OPERATION_LOCK_START" "${ST_OPERATION_REQUEST_ID:-}" "$(cancellation_requested && echo 1 || echo 0)" >> "$temp"
+    fi
     mv -f "$temp" "$PROGRESS_FILE"
 }
 
@@ -318,21 +330,24 @@ measured_copy() {
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_PHASE="${COPY_PHASE:-파일 복사}" \
         ST_PROGRESS_DETAIL="실제 복사한 파일과 용량을 확인하고 있습니다." ST_PROGRESS_OPERATION="$CURRENT_OPERATION" \
         ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
-        bash "$PROGRESS_HELPER" copy "$source" "$destination" "$excludes" "$links"
+        run_cancellable bash "$PROGRESS_HELPER" copy "$source" "$destination" "$excludes" "$links"
 }
 
 measured_archive() {
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_PHASE="$1" ST_PROGRESS_DETAIL="$2" \
         ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
-        bash "$ARCHIVE_PROGRESS_HELPER" "${@:3}"
+        run_cancellable bash "$ARCHIVE_PROGRESS_HELPER" "${@:3}"
 }
 
 safety_backup() {
     local archive="$1" layout="${2:-contents}" reserve="${3:-33554432}" code=0
+    CURRENT_SAFETY_WORK_DIR="$(mktemp -d "$BACKUP_DIR/safety-work-$$.XXXXXXXX")" || return 36
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
         ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_PROGRESS_PHASE="${SAFETY_PHASE:-안전 백업}" \
-        ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" ST_SAFETY_RESERVE_BYTES="$reserve" \
-        bash "$SAFETY_BACKUP_HELPER" "$ST_HOME" "$archive" "$layout" >> "$LOG_FILE" 2>&1 || code=$?
+        ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" ST_SAFETY_RESERVE_BYTES="$reserve" ST_SAFETY_WORK_PARENT="$CURRENT_SAFETY_WORK_DIR" \
+        run_cancellable bash "$SAFETY_BACKUP_HELPER" "$ST_HOME" "$archive" "$layout" >> "$LOG_FILE" 2>&1 || code=$?
+    rm -rf -- "$CURRENT_SAFETY_WORK_DIR"
+    CURRENT_SAFETY_WORK_DIR=""
     if (( code != 0 )); then
         case "$code" in 35|36|37|130) ;; *) code=36 ;; esac
         return "$code"
@@ -383,6 +398,10 @@ track_current_work_dir() {
 }
 
 cleanup_current_work_dir() {
+    if [[ -n "$CURRENT_SAFETY_WORK_DIR" ]]; then
+        case "$CURRENT_SAFETY_WORK_DIR" in "$BACKUP_DIR/safety-work-$$."*) rm -rf -- "$CURRENT_SAFETY_WORK_DIR" ;; esac
+        CURRENT_SAFETY_WORK_DIR=""
+    fi
     if [[ -n "$CURRENT_BACKUP_OUTPUT_DIR" ]]; then
         case "$CURRENT_BACKUP_OUTPUT_DIR" in "$DOWNLOAD_DIR/.SillyTavern-backup."*) rm -rf -- "$CURRENT_BACKUP_OUTPUT_DIR" ;; esac
         CURRENT_BACKUP_OUTPUT_DIR=""
@@ -416,6 +435,19 @@ show_progress() {
         cat "$PROGRESS_FILE"
     else
         printf 'percent=0\nphase=준비 중\ndetail=작업을 준비하고 있습니다.\nstatus=idle\noperation=idle\nerror_code=\nfinished_at=\n'
+    fi
+    if operation_active; then
+        local owner started identity mode request_id
+        owner="$(cat "$LOCK_DIR/pid")"; started="$(cat "$LOCK_DIR/start_ticks" 2>/dev/null || true)"
+        [[ "$owner" =~ ^[0-9]+$ && "$started" =~ ^[0-9]+$ ]] || return 0
+        identity="$owner:$started"
+        mode="$(cat "$LOCK_DIR/cancellation-mode" 2>/dev/null || true)"
+        request_id="$(cat "$LOCK_DIR/request_id" 2>/dev/null || true)"
+        [[ "$mode" == immediate || "$mode" == deferred ]] || mode=none
+        if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null):$(cat "$LOCK_DIR/start_ticks" 2>/dev/null)" == "$identity" ]] && is_operation_owner "$owner"; then
+            printf 'operation_id=%s\noperation_request_id=%s\ncancellation_mode=%s\ncancellation_requested=%s\n' \
+                "$identity" "$request_id" "$mode" "$([[ -f "$RUN_DIR/cancel-$owner-$started.request" || ( -n "$request_id" && -f "$RUN_DIR/cancel-request-$request_id" ) ]] && echo 1 || echo 0)"
+        fi
     fi
 }
 
@@ -496,6 +528,8 @@ write_operation_lock() {
     }
     printf '%s\n' "$CURRENT_OPERATION" > "$LOCK_DIR/operation"
     printf '%s\n' "$OPERATION_LOCK_START" > "$LOCK_DIR/start_ticks"
+    printf 'deferred\n' > "$LOCK_DIR/cancellation-mode"
+    if [[ "${ST_OPERATION_REQUEST_ID:-}" =~ ^[0-9a-fA-F-]{36}$ ]]; then printf '%s\n' "$ST_OPERATION_REQUEST_ID" > "$LOCK_DIR/request_id"; fi
     printf '%s\n' "$$" > "$LOCK_DIR/pid"
 }
 
@@ -536,12 +570,155 @@ release_operation_lock() {
     fi
 }
 
+cancellation_request_path() {
+    printf '%s/cancel-%s-%s.request' "$RUN_DIR" "$$" "$OPERATION_LOCK_START"
+}
+
+cancellation_requested() {
+    [[ -n "$OPERATION_LOCK_START" ]] || return 1
+    [[ -f "$(cancellation_request_path)" ]] || request_cancelled
+}
+
+request_cancelled() {
+    [[ "${ST_OPERATION_REQUEST_ID:-}" =~ ^[0-9a-fA-F-]{36}$ && -f "$RUN_DIR/cancel-request-$ST_OPERATION_REQUEST_ID" ]]
+}
+
+set_cancellation_mode() {
+    [[ -n "$OPERATION_LOCK_START" && -d "$LOCK_DIR" ]] || return 0
+    [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null):$(cat "$LOCK_DIR/start_ticks" 2>/dev/null)" == "$$:$OPERATION_LOCK_START" ]] || return 0
+    if printf '%s\n' "$1" > "$LOCK_DIR/cancellation-mode.tmp.$$" 2>/dev/null; then
+        mv -f "$LOCK_DIR/cancellation-mode.tmp.$$" "$LOCK_DIR/cancellation-mode" 2>/dev/null || true
+    fi
+    return 0
+}
+
+cancellation_checkpoint() {
+    if (( CANCELLATION_GUARD == 0 && CANCELLATION_CLEANUP == 0 && CANCELLATION_COMMITTED == 0 )) && cancellation_requested; then
+        : > "$(cancellation_request_path).confirmed" || true
+        exit 130
+    fi
+    return 0
+}
+
+enter_cancellation_guard() {
+    cancellation_checkpoint
+    CANCELLATION_GUARD=$((CANCELLATION_GUARD + 1))
+    set_cancellation_mode deferred
+}
+
+leave_cancellation_guard() {
+    (( CANCELLATION_GUARD > 0 )) && CANCELLATION_GUARD=$((CANCELLATION_GUARD - 1))
+    cancellation_checkpoint
+}
+
+process_identity_live() {
+    [[ "$1" =~ ^[0-9]+$ && -n "$2" && "$(process_start_ticks "$1")" == "$2" ]] || return 1
+    # A zombie has closed its files and cannot write again, even before reaping.
+    [[ "$(awk '{sub(/^.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null)" != Z ]]
+}
+
+freeze_worker_tree() {
+    local pid="$1" started="$2" child child_start
+    process_identity_live "$pid" "$started" || return 0
+    # Stop each parent before enumerating children, so it cannot fork a writer
+    # between enumeration and termination. Only this operation's worker is used.
+    kill -STOP "$pid" 2>/dev/null || true
+    process_identity_live "$pid" "$started" || return 0
+    # Do not clean output while an uninterruptible writer is still alive.
+    while process_identity_live "$pid" "$started" && [[ "$(awk '{sub(/^.*\) /, ""); print $1}' "/proc/$pid/stat" 2>/dev/null)" != [Tt] ]]; do sleep 0.1; done
+    worker_pids+=("$pid"); worker_starts+=("$started")
+    while IFS= read -r child; do
+        [[ "$child" =~ ^[0-9]+$ ]] || continue
+        child_start="$(process_start_ticks "$child")"
+        [[ -n "$child_start" ]] && freeze_worker_tree "$child" "$child_start"
+    done < <(worker_children "$pid")
+}
+
+worker_children() {
+    local parent="$1" stat line state ppid rest pid
+    for stat in /proc/[0-9]*/stat; do
+        IFS= read -r line < "$stat" 2>/dev/null || continue
+        rest="${line##*) }"
+        read -r state ppid rest <<< "$rest"
+        if [[ "$ppid" == "$parent" ]]; then
+            pid="${stat#/proc/}"; printf '%s\n' "${pid%/stat}"
+        fi
+    done
+}
+
+stop_cancellable_worker() {
+    [[ -n "$CANCELLABLE_CHILD" && -n "$CANCELLABLE_CHILD_START" ]] || return 0
+    local -a worker_pids=() worker_starts=()
+    local index pending
+    freeze_worker_tree "$CANCELLABLE_CHILD" "$CANCELLABLE_CHILD_START"
+    for ((index=${#worker_pids[@]}-1; index>=0; index--)); do
+        if process_identity_live "${worker_pids[index]}" "${worker_starts[index]}"; then
+            # A stopped disposable worker cannot run a TERM handler that forks
+            # new writers. Cleanup is performed by the manager, after all exit.
+            kill -KILL "${worker_pids[index]}" 2>/dev/null || true
+        fi
+    done
+    while :; do
+        pending=0
+        for ((index=0; index<${#worker_pids[@]}; index++)); do
+            if process_identity_live "${worker_pids[index]}" "${worker_starts[index]}"; then
+                pending=1
+            fi
+        done
+        (( pending )) || break
+        sleep 0.1
+    done
+    wait "$CANCELLABLE_CHILD" 2>/dev/null || true
+    CANCELLABLE_CHILD=""; CANCELLABLE_CHILD_START=""
+}
+
+run_cancellable() {
+    cancellation_checkpoint
+    # The caller owns the safe boundary. Inside a transaction use ordinary
+    # execution and let the next explicit checkpoint decide on rollback.
+    if (( CANCELLATION_GUARD > 0 || CANCELLATION_CLEANUP > 0 )) || [[ -z "$OPERATION_LOCK_START" ]]; then
+        "$@"
+        return $?
+    fi
+    (trap - EXIT INT TERM; "$@") <&0 &
+    CANCELLABLE_CHILD=$!
+    CANCELLABLE_CHILD_START="$(process_start_ticks "$CANCELLABLE_CHILD")"
+    set_cancellation_mode immediate
+    while process_identity_live "$CANCELLABLE_CHILD" "$CANCELLABLE_CHILD_START"; do
+        if cancellation_requested; then
+            set_cancellation_mode deferred
+            stop_cancellable_worker
+            : > "$(cancellation_request_path).confirmed" || true
+            exit 130
+        fi
+        sleep 0.2
+    done
+    local code=0
+    wait "$CANCELLABLE_CHILD" || code=$?
+    CANCELLABLE_CHILD=""; CANCELLABLE_CHILD_START=""
+    set_cancellation_mode deferred
+    (( code == 0 )) && cancellation_checkpoint
+    return "$code"
+}
+
+run_deferred() {
+    enter_cancellation_guard
+    local code=0
+    "$@" || code=$?
+    CANCELLATION_GUARD=$((CANCELLATION_GUARD - 1))
+    (( code == 0 )) && cancellation_checkpoint
+    return "$code"
+}
+
 operation_cleanup() {
     local code="${1:-0}"
     trap - EXIT INT TERM
     # Recovery and result recording must not prevent each other if a disk write
     # fails. Recovery helpers explicitly propagate every destructive I/O error.
     set +e
+    CANCELLATION_CLEANUP=1
+    set_cancellation_mode deferred
+    stop_cancellable_worker
     local progress_status=""
     progress_status="$(sed -n 's/^status=//p' "$PROGRESS_FILE" 2>/dev/null | head -n 1)"
     local restore_interrupted="$RESTORE_RECOVERY_GUARD_FAILED"
@@ -554,25 +731,20 @@ operation_cleanup() {
         fi
     fi
     if (( code != 0 )) && [[ "$CURRENT_OPERATION" == "reset-installation" ]]; then
-        rollback_reset_installation || true
+        if ! rollback_reset_installation; then RESTORE_RECOVERY_RETAINED=1; code=25; fi
     fi
     if [[ "$progress_status" == "success" ]] && (( ! restore_interrupted )); then
         # A completed operation remains successful even if its result stream closes late.
         code=0
-    elif [[ -f "$LOCK_DIR/cancel-requested" ]]; then
-        local child
-        while IFS= read -r child; do
-            [[ -n "$child" ]] && kill -TERM "$child" 2>/dev/null || true
-        done < <(jobs -pr 2>/dev/null || true)
+    elif { (( code == 130 )) || [[ -f "$(cancellation_request_path).confirmed" ]]; } && (( ! RESTORE_RECOVERY_RETAINED )); then
+        write_progress 0 "중단 처리 중" "실행 작업이 종료되었습니다. 임시 파일과 상태를 정리하고 있습니다."
         if [[ "$CURRENT_OPERATION" == "install" && -f "$INSTALL_MARKER" ]]; then
             rm -rf "$ST_HOME"
             rm -f "$INSTALL_MARKER" "$DEPENDENCY_HASH_FILE"
         elif [[ "$CURRENT_OPERATION" == "start" ]]; then
             rm -f "$DEPENDENCY_HASH_FILE"
-            terminate_server_process
+            terminate_request_server "${ST_OPERATION_REQUEST_ID:-}"
         fi
-        write_progress 0 "작업 중단됨" "요청에 따라 작업을 안전하게 중단했습니다." cancelled
-        echo "cancelled=1"
         code=130
     elif (( code != 0 )) && [[ "$progress_status" != "error" ]]; then
         write_progress 0 "작업 실패" "작업이 중단되었습니다. 로그를 확인해 주세요." error
@@ -581,18 +753,24 @@ operation_cleanup() {
     local final_error_code=""
     if (( code != 0 )); then
         final_status="error"
+        (( code == 130 )) && final_status="cancelled"
         final_error_code="$(manager_error_code "$CURRENT_OPERATION" "$code")"
         printf 'error_code=%s\n' "$final_error_code" >&2
+    fi
+    cleanup_current_work_dir
+    cleanup_temporary_package_source
+    stop_progress_monitor
+    if (( code == 130 )); then
+        write_progress 0 "작업 중단됨" "요청에 따라 작업을 안전하게 중단했습니다." cancelled
+        echo "cancelled=1"
     fi
     attach_progress_result "$final_error_code"
     write_operation_result "$CURRENT_OPERATION" "$final_status" "$code" "$final_error_code"
     if (( OPERATION_STARTED_EPOCH > 0 )); then
         local duration=$(( $(date +%s) - OPERATION_STARTED_EPOCH ))
-        record_activity "작업 종료 · 상태=$([[ $code -eq 0 ]] && echo 성공 || echo 실패) · 소요 ${duration}초"
+        record_activity "작업 종료 · 상태=$(if (( code == 0 )); then echo 성공; elif (( code == 130 )); then echo 중단; else echo 실패; fi) · 소요 ${duration}초"
     fi
-    cleanup_current_work_dir
-    cleanup_temporary_package_source
-    stop_progress_monitor
+    rm -f -- "$(cancellation_request_path)" "$(cancellation_request_path).confirmed"
     release_operation_lock
     exit "$code"
 }
@@ -614,28 +792,44 @@ signal_descendants() {
 }
 
 cancel_operation() {
-    operation_active || { echo "현재 진행 중인 작업이 없습니다." >&2; exit 6; }
-    local owner operation owner_start
-    owner="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
-    operation="$(cat "$LOCK_DIR/operation" 2>/dev/null || true)"
-    [[ "$owner" =~ ^[0-9]+$ ]] || { echo "중단할 작업 정보를 확인할 수 없습니다." >&2; exit 6; }
-    [[ "$operation" == "install" || "$operation" == "start" ]] || {
-        echo "현재 단계는 데이터 보호를 위해 중간에 중단할 수 없습니다." >&2
-        exit 12
-    }
-    is_operation_owner "$owner" || { echo "작업 프로세스가 변경되어 중단하지 않았습니다." >&2; exit 6; }
-    owner_start="$(cat "$LOCK_DIR/start_ticks")"
-    touch "$LOCK_DIR/cancel-requested"
-    signal_descendants "$owner" "$owner_start"
-    if [[ "$(process_start_ticks "$owner")" == "$owner_start" ]] && is_operation_owner "$owner"; then
-        kill -TERM "$owner" 2>/dev/null || true
+    local expected="${1:-}" request_id="${2:-}" owner owner_start request active_request mode
+    [[ -z "$request_id" || "$request_id" =~ ^[0-9a-fA-F-]{36}$ ]] || exit 6
+    [[ "$expected" =~ ^[1-9][0-9]*:[0-9]+$ || ( -z "$expected" && -n "$request_id" ) ]] || { echo "중단할 작업 식별자가 없습니다. 작업 상태를 다시 확인해 주세요." >&2; exit 6; }
+    if [[ -n "$request_id" ]]; then
+        # A user request covers queued start/finish commands as well as the
+        # current process. It never grants permission to cancel another UUID.
+        (umask 077; printf '%s\n' "$request_id" > "$RUN_DIR/cancel-request-$request_id") || return 1
+        terminate_request_server "$request_id"
     fi
-    local attempt
-    for attempt in $(seq 1 100); do
-        [[ ! -d "$LOCK_DIR" ]] && break
-        sleep 0.1
-    done
-    echo "cancel_requested=1"
+    if [[ -z "$expected" ]]; then
+        printf 'cancel_requested=1\ncancel_completed=0\noperation_request_id=%s\n' "$request_id"
+        return 0
+    fi
+    if ! operation_active; then
+        printf 'cancel_requested=0\ncancel_completed=1\noperation_id=%s\n' "$expected"
+        return 0
+    fi
+    owner="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    owner_start="$(cat "$LOCK_DIR/start_ticks" 2>/dev/null || true)"
+    if [[ "$owner:$owner_start" != "$expected" ]] || ! is_operation_owner "$owner"; then
+        printf 'cancel_requested=0\ncancel_completed=1\noperation_id=%s\n' "$expected"
+        return 0
+    fi
+    mode="$(cat "$LOCK_DIR/cancellation-mode" 2>/dev/null || true)"
+    active_request="$(cat "$LOCK_DIR/request_id" 2>/dev/null || true)"
+    if [[ "$mode" != immediate && "$mode" != deferred ]]; then
+        echo "이 작업은 이전 관리 스크립트에서 실행 중이므로 안전 중단을 지원하지 않습니다." >&2
+        return 6
+    fi
+    if [[ -n "$request_id" && "$active_request" != "$request_id" ]]; then
+        printf 'cancel_requested=0\ncancel_completed=1\noperation_id=%s\n' "$expected"
+        return 0
+    fi
+    # The identity is in the filename: a delayed request cannot cancel the next
+    # owner even if operation.lock was removed and recreated during this write.
+    request="$RUN_DIR/cancel-$owner-$owner_start.request"
+    (umask 077; printf '%s\n' "$expected" > "$request") || return 1
+    printf 'cancel_requested=1\ncancel_completed=0\noperation_id=%s\n' "$expected"
 }
 
 begin_operation() {
@@ -643,8 +837,11 @@ begin_operation() {
     OPERATION_STARTED_EPOCH="$(date +%s)"
     export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
-    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose ]]; then
+    CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
+    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install ]]; then
+        CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
+        CANCELLATION_GUARD=0
     fi
     # Only the new lock owner may discard stale progress from the prior run.
     rm -f -- "$PROGRESS_FILE" "$HEARTBEAT_FILE"
@@ -681,15 +878,15 @@ apt_with_selected_sources() {
             -o "Dir::Etc::sourceparts=-"
             -o "APT::Get::List-Cleanup=0"
         )
-        apt-get "${source_options[@]}" "$@"
+        run_deferred apt-get "${source_options[@]}" "$@"
     else
-        apt-get "$@"
+        run_deferred apt-get "$@"
     fi
 }
 
 refresh_package_indexes() {
     write_progress 5 "패키지 목록 확인" "현재 Termux 저장소를 확인하고 있습니다."
-    if pkg update -y >> "$LOG_FILE" 2>&1; then
+    if run_deferred pkg update -y >> "$LOG_FILE" 2>&1; then
         return 0
     fi
 
@@ -733,6 +930,7 @@ install_dependencies() {
         return 1
     fi
     write_progress 48 "Node 모듈 준비" "손상되거나 오래된 의존성을 정리하고 있습니다."
+    enter_cancellation_guard
     echo "[launcher] Rebuilding Node modules..." >> "$LOG_FILE"
     record_processing "기존 Node 모듈 정리 시작 · 파일 수에 따라 시간이 걸리며 정리 명령의 완료를 기다립니다."
     rm -rf "$ST_HOME/node_modules"
@@ -760,6 +958,7 @@ install_dependencies() {
         write_progress 0 "설치 실패" "Node 모듈 설치에 실패했습니다. 로그를 확인해 주세요." error
         echo "Node 모듈 설치에 실패했습니다. 로그를 확인해 주세요." >&2
         tail -n 40 "$LOG_FILE" >&2 || true
+        CANCELLATION_GUARD=$((CANCELLATION_GUARD - 1))
         return 1
     fi
 
@@ -768,6 +967,7 @@ install_dependencies() {
     installed_count="$(find "$ST_HOME/node_modules" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l || true)"
     record_activity "Node 모듈 설치 완료 · 상위 패키지 ${installed_count}개"
     write_progress 78 "Node 모듈 확인" "필수 패키지 설치를 확인했습니다."
+    leave_cancellation_guard
 }
 
 wait_for_server() {
@@ -806,7 +1006,7 @@ wait_for_server() {
 }
 
 process_start_ticks() {
-    awk '{print $22}' "/proc/$1/stat" 2>/dev/null || true
+    awk '{sub(/^.*\) /, ""); print $20}' "/proc/$1/stat" 2>/dev/null || true
 }
 
 write_server_pid() {
@@ -815,6 +1015,8 @@ write_server_pid() {
     start_ticks="$(process_start_ticks "$pid")"
     [[ "$pid" =~ ^[0-9]+$ && -n "$start_ticks" ]] || return 1
     printf 'start_ticks=%s\n' "$start_ticks" > "$PID_META_FILE.tmp.$$"
+    printf 'operation=%s\n' "$CURRENT_OPERATION" >> "$PID_META_FILE.tmp.$$"
+    if [[ "${ST_OPERATION_REQUEST_ID:-}" =~ ^[0-9a-fA-F-]{36}$ ]]; then printf 'request_id=%s\n' "$ST_OPERATION_REQUEST_ID" >> "$PID_META_FILE.tmp.$$"; fi
     printf '%s\n' "$pid" > "$PID_FILE.tmp.$$"
     mv -f "$PID_META_FILE.tmp.$$" "$PID_META_FILE"
     mv -f "$PID_FILE.tmp.$$" "$PID_FILE"
@@ -885,6 +1087,7 @@ prepare_persistent_start() {
 }
 
 run_persistent_server_task() {
+    request_cancelled && return 130
     if is_running; then
         echo "already_running=1"
         return 0
@@ -892,7 +1095,41 @@ run_persistent_server_task() {
     cd "$ST_HOME"
     reset_server_log
     write_server_pid "$$"
+    if request_cancelled; then clear_server_pid; return 130; fi
     exec node server.js --port "$PORT" >> "$SERVER_LOG" 2>&1
+}
+
+commit_start_request() {
+    local request_id="${ST_OPERATION_REQUEST_ID:-}" state
+    [[ "$request_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 0
+    [[ "$(sed -n 's/^request_id=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)" == "$request_id" ]] || return 0
+    # Exclusive creation arbitrates a late cancel versus completed start. Once
+    # completion wins, a delayed request must not kill the successful server.
+    if ln -s committed "$RUN_DIR/start-final-$request_id" 2>/dev/null; then return 0; fi
+    state="$(readlink "$RUN_DIR/start-final-$request_id" 2>/dev/null || true)"
+    if [[ "$state" == cancelled ]]; then exit 130; fi
+    [[ "$state" == committed ]]
+}
+
+terminate_request_server() {
+    local request_id="$1" pid started recorded operation
+    [[ "$request_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 0
+    if ! ln -s cancelled "$RUN_DIR/start-final-$request_id" 2>/dev/null; then
+        [[ "$(readlink "$RUN_DIR/start-final-$request_id" 2>/dev/null || true)" == cancelled ]] || return 0
+    fi
+    recorded="$(sed -n 's/^request_id=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)"
+    [[ "$recorded" == "$request_id" ]] || return 0
+    operation="$(sed -n 's/^operation=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)"
+    [[ "$operation" == start || "$operation" == server-task ]] || return 0
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    started="$(sed -n 's/^start_ticks=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)"
+    [[ "$pid" != "$$" ]] || return 0
+    if process_identity_live "$pid" "$started"; then
+        local CANCELLABLE_CHILD="$pid" CANCELLABLE_CHILD_START="$started"
+        stop_cancellable_worker
+    fi
+    [[ "$(cat "$PID_FILE" 2>/dev/null || true)" == "$pid" ]] && clear_server_pid
+    return 0
 }
 
 finish_persistent_start() {
@@ -1026,7 +1263,7 @@ ensure_remote_branch() {
     if ! git -C "$ST_HOME" config --get-all remote.origin.fetch | grep -Fxq "$refspec"; then
         git -C "$ST_HOME" config --add remote.origin.fetch "$refspec"
     fi
-    git -C "$ST_HOME" fetch --progress origin "$refspec"
+    run_cancellable git -C "$ST_HOME" fetch --progress origin "$refspec"
 }
 
 required_node_major() {
@@ -1270,7 +1507,7 @@ install_st() {
     fi
     write_progress 35 "SillyTavern 다운로드" "$branch 브랜치를 내려받고 있습니다."
     : > "$INSTALL_MARKER"
-    if ! git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
+    if ! run_cancellable git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
         write_progress 0 "다운로드 실패" "SillyTavern을 내려받지 못했습니다. 부분 설치를 정리했습니다." error
         rm -rf "$ST_HOME"
         rm -f "$INSTALL_MARKER"
@@ -1541,6 +1778,7 @@ backup_selected() {
     local size
     size="$(stat -c %s "$archive" 2>/dev/null || wc -c < "$archive")"
     # Preserve an unrelated file that appeared while compression was running.
+    enter_cancellation_guard
     while [[ -e "$output" ]]; do output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S)-$RANDOM.zip"; done
     LC_ALL=C mv -n -- "$archive" "$output" 2> "$error_log" || backup_failure 59 "검증한 백업의 최종 저장에 실패했습니다." "$error_log"
     [[ ! -e "$archive" ]] || backup_failure 59 "백업 파일 이름이 충돌하여 기존 파일을 보호했습니다."
@@ -1734,7 +1972,7 @@ validate_restore_archive() {
     # unzip -t before extraction: CRC is checked by the one actual extraction.
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
         ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
-        node --input-type=commonjs - "$1" "${2:-}" <<'NODE'
+        run_cancellable node --input-type=commonjs - "$1" "${2:-}" <<'NODE'
 const fs = require('fs');
 const fail = (code, message) => { console.error(message); process.exit(code); };
 const phaseStarted = Math.floor(Date.now() / 1000);
@@ -2481,7 +2719,7 @@ resolve_install_source() {
 
 validate_install_tree() {
     local source="$1" invalid
-    invalid="$(find "$source" -name node_modules -prune -o ! -type f ! -type d -print -quit 2>/dev/null)" || return 53
+    invalid="$(run_cancellable find "$source" -name node_modules -prune -o ! -type f ! -type d -print -quit 2>/dev/null)" || return 53
     [[ -z "$invalid" ]] || { echo "설치 폴더에 심볼릭 링크 또는 특수 파일이 있습니다." >&2; return 53; }
     valid_full_installation "$source" || { echo "정상적인 SillyTavern Git 설치(.git, package.json, server.js, start.sh, data)를 찾지 못했습니다." >&2; return 52; }
 }
@@ -2494,7 +2732,7 @@ install_source_snapshot() {
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
         ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_PROGRESS_PHASE="${phase:-원본 내용 검증}" \
         ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
-        bash "$INSTALL_VALIDATION_HELPER" snapshot "$1"
+        run_cancellable bash "$INSTALL_VALIDATION_HELPER" snapshot "$1"
 }
 
 validate_install_runtime() {
@@ -2506,7 +2744,7 @@ validate_install_runtime() {
         return 57
     fi
     npm_path="$(command -v npm || true)"
-    if output="$(bash "$INSTALL_VALIDATION_HELPER" runtime "$1" "$npm_path" "$PREFIX" 2>&1)"; then
+    if output="$(run_cancellable bash "$INSTALL_VALIDATION_HELPER" runtime "$1" "$npm_path" "$PREFIX" 2>&1)"; then
         printf '%s\n' "$output" >> "$LOG_FILE"
         return 0
     else
@@ -2577,6 +2815,7 @@ ensure_restore_target_stopped() {
 }
 
 inspect_install() {
+    begin_operation "inspect-install"
     local source destination bytes invalid same=0 tools_ready=1
     source="$(resolve_install_source "${1:-}")" || exit $?
     if command -v git >/dev/null 2>&1; then
@@ -2588,12 +2827,12 @@ inspect_install() {
         tools_ready=0
         [[ -d "$source/.git" && -f "$source/package.json" && -f "$source/server.js" &&
             -f "$source/start.sh" && -d "$source/data" ]] || exit 52
-        invalid="$(find "$source" -name node_modules -prune -o ! -type f ! -type d -print -quit 2>/dev/null)" || exit 53
+        invalid="$(run_cancellable find "$source" -name node_modules -prune -o ! -type f ! -type d -print -quit 2>/dev/null)" || exit 53
         [[ -z "$invalid" ]] || exit 53
     fi
     destination="$(realpath -m "$ST_HOME")"
     [[ "$source" == "$destination" ]] && same=1
-    bytes="$(du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')"
+    bytes="$(run_cancellable du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')"
     echo "source_path_b64=$(printf '%s' "$source" | base64 -w 0)"
     echo "source_version_b64=$(printf '%s' "$(version_from_file "$source/package.json")" | base64 -w 0)"
     echo "source_bytes=$bytes"
@@ -2633,7 +2872,7 @@ import_install() {
     snapshot="$(install_source_snapshot "$source")" || exit 53
     record_processing "원본 파일 상태 기록 완료"
     write_progress 0 "설치 이동 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
-    bytes="$(unsigned_decimal "$(du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
+    bytes="$(unsigned_decimal "$(run_cancellable du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 54
     (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 옮길 저장 공간이 부족합니다." >&2; exit 54; }
     record_processing "설치 이동 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
@@ -2908,7 +3147,9 @@ recover_restore_before_dispatch() {
     inspect_restore_recovery
     (( ${#RESTORE_PENDING_WORKS[@]} )) || return 0
     acquire_operation
+    CANCELLATION_GUARD=1
     recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
+    CANCELLATION_GUARD=0
     release_operation_lock
     trap 'command_cleanup $?' EXIT
     trap - INT TERM
@@ -3076,10 +3317,10 @@ restore_extracted_tree() {
     fi
     local incoming_bytes current_bytes free_bytes required_bytes
     write_progress 0 "복원 공간 계산" "가져온 데이터와 현재 데이터의 실제 사용 공간을 계산하고 있습니다."
-    incoming_bytes="$(du -sk "$extracted" | awk '{printf "%.0f", $1 * 1024}')"
+    incoming_bytes="$(run_cancellable du -sk "$extracted" | awk '{printf "%.0f", $1 * 1024}')"
     current_bytes=0
     if [[ ",$kinds," != *,full,* && -d "$ST_HOME" ]]; then
-        current_bytes="$(du -sk --exclude=node_modules --exclude=.git "$ST_HOME" | awk '{printf "%.0f", $1 * 1024}')"
+        current_bytes="$(run_cancellable du -sk --exclude=node_modules --exclude=.git "$ST_HOME" | awk '{printf "%.0f", $1 * 1024}')"
     fi
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
     incoming_bytes="$(unsigned_decimal "$incoming_bytes")" || exit 29
@@ -3107,6 +3348,7 @@ restore_extracted_tree() {
         [[ "$(stat -c %d "$replacement")" == "$(stat -c %d "$(dirname "$ST_HOME")")" ]] || exit 25
         write_restore_journal || exit 25
         RESTORE_TRANSACTION_ACTIVE=1
+        enter_cancellation_guard
         if (( RESTORE_HAD_INSTALLATION )); then
             mv "$ST_HOME" "$rollback/full-install" || exit 25
             RESTORE_FULL_ORIGINAL_MOVED=1
@@ -3171,6 +3413,7 @@ restore_extracted_tree() {
 
         write_restore_journal || exit 25
         RESTORE_TRANSACTION_ACTIVE=1
+        enter_cancellation_guard
         write_progress 58 "데이터 교체" "검증된 백업을 실제 데이터에 적용하고 있습니다."
         local apply_failed=0
         for path in "${affected[@]}"; do
@@ -3203,7 +3446,12 @@ restore_extracted_tree() {
         echo "복원 결과 검증에 실패하여 기존 상태 복구를 시작합니다." >&2
         exit 27
     fi
+    # All writers have returned. A pending cancellation can now roll back the
+    # transaction without racing a still-running copy or package process.
+    leave_cancellation_guard
     commit_restore_transaction || exit 25
+    CANCELLATION_COMMITTED=1
+    enter_cancellation_guard
     write_progress 0 "임시 복원 파일 정리" "복원 결과 검사를 통과했습니다. 임시 파일 정리 명령의 완료를 기다립니다."
     rm -rf "$work"
     if [[ -n "$CURRENT_IMPORT_ARCHIVE" ]]; then rm -f -- "$CURRENT_IMPORT_ARCHIVE"; CURRENT_IMPORT_ARCHIVE=""; fi
@@ -3287,12 +3535,14 @@ reset_installation() {
     rollback_dir="$BACKUP_DIR/reset-rollback-$$"
     mkdir -p "$rollback_dir"
     write_progress 8 "현재 설치 보호" "재설치에 실패하면 되돌릴 수 있도록 현재 설치를 임시 보관합니다."
+    enter_cancellation_guard
     mv "$ST_HOME" "$rollback_dir/full-install"
     [[ -f "$DEPENDENCY_HASH_FILE" ]] && cp -a "$DEPENDENCY_HASH_FILE" "$rollback_dir/dependency-lock.sha256"
     rm -f "$DEPENDENCY_HASH_FILE"
+    leave_cancellation_guard
 
     write_progress 28 "새 설치 다운로드" "$branch 브랜치를 초기 상태로 다시 받고 있습니다."
-    if ! git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
+    if ! run_cancellable git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
         echo "새 SillyTavern을 내려받지 못해 기존 설치로 되돌립니다." >&2
         exit 17
     fi
@@ -3301,6 +3551,7 @@ reset_installation() {
         echo "새 설치의 패키지 준비에 실패해 기존 설치로 되돌립니다." >&2
         exit 12
     fi
+    enter_cancellation_guard
     rm -rf "$rollback_dir"
     write_progress 100 "초기화 완료" "기존 데이터 없이 현재 브랜치를 새로 설치했습니다. Download 백업은 유지됩니다." success
     echo "reset=1"
@@ -3412,12 +3663,14 @@ update_st() {
         local modified_backup="$BACKUP_DIR/before-forced-update-$timestamp.tar.gz"
         write_progress 8 "수정 파일 보호" "사용자 데이터를 포함한 현재 설치를 별도 안전 파일로 압축하고 있습니다."
         SAFETY_PHASE="수정 파일 보호" safety_backup "$modified_backup" contents "$required_bytes" || exit $?
+        enter_cancellation_guard
         record_processing "수정 파일 안전 보관 완료 · Git 작업 트리 정리 시작"
         write_progress 0 "Git 작업 트리 정리" "안전 백업을 저장했습니다. Git 수정 파일 정리 명령의 완료를 기다립니다."
         git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
         git -C "$ST_HOME" clean -fd >> "$LOG_FILE" 2>&1
         echo "[launcher] Modified files saved to $modified_backup" >> "$LOG_FILE"
     fi
+    (( CANCELLATION_GUARD > 0 )) || enter_cancellation_guard
     printf 'created_at=%s\nbranch=%s\nold_commit=%s\ntarget_commit=%s\nold_version=%s\nnode_required=%s\nresult=running\n' \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$branch" "$old_commit" "$remote_commit" "$old_version" "$node_required" > "$state_file"
     write_progress 12 "업데이트 상태 기록" "현재 브랜치와 커밋, 기존 패키지를 기록하고 있습니다."
@@ -3467,7 +3720,7 @@ update_st() {
         exit 33
     fi
 
-    [[ "$keep_running" == "0" ]] && terminate_server_process
+    if [[ "$keep_running" == "0" ]] || cancellation_requested; then terminate_server_process; fi
     sed -i 's/^result=.*/result=success/' "$state_file"
     printf 'new_commit=%s\nnew_version=%s\n' "$(git -C "$ST_HOME" rev-parse HEAD)" "$(version_from_file "$ST_HOME/package.json")" >> "$state_file"
     rm -rf "$rollback_dir"
@@ -3506,6 +3759,7 @@ switch_branch() {
     write_progress 10 "안전 백업" "브랜치 변경 전 현재 설정을 백업하고 있습니다."
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
     SAFETY_PHASE="브랜치 변경 안전 백업" safety_backup "$safety_backup" directory || exit $?
+    enter_cancellation_guard
     record_processing "브랜치 변경 전 안전 백업 생성 완료"
     if [[ -n "$dirty_files" ]]; then
         write_progress 24 "수정 파일 정리" "확인된 수정 내용을 안전 백업 후 Git 작업 트리에서 정리합니다."
@@ -3743,7 +3997,7 @@ case "${1:-doctor}" in
     finish-persistent-start) finish_persistent_start ;;
     stop) stop_st ;;
     restart) SESSION_ACTION=restart stop_st && SESSION_ACTION=restart start_st ;;
-    cancel) cancel_operation ;;
+    cancel) cancel_operation "${2:-}" "${3:-}" ;;
     wake-lock-on) set_termux_wake_lock 1 ;;
     wake-lock-off) set_termux_wake_lock 0 ;;
     backup) backup_st ;;

@@ -145,6 +145,7 @@ import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
+import app.tavernbridge.launcher.ui.components.OperationCancelControl
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import app.tavernbridge.launcher.ui.components.WorkElapsedTime
 import app.tavernbridge.launcher.ui.components.FollowLogTail
@@ -627,6 +628,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     label = state.workingLabel,
                     progress = state.workProgress,
                     startedAtMillis = state.workingStartedAtMillis,
+                    cancellationRequested = state.cancellationRequested,
                     onCancel = viewModel::cancelCurrentOperation,
                 )
             }
@@ -653,6 +655,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             .onFailure { viewModel.showMessage("폴더 선택 화면을 열 수 없습니다.") }
                     },
                     onClose = viewModel::closeSillyTavernFolder,
+                    onCancelOperation = viewModel::cancelCurrentOperation,
                 )
             }
         }
@@ -2725,45 +2728,19 @@ private fun WorkingOverlay(
     label: String,
     progress: app.tavernbridge.launcher.model.WorkProgress?,
     startedAtMillis: Long,
+    cancellationRequested: Boolean,
     onCancel: () -> Unit,
 ) {
     var collapsed by remember { mutableStateOf(false) }
-    var cancelConfirmation by remember { mutableStateOf(false) }
     var spinnerRotation by remember { mutableFloatStateOf(0f) }
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
     val finalizing = progress?.status == "success" && !finalConfirmation
     val measuredPercent = progress?.measuredPercent.takeUnless { finalizing }
-    val cancellable = progress?.operation in setOf("install", "start") &&
-        progress?.status == "running" && !finalizing
     LaunchedEffect(Unit) {
         while (true) {
             delay(16)
             spinnerRotation = (spinnerRotation + 7f) % 360f
         }
-    }
-    if (cancelConfirmation) {
-        AlertDialog(
-            onDismissRequest = { cancelConfirmation = false },
-            title = { Text("진행 중인 작업을 중단할까요?") },
-            text = {
-                Text(
-                    if (progress?.operation == "install") {
-                        "내려받던 부분 설치를 정리한 뒤 중단합니다. 다음 설치 때 처음부터 다시 진행됩니다."
-                    } else {
-                        "서버 시작 준비를 중단하고, 이번 작업에서 서버가 실행됐다면 함께 종료합니다."
-                    },
-                )
-            },
-            confirmButton = {
-                Button(onClick = {
-                    cancelConfirmation = false
-                    onCancel()
-                }) { Text("안전하게 중단") }
-            },
-            dismissButton = {
-                TextButton(onClick = { cancelConfirmation = false }) { Text("계속 진행") }
-            },
-        )
     }
     if (collapsed) {
         Box(
@@ -2829,17 +2806,8 @@ private fun WorkingOverlay(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
                 WorkElapsedTime(startedAtMillis)
+                OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel)
                 WorkProgressLog(progress?.logText.orEmpty())
-                if (cancellable) {
-                    OutlinedButton(
-                        onClick = { cancelConfirmation = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Stop, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("작업 중단")
-                    }
-                }
             }
         }
     }
