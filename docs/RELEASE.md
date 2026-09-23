@@ -2,6 +2,7 @@
 
 - 정식 패키지: `app.tavernbridge.stlauncher`
 - 최초 버전: `versionCode 1`, `versionName 0.1.0`
+- 현재 소스 버전: `versionCode 3`, `versionName 0.3.0`
 - 개발용 패키지: `app.tavernbridge.stlauncher.debug`
 - 기존 비공개 테스트 프로젝트의 키와 Git 이력은 이 저장소에 포함하지 않습니다.
 
@@ -24,8 +25,8 @@ Android SDK Build Tools의 `apksigner`를 사용합니다. 아래 환경 변수�
 ```sh
 apksigner sign --ks "$ST_RELEASE_KEYSTORE" --ks-key-alias st-launcher-release \
   --ks-pass env:ST_RELEASE_STORE_PASSWORD --key-pass env:ST_RELEASE_KEY_PASSWORD \
-  --out ST-Launcher-0.1.0.apk app-release-unsigned.apk
-apksigner verify --verbose --print-certs ST-Launcher-0.1.0.apk
+  --out ST-Launcher-0.3.0.apk app-release-unsigned.apk
+apksigner verify --verbose --print-certs ST-Launcher-0.3.0.apk
 ```
 
 Gradle release 출력은 이미 정렬된 APK입니다. 별도로 zipalign을 적용한다면 반드시 서명 전에 실행하고, 서명 후에는 APK를 수정하지 않습니다. 서명 인증서 SHA-256은 첫 정식 배포 이후 동일하게 유지해야 합니다.
