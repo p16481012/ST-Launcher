@@ -167,7 +167,7 @@ class OperationCancellationTest {
     }
 
     @Test
-    fun committedHousekeepingSuppressesParentControlAndRestoresItAfterwards() = runBlocking {
+    fun committedHousekeepingSuppressesParentControlAndRestoresItAfterwards(): Unit = runBlocking {
         val control = OperationCancellationControl()
         withContext(control) {
             control.beginDispatch("backup")

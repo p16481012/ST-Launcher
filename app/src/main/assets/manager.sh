@@ -346,8 +346,9 @@ safety_backup() {
         ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_PROGRESS_PHASE="${SAFETY_PHASE:-안전 백업}" \
         ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" ST_SAFETY_RESERVE_BYTES="$reserve" ST_SAFETY_WORK_PARENT="$CURRENT_SAFETY_WORK_DIR" \
         run_cancellable bash "$SAFETY_BACKUP_HELPER" "$ST_HOME" "$archive" "$layout" >> "$LOG_FILE" 2>&1 || code=$?
-    rm -rf -- "$CURRENT_SAFETY_WORK_DIR"
-    CURRENT_SAFETY_WORK_DIR=""
+    # Preserve the worker's actual failure even if scratch cleanup also fails;
+    # the operation cleanup retries while the tracked path is still available.
+    if rm -rf -- "$CURRENT_SAFETY_WORK_DIR"; then CURRENT_SAFETY_WORK_DIR=""; fi
     if (( code != 0 )); then
         case "$code" in 35|36|37|130) ;; *) code=36 ;; esac
         return "$code"
@@ -432,13 +433,13 @@ cleanup_temporary_package_source() {
 
 show_progress() {
     if [[ -f "$PROGRESS_FILE" ]]; then
-        cat "$PROGRESS_FILE"
+        cat "$PROGRESS_FILE" 2>/dev/null || true
     else
         printf 'percent=0\nphase=준비 중\ndetail=작업을 준비하고 있습니다.\nstatus=idle\noperation=idle\nerror_code=\nfinished_at=\n'
     fi
     if operation_active; then
         local owner started identity mode request_id
-        owner="$(cat "$LOCK_DIR/pid")"; started="$(cat "$LOCK_DIR/start_ticks" 2>/dev/null || true)"
+        owner="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"; started="$(cat "$LOCK_DIR/start_ticks" 2>/dev/null || true)"
         [[ "$owner" =~ ^[0-9]+$ && "$started" =~ ^[0-9]+$ ]] || return 0
         identity="$owner:$started"
         mode="$(cat "$LOCK_DIR/cancellation-mode" 2>/dev/null || true)"
@@ -1117,12 +1118,14 @@ terminate_request_server() {
     if ! ln -s cancelled "$RUN_DIR/start-final-$request_id" 2>/dev/null; then
         [[ "$(readlink "$RUN_DIR/start-final-$request_id" 2>/dev/null || true)" == cancelled ]] || return 0
     fi
-    recorded="$(sed -n 's/^request_id=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)"
+    # A backup/installation may be cancelled before any server has ever run.
+    # Missing metadata is not a cancellation failure, nor permission to kill.
+    recorded="$(sed -n 's/^request_id=//p' "$PID_META_FILE" 2>/dev/null | head -n 1 || true)"
     [[ "$recorded" == "$request_id" ]] || return 0
-    operation="$(sed -n 's/^operation=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)"
+    operation="$(sed -n 's/^operation=//p' "$PID_META_FILE" 2>/dev/null | head -n 1 || true)"
     [[ "$operation" == start || "$operation" == server-task ]] || return 0
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    started="$(sed -n 's/^start_ticks=//p' "$PID_META_FILE" 2>/dev/null | head -n 1)"
+    started="$(sed -n 's/^start_ticks=//p' "$PID_META_FILE" 2>/dev/null | head -n 1 || true)"
     [[ "$pid" != "$$" ]] || return 0
     if process_identity_live "$pid" "$started"; then
         local CANCELLABLE_CHILD="$pid" CANCELLABLE_CHILD_START="$started"

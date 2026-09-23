@@ -16,6 +16,12 @@ if [[ "${1:-}" == --worker ]]; then
     [[ "$case_name" == start-* ]] && operation=start
     begin_operation "$operation"
     case "$case_name" in
+        missing-server-metadata)
+            # Linux uses real atomic symlinks. MSYS only emulates successful
+            # fence publication for this optional-metadata-read regression.
+            if [[ "$OSTYPE" == msys* ]]; then ln() { return 0; }; fi
+            terminate_request_server "$ST_OPERATION_REQUEST_ID"
+            ;;
         stdin)
             run_cancellable bash -c 'read -r value; [[ "$value" == "literal input" ]] || exit 42; printf "stdin-ok\n"' <<'INPUT'
 literal input
@@ -90,8 +96,25 @@ fi
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/st-operation-cancel.XXXXXX")"
 RUNNING_PID=""
 cleanup() {
-    [[ -n "$RUNNING_PID" ]] && kill -KILL "$RUNNING_PID" 2>/dev/null || true
+    local code=$? output attempt
+    trap - EXIT
+    if (( code != 0 )); then
+        printf 'Cancellation test failed: scenario=%s exit=%s\n' "${CASE_ROOT:-uninitialized}" "$code" >&2
+        for output in "${CASE_ROOT:-}/output" "${CASE_ROOT:-}/cancel-output" "${CASE_ROOT:-}/wrong-output" \
+            "${CASE_ROOT:-}/progress" "${ST_LAUNCHER_HOME:-}/run/progress.env" "${ST_LAUNCHER_HOME:-}/run/last-result.env"; do
+            if [[ -f "$output" ]]; then printf '\nDiagnostic: %s\n' "$output" >&2; tail -n 80 "$output" >&2; fi
+        done
+    fi
+    if [[ -n "$RUNNING_PID" ]]; then
+        # Let the real manager stop/reap its owned workers before removing the
+        # fixture. Killing only its shell would leave grandchildren behind.
+        kill -TERM "$RUNNING_PID" 2>/dev/null || true
+        for attempt in $(seq 1 100); do kill -0 "$RUNNING_PID" 2>/dev/null || break; sleep .05; done
+        kill -KILL "$RUNNING_PID" 2>/dev/null || true
+        wait "$RUNNING_PID" 2>/dev/null || true
+    fi
     [[ "$TEST_ROOT" == */st-operation-cancel.* && "$TEST_ROOT" != / ]] && rm -rf -- "$TEST_ROOT"
+    exit "$code"
 }
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -119,7 +142,11 @@ launch() {
     wait_file "$CASE_ROOT/ready"
     identity="$(cat "$ST_LAUNCHER_HOME/run/operation.lock/pid"):$(cat "$ST_LAUNCHER_HOME/run/operation.lock/start_ticks")"
 }
-cancel() { bash "$MANAGER" cancel "$identity" "$ST_OPERATION_REQUEST_ID" > "$CASE_ROOT/cancel-output" 2>&1; }
+cancel() {
+    local code=0
+    bash "$MANAGER" cancel "$identity" "$ST_OPERATION_REQUEST_ID" > "$CASE_ROOT/cancel-output" 2>&1 || code=$?
+    (( code == 0 )) || fail "cancel request exited $code"
+}
 finish() {
     local expected="$1" code=0
     wait "$RUNNING_PID" || code=$?
@@ -127,6 +154,12 @@ finish() {
     [[ "$code" == "$expected" ]] || { cat "$CASE_ROOT/output" >&2; fail "expected $expected, got $code"; }
     [[ ! -e "$ST_LAUNCHER_HOME/run/operation.lock" ]] || fail 'operation lock was retained after completion'
 }
+
+fixture missing-server-metadata
+# A fresh Bash process is essential: an OR-list around a sourced function or
+# subshell would suppress errexit and accidentally hide the original exit 2.
+bash "${BASH_SOURCE[0]}" --worker "$MANAGER" missing-server-metadata "$CASE_ROOT" > "$CASE_ROOT/output" 2>&1 || fail 'absent server metadata rejected cancellation'
+echo 'PASS: cancellation accepts a request before any server metadata exists'
 
 fixture stdin
 code=0

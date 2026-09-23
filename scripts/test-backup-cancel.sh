@@ -20,6 +20,15 @@ export ST_TEST_REAL_ZIP="$(command -v zip)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/st-backup-cancel.XXXXXX")"
 RUNNING_PID=""
 cleanup() {
+    local exit_code=$? diagnostic
+    if (( exit_code != 0 )) && [[ -n "${ST_TEST_CASE:-}" ]]; then
+        for diagnostic in output cancel-output launcher/run/progress.env; do
+            if [[ -f "$ST_TEST_CASE/$diagnostic" ]]; then
+                printf '\nFailure diagnostic (%s):\n' "$diagnostic" >&2
+                cat "$ST_TEST_CASE/$diagnostic" >&2
+            fi
+        done
+    fi
     if [[ -n "$RUNNING_PID" ]]; then
         kill -TERM "$RUNNING_PID" 2>/dev/null || true
         wait "$RUNNING_PID" 2>/dev/null || true
@@ -55,7 +64,7 @@ for phase in compress manifest; do
     done
     if (( ! ready )); then cat "$ST_TEST_CASE/output" >&2; fail "$phase: real backup did not reach ZIP worker"; fi
     identity="$(cat "$ST_LAUNCHER_HOME/run/operation.lock/pid"):$(cat "$ST_LAUNCHER_HOME/run/operation.lock/start_ticks")"
-    bash "$MANAGER" cancel "$identity" "$ST_OPERATION_REQUEST_ID" > "$ST_TEST_CASE/cancel-output"
+    bash "$MANAGER" cancel "$identity" "$ST_OPERATION_REQUEST_ID" > "$ST_TEST_CASE/cancel-output" 2>&1
     grep -Fxq cancel_requested=1 "$ST_TEST_CASE/cancel-output" || fail "$phase: cancel request rejected"
     code=0
     wait "$RUNNING_PID" || code=$?
