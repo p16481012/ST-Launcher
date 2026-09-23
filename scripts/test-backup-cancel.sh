@@ -65,7 +65,9 @@ for phase in compress manifest; do
     if (( ! ready )); then cat "$ST_TEST_CASE/output" >&2; fail "$phase: real backup did not reach ZIP worker"; fi
     identity="$(cat "$ST_LAUNCHER_HOME/run/operation.lock/pid"):$(cat "$ST_LAUNCHER_HOME/run/operation.lock/start_ticks")"
     bash "$MANAGER" cancel "$identity" "$ST_OPERATION_REQUEST_ID" > "$ST_TEST_CASE/cancel-output" 2>&1
-    grep -Fxq cancel_requested=1 "$ST_TEST_CASE/cancel-output" || fail "$phase: cancel request rejected"
+    # The UUID tombstone can stop a fast worker before cancel reads its lock.
+    # A completed acknowledgement still requires the terminal 130 checks below.
+    grep -Eq '^cancel_(requested|completed)=1$' "$ST_TEST_CASE/cancel-output" || fail "$phase: cancel request rejected"
     code=0
     wait "$RUNNING_PID" || code=$?
     RUNNING_PID=""

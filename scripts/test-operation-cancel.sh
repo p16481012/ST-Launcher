@@ -176,7 +176,10 @@ kill -0 "$RUNNING_PID" || fail 'stale request killed current operation'
 wait_file "$CASE_ROOT/grandchild"
 grandchild="$(cat "$CASE_ROOT/grandchild")"
 cancel
-grep -Fxq cancel_requested=1 "$CASE_ROOT/cancel-output" || fail 'valid cancel was not accepted'
+# The UUID marker can stop the worker before the cancel command's final lock
+# check. Both an accepted request and an already-completed response are valid;
+# exit 130 and the cleanup assertions below remain mandatory.
+grep -Eq '^cancel_(requested|completed)=1$' "$CASE_ROOT/cancel-output" || fail 'valid cancel was neither accepted nor completed'
 finish 130
 [[ ! -e "$CASE_ROOT/term-handler" ]] || fail 'TERM handler could fork an untracked writer'
 [[ "$(cat "$ST_HOME/data/keep")" == original ]] || fail 'backup cancellation changed source data'
