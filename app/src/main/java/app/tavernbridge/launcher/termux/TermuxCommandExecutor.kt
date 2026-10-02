@@ -33,6 +33,7 @@ class TermuxCommandExecutor(private val context: Context) {
         command: String,
         label: String,
         description: String,
+        loginShell: Boolean = true,
     ) {
         val callbackIntent = Intent(context, TermuxResultReceiver::class.java).apply {
             putExtra(TermuxContract.EXTRA_CALLBACK_ID, callbackId)
@@ -49,7 +50,8 @@ class TermuxCommandExecutor(private val context: Context) {
         val runIntent = Intent(TermuxContract.ACTION_RUN_COMMAND).apply {
             component = ComponentName(TermuxContract.PACKAGE, TermuxContract.SERVICE_CLASS)
             putExtra(TermuxContract.EXTRA_COMMAND_PATH, TermuxContract.BASH_PATH)
-            putExtra(TermuxContract.EXTRA_ARGUMENTS, arrayOf("-lc", command))
+            putExtra(TermuxContract.EXTRA_ARGUMENTS, if (loginShell) arrayOf("-lc", command)
+                else arrayOf("--noprofile", "--norc", "-c", command))
             putExtra(TermuxContract.EXTRA_WORKDIR, TermuxContract.HOME_PATH)
             putExtra(TermuxContract.EXTRA_BACKGROUND, true)
             putExtra(TermuxContract.EXTRA_COMMAND_LABEL, label)

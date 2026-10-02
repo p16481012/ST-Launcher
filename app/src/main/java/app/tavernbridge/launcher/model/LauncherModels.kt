@@ -110,6 +110,7 @@ data class LauncherUiState(
     val selectedInstallBranch: SillyBranch = SillyBranch.RELEASE,
     val configuredPort: Int = 8000,
     val environment: EnvironmentStatus = EnvironmentStatus(),
+    val termuxSetup: TermuxSetupState = TermuxSetupState(),
     val environmentChecked: Boolean = false,
     val termuxWakeBlocked: Boolean = false,
     val isWorking: Boolean = true,

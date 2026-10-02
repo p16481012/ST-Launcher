@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Launch
 import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -143,6 +144,8 @@ import app.tavernbridge.launcher.model.ManagementPanel
 import app.tavernbridge.launcher.model.SettingsPanel
 import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
+import app.tavernbridge.launcher.model.TermuxSetupStatus
+import app.tavernbridge.launcher.model.setupEligibleStep
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.components.OperationCancelControl
@@ -481,11 +484,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onOpenTermux = viewModel::openTermux,
                             onRefresh = viewModel::refresh,
                         )
-                    } else if (state.environment.recoveryPending) {
+                    } else if (state.environment.recoveryPending && state.termuxSetup.verified && state.environment.managerConnected) {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
                             RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
                         }
-                    } else if (state.environment.sillyTavernInstalled) {
+                    } else if (state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
                         ManagementScreen(
                             state = state,
                             onSelectPanel = viewModel::selectManagementPanel,
@@ -575,6 +578,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onOpenTermux = viewModel::openTermux,
                             onRequestPermission = { permissionLauncher.launch(TermuxContract.PERMISSION_RUN_COMMAND) },
                             onOpenPermissionSettings = viewModel::openPermissionSettings,
+                            onVerifyTermux = viewModel::verifyTermuxSetup,
                             onConnect = viewModel::connectManager,
                             onSelectBranch = viewModel::selectInstallBranch,
                             onInstall = {
@@ -1828,6 +1832,7 @@ private fun SetupScreen(
     onOpenTermux: () -> Unit,
     onRequestPermission: () -> Unit,
     onOpenPermissionSettings: () -> Unit,
+    onVerifyTermux: () -> Unit,
     onConnect: () -> Unit,
     onSelectBranch: (SillyBranch) -> Unit,
     onInstall: () -> Unit,
@@ -1840,23 +1845,15 @@ private fun SetupScreen(
 ) {
     val env = state.environment
     val clipboard = LocalClipboardManager.current
-    var currentStep by rememberSaveable {
-        mutableStateOf(
-            when {
-                env.managerConnected -> 5
-                env.commandPermissionGranted -> 4
-                env.termuxInstalled -> 2
-                else -> 1
-            },
-        )
-    }
+    val eligibleStep = setupEligibleStep(env, state.termuxSetup)
+    // Navigation is never proof of setup. A fresh/revoked connection immediately locks later steps.
+    var requestedStep by remember { mutableStateOf(eligibleStep) }
+    val currentStep = requestedStep.coerceIn(1, eligibleStep)
+    val checking = state.termuxSetup.status == TermuxSetupStatus.CHECKING
+    val setupReady = state.termuxSetup.verified
 
-    LaunchedEffect(env.termuxInstalled, env.commandPermissionGranted, env.managerConnected) {
-        if (!env.termuxInstalled) currentStep = 1
-        if (currentStep == 1 && env.termuxInstalled) currentStep = 2
-        if (currentStep >= 4 && !env.commandPermissionGranted) currentStep = 3
-        if (currentStep == 3 && env.commandPermissionGranted) currentStep = 4
-        if (env.managerConnected) currentStep = 5
+    LaunchedEffect(eligibleStep) {
+        requestedStep = eligibleStep
     }
 
     Column(
@@ -1874,7 +1871,7 @@ private fun SetupScreen(
                 )
             }
             if (currentStep > 1 && !state.isWorking) {
-                TextButton(onClick = { currentStep -= 1 }) { Text("이전") }
+                TextButton(onClick = { requestedStep = currentStep - 1 }) { Text("이전") }
             }
         }
 
@@ -1905,38 +1902,75 @@ private fun SetupScreen(
                     description = if (env.termuxInstalled) {
                         "Termux가 확인됐어요. 기존 설치와 파일은 그대로 유지됩니다."
                     } else {
-                        "F-Droid판 Termux를 설치하고 한 번 실행해 주세요."
+                        "Termux는 SillyTavern이 실행되는 앱이에요. F-Droid판을 설치하고 한 번 열어 주세요."
                     },
                 ) {
                     Button(
-                        onClick = { if (env.termuxInstalled) currentStep = 2 else onDownloadTermux() },
+                        onClick = { if (env.termuxInstalled) requestedStep = 2 else onDownloadTermux() },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.isWorking,
                     ) { Text(if (env.termuxInstalled) "다음" else "F-Droid에서 받기") }
                     if (env.termuxInstalled) {
                         OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {
                             Text("Termux 열어보기")
                         }
+                    } else {
+                        OutlinedButton(
+                            onClick = onVerifyTermux,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !checking && !state.isWorking,
+                        ) { Text("설치했어요 · 다시 확인") }
                     }
                 }
 
                 2 -> WizardStepCard(
-                    icon = Icons.Outlined.ContentCopy,
-                    title = "외부 명령을 허용해 주세요",
-                    description = "아래 명령을 복사한 뒤 Termux에 붙여넣고 Enter를 누르세요. 기존 SillyTavern에는 영향을 주지 않습니다.",
+                    icon = Icons.Outlined.CheckCircle,
+                    title = "실행 권한을 허용해요",
+                    description = if (env.commandPermissionGranted) {
+                        "Android 실행 권한이 허용됐어요. 다음으로 Termux 안의 설정을 확인할게요."
+                    } else {
+                        "런처가 Termux에 명령을 보낼 수 있도록 Android 권한이 필요해요."
+                    },
                 ) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        Text(
-                            setupCommand,
-                            modifier = Modifier.padding(14.dp),
-                            maxLines = 4,
-                            overflow = TextOverflow.Ellipsis,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                        )
+                    if (!env.commandPermissionGranted) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Text(
+                                "↓ 여기를 누르고, 뜨는 창에서 ‘허용’을 눌러 주세요.",
+                                modifier = Modifier.padding(14.dp),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
                     }
+                    Button(
+                        onClick = { if (env.commandPermissionGranted) requestedStep = 3 else onRequestPermission() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.isWorking,
+                    ) { Text(if (env.commandPermissionGranted) "다음" else "권한 허용") }
+                    if (!env.commandPermissionGranted) {
+                        Text(
+                            "허용 창이 안 뜨거나 거절했다면, 아래 설정에서 ‘Termux 환경에서 명령 실행’을 허용해 주세요.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        OutlinedButton(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
+                            Text("앱 권한 설정 열기")
+                        }
+                    }
+                }
+
+                3 -> WizardStepCard(
+                    icon = Icons.Outlined.ContentCopy,
+                    title = "붙여넣고 Enter를 눌러요",
+                    description = "Termux 안에서도 외부 명령을 허용해야 해요. 아래 순서대로 한 번만 진행해 주세요. 기존 SillyTavern 파일은 바뀌지 않아요.",
+                ) {
+                    TermuxPasteIllustration()
+                    SetupInstruction("1", "아래 버튼을 눌러 명령을 복사하고 Termux를 열어요.")
+                    SetupInstruction("2", "검은 화면의 빈 곳을 길게 누르고 ‘붙여넣기’를 눌러요.")
+                    SetupInstruction("3", "키보드의 Enter(↵)를 누른 뒤 이 런처로 돌아와요.")
                     Button(
                         onClick = {
                             clipboard.setText(AnnotatedString(setupCommand))
@@ -1944,43 +1978,69 @@ private fun SetupScreen(
                             onOpenTermux()
                         },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !checking && !state.isWorking,
                     ) {
                         Icon(Icons.Outlined.ContentCopy, null)
                         Spacer(Modifier.width(8.dp))
                         Text("복사하고 Termux 열기")
                     }
-                    TextButton(onClick = { currentStep = 3 }, modifier = Modifier.fillMaxWidth()) {
-                        Text("붙여넣고 실행했어요")
+                    var showCommand by remember { mutableStateOf(false) }
+                    TextButton(onClick = { showCommand = !showCommand }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (showCommand) "복사할 명령 접기" else "복사할 명령 보기")
                     }
-                }
-
-                3 -> WizardStepCard(
-                    icon = Icons.Outlined.CheckCircle,
-                    title = "실행 권한을 확인할게요",
-                    description = if (env.commandPermissionGranted) {
-                        "권한이 정상적으로 허용됐어요."
-                    } else {
-                        "Android의 추가 권한에서 ‘Termux 환경에서 명령 실행’을 허용해 주세요."
-                    },
-                ) {
-                    Button(
-                        onClick = { if (env.commandPermissionGranted) currentStep = 4 else onRequestPermission() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(if (env.commandPermissionGranted) "다음" else "권한 허용") }
-                    if (!env.commandPermissionGranted) {
-                        OutlinedButton(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
-                            Text("앱 권한 설정 열기")
+                    if (showCommand) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            SelectionContainer {
+                                Text(
+                                    setupCommand,
+                                    modifier = Modifier.padding(14.dp),
+                                    fontFamily = FontFamily.Monospace,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
+                    }
+                    TermuxSetupFeedback(state)
+                    OutlinedButton(
+                        onClick = onVerifyTermux,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !checking && !state.isWorking,
+                    ) {
+                        if (checking) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Outlined.Refresh, null)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (checking) "연결 확인 중…" else "실행했어요 · 연결 다시 확인")
+                    }
+                    Button(
+                        onClick = { if (setupReady) requestedStep = 4 },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = setupReady && !state.isWorking,
+                    ) {
+                        if (!setupReady) {
+                            Icon(Icons.Outlined.Lock, null)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (setupReady) "다음" else "연결이 확인되면 다음으로")
                     }
                 }
 
                 4 -> WizardStepCard(
                     icon = Icons.Outlined.InstallMobile,
                     title = "런처를 연결할게요",
-                    description = "관리 스크립트를 Termux 안에 설치하고 기존 ~/SillyTavern을 안전하게 확인합니다.",
+                    description = "Termux 연결이 확인됐어요. 이제 관리 스크립트를 설치하고 기존 ~/SillyTavern을 안전하게 확인할게요.",
                 ) {
-                    Button(onClick = onConnect, modifier = Modifier.fillMaxWidth()) {
-                        Text("연결 시작")
+                    Button(
+                        onClick = { if (env.managerConnected) requestedStep = 5 else onConnect() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = setupReady && !state.isWorking,
+                    ) {
+                        Text(if (env.managerConnected) "다음" else "연결 시작")
                     }
                     Text(
                         "삭제나 덮어쓰기는 하지 않아요.",
@@ -1996,15 +2056,16 @@ private fun SetupScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     if (env.sillyTavernInstalled) {
-                        ExistingInstallCard(env, onSwitchBranch, onBackup)
+                        ExistingInstallCard(env, onSwitchBranch, onBackup, enabled = setupReady && !state.isWorking && env.managerConnected)
                     } else {
                         ExistingInstallationImportCard(
-                            enabled = !state.isWorking && env.managerConnected && !env.processRunning,
+                            enabled = !state.isWorking && setupReady && env.managerConnected && !env.processRunning,
                             onPickFolder = onPickInstallation,
                             onInspectPath = onInspectInstallation,
                         )
-                        InstallBranchCard(state.selectedInstallBranch, onSelectBranch, onInstall)
-                        OutlinedButton(onClick = onImportBackup, enabled = !state.isWorking && env.managerConnected,
+                        InstallBranchCard(state.selectedInstallBranch, onSelectBranch, onInstall,
+                            enabled = setupReady && !state.isWorking && env.managerConnected)
+                        OutlinedButton(onClick = onImportBackup, enabled = !state.isWorking && setupReady && env.managerConnected,
                             modifier = Modifier.fillMaxWidth()) { Text("전체 설치 ZIP에서 복원") }
                     }
                 }
@@ -2053,6 +2114,7 @@ private fun InstallBranchCard(
     selected: SillyBranch,
     onSelect: (SillyBranch) -> Unit,
     onInstall: () -> Unit,
+    enabled: Boolean,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -2065,13 +2127,14 @@ private fun InstallBranchCard(
                 SillyBranch.entries.forEach { branch ->
                     FilterChip(
                         selected = selected == branch,
+                        enabled = enabled,
                         onClick = { onSelect(branch) },
                         label = { Text(branch.label) },
                     )
                 }
             }
             Text(selected.description, style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = onInstall, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onInstall, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.Download, null)
                 Spacer(Modifier.width(8.dp))
                 Text("${selected.label} 설치")
@@ -2085,6 +2148,7 @@ private fun ExistingInstallCard(
     environment: EnvironmentStatus,
     onSwitchBranch: (SillyBranch) -> Unit,
     onBackup: () -> Unit,
+    enabled: Boolean,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -2103,7 +2167,7 @@ private fun ExistingInstallCard(
                 SillyBranch.entries.forEach { branch ->
                     FilterChip(
                         selected = environment.branch == branch,
-                        enabled = environment.branch != branch,
+                        enabled = enabled && environment.branch != branch,
                         onClick = { onSwitchBranch(branch) },
                         label = { Text(branch.label) },
                     )
@@ -2111,6 +2175,7 @@ private fun ExistingInstallCard(
             }
             Button(
                 onClick = onBackup,
+                enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.onPrimaryContainer,

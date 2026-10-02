@@ -23,6 +23,9 @@ import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.EnvironmentRefreshGate
+import app.tavernbridge.launcher.model.TermuxSetupState
+import app.tavernbridge.launcher.model.TermuxSetupStatus
+import app.tavernbridge.launcher.model.withTermuxSetup
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
@@ -149,7 +152,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setWakeLockEnabled(enabled: Boolean) {
-        if (state.value.isWorking) return
+        if (commandEntryBlocked()) return
         viewModelScope.launch {
             try {
                 val running = state.value.environment.processRunning
@@ -174,7 +177,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun saveServerConnection(port: Int, externalAccessEnabled: Boolean, whitelistText: String) {
-        if (state.value.isWorking) return
+        if (commandEntryBlocked()) return
         if (port !in 1024..65535) {
             mutableState.update { it.copy(error = "포트는 1024부터 65535 사이로 입력해 주세요.") }
             return
@@ -233,6 +236,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refresh() {
+        if (refreshJob?.isActive == true) return
         if (!environmentRefreshGate.tryStart(
                 appInForeground = appInForeground,
                 isWorking = state.value.isWorking,
@@ -240,6 +244,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             )) return
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
+            val firstCheck = !state.value.environmentChecked
+            val requestedSection = state.value.section
+            if (!checkSetupBeforeRefresh()) return@launch
             val started = System.currentTimeMillis()
             progressLogHistory.clear()
             mutableState.update { it.copy(isWorking = true, workingLabel = "환경 확인 중",
@@ -263,7 +270,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     null
                 }
                 journal.phase("이전 작업 결과 확인", "Termux의 작업 상태를 확인하여 앱 종료 중 실행된 작업과 연결합니다.")
-                val progress = if (environment.commandPermissionGranted) {
+                val progress = if (environment.managerConnected) {
                     repository.readProgress()
                 } else {
                     null
@@ -301,7 +308,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 } else {
                     state.value.lastOperationResult
                 }
-                val initialSection = if (!environment.sillyTavernInstalled) MainSection.SETUP else state.value.section
+                val initialSection = if (!environment.sillyTavernInstalled) MainSection.SETUP
+                    else if (firstCheck) requestedSection else state.value.section
                 val recoveredProgress = progress?.let(progressLogHistory::merge)
                 mutableState.update {
                     it.copy(
@@ -359,9 +367,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshSilently() {
-        if (!appInForeground || state.value.isWorking) return
-        viewModelScope.launch {
+        if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true) return
+        // Setup/reconnection needs the same recovery path as a cold start, not a
+        // swallowed background exception or an unverified manager bootstrap.
+        if (!state.value.termuxSetup.verified || !state.value.environment.managerConnected) {
+            refresh()
+            return
+        }
+        refreshJob = viewModelScope.launch {
             try {
+                if (!checkSetupBeforeRefresh()) return@launch
                 val environment = repository.inspect()
                 mutableState.update {
                     it.copy(
@@ -372,13 +387,83 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         backgroundStatus = repository.backgroundStatus(environment.processRunning),
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 // A later background check will retry without interrupting the user.
             }
         }
     }
 
+    /** No manager installation, progress polling, or busy dialog before this probe succeeds. */
+    private suspend fun checkSetupBeforeRefresh(): Boolean {
+        try {
+            val base = repository.baseStatus()
+            mutableState.update {
+                val firstCheck = !it.environmentChecked
+                it.copy(
+                    environment = it.environment.copy(
+                        termuxInstalled = base.termuxInstalled,
+                        commandPermissionGranted = base.commandPermissionGranted,
+                        termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
+                    ),
+                    // Keep a configured user's screen mounted during a silent probe.
+                    // Command entry points stay locked by refreshJob until it finishes.
+                    termuxSetup = if (it.termuxSetup.verified && base.termuxInstalled && base.commandPermissionGranted)
+                        it.termuxSetup else TermuxSetupState(TermuxSetupStatus.CHECKING),
+                    environmentChecked = true,
+                    section = if (firstCheck) MainSection.SETUP else it.section,
+                    isWorking = false,
+                    workingLabel = "",
+                    workProgress = null,
+                )
+            }
+            val check = repository.checkTermuxSetup()
+            val currentBase = repository.baseStatus()
+            mutableState.update {
+                it.copy(
+                    environment = it.environment.withTermuxSetup(currentBase, check),
+                    termuxSetup = check,
+                    section = if (!check.verified) MainSection.SETUP else it.section,
+                    termuxWakeBlocked = false,
+                    error = if (!check.verified) null else it.error,
+                )
+            }
+            return check.verified
+        } catch (cancelled: CancellationException) {
+            mutableState.update { it.copy(termuxSetup = TermuxSetupState()) }
+            throw cancelled
+        } catch (_: Exception) {
+            mutableState.update {
+                it.copy(
+                    termuxSetup = TermuxSetupState(TermuxSetupStatus.UNVERIFIED,
+                        "연결을 확인하지 못했어요. Termux를 한 번 열고 돌아온 뒤 다시 확인해 주세요."),
+                    environment = it.environment.copy(managerConnected = false),
+                    environmentChecked = true,
+                    section = MainSection.SETUP,
+                    isWorking = false,
+                    workingLabel = "",
+                    workProgress = null,
+                    error = null,
+                )
+            }
+            return false
+        }
+    }
+
+    fun verifyTermuxSetup() {
+        if (state.value.isWorking || refreshJob?.isActive == true) return
+        refresh()
+    }
+
     fun refreshAfterResume() {
+        if (refreshJob?.isActive == true) {
+            viewModelScope.launch {
+                refreshJob?.join()
+                if (appInForeground && !state.value.termuxSetup.verified) verifyTermuxSetup()
+            }
+            return
+        }
         if (state.value.environmentChecked) {
             refreshSilently()
         } else {
@@ -804,7 +889,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun checkForUpdates() {
-        if (state.value.isWorking) return
+        if (commandEntryBlocked()) return
         viewModelScope.launch {
             val started = System.currentTimeMillis()
             progressLogHistory.clear()
@@ -907,7 +992,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun backup() = createBackup(setOf(BackupCategory.FULL), false, emptySet())
 
     fun loadBackups() {
-        if (!state.value.environment.managerConnected) return
+        val pendingRefresh = refreshJob
+        if (pendingRefresh?.isActive == true) {
+            viewModelScope.launch {
+                pendingRefresh.join()
+                if (appInForeground && state.value.environment.managerConnected && state.value.termuxSetup.verified) loadBackups()
+            }
+            return
+        }
+        if (!state.value.environment.managerConnected || !state.value.termuxSetup.verified) return
+        if (commandEntryBlocked(allowWhileWorking = true)) return
         viewModelScope.launch {
             mutableState.update { it.copy(backupsLoaded = false) }
             try {
@@ -961,7 +1055,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun inspectInstallation(block: suspend () -> ExistingInstallation) {
-        if (state.value.isWorking || state.value.environment.operationActive) return
+        if (commandEntryBlocked() || state.value.environment.operationActive) return
         if (state.value.environment.processRunning) {
             mutableState.update { it.copy(error = "기존 설치를 가져오려면 먼저 서버를 종료해 주세요.") }
             return
@@ -1003,7 +1097,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun confirmInstallationImport() {
         val candidate = state.value.pendingInstallation ?: return
-        if (state.value.isWorking || state.value.environment.processRunning) return
+        if (commandEntryBlocked() || state.value.environment.processRunning) return
         mutableState.update { it.copy(pendingInstallation = null) }
         perform(
             operation = "import-install",
@@ -1128,7 +1222,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun loadOperationHistory() = loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = true)
 
     private fun loadDiagnosticText(panel: DiagnosticPanel, reportErrors: Boolean) {
-        if (!appInForeground || state.value.isWorking) return
+        if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true || !state.value.termuxSetup.verified) return
         if (!reportErrors && !state.value.environment.managerConnected) return
         if (panel == DiagnosticPanel.OVERVIEW) return
         if (logReadJobs[panel]?.isActive == true) {
@@ -1178,7 +1272,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun runDiagnostics() {
-        if (state.value.isWorking) return
+        if (commandEntryBlocked()) return
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()
             progressLogHistory.clear()
@@ -1282,7 +1376,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         repository.clearPreferredBrowser()
         mutableState.update { it.copy(message = "저장된 브라우저 선택을 초기화했습니다.") }
     }
-    fun openServerLogTerminal() = repository.openServerLogTerminal()
+    fun openServerLogTerminal() {
+        if (commandEntryBlocked(allowWhileWorking = true)) return
+        try {
+            repository.openServerLogTerminal()
+        } catch (_: Exception) {
+            verifyTermuxSetup()
+        }
+    }
     fun openBatteryOptimizationSettings() = repository.openBatteryOptimizationSettings()
     fun openDeviceBatterySettings() = repository.openDeviceBatterySettings()
     fun openTermuxAppSettings() = repository.openTermuxAppSettings()
@@ -1299,7 +1400,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun loadSillyTavernFolder(relativePath: String) {
-        if (state.value.fileBrowserMutating) return
+        if (state.value.fileBrowserMutating || commandEntryBlocked(allowWhileWorking = true)) return
         fileBrowserJob?.cancel()
         fileBrowserJob = viewModelScope.launch {
             mutableState.update {
@@ -1342,7 +1443,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun readSillyTavernTextFile(relativePath: String) {
-        if (state.value.fileBrowserLoading || state.value.fileBrowserMutating) return
+        if (state.value.fileBrowserLoading || state.value.fileBrowserMutating || commandEntryBlocked(allowWhileWorking = true)) return
         mutableState.update { it.copy(fileBrowserLoading = true, fileBrowserError = "") }
         fileBrowserJob?.cancel()
         fileBrowserJob = viewModelScope.launch {
@@ -1433,6 +1534,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun mutateTavernFiles(operation: String, label: String, success: String, block: suspend () -> TermuxCommandResult) {
+        if (commandEntryBlocked()) return
         if (!state.value.canModifyTavernFiles()) {
             mutableState.update { it.copy(fileBrowserError = "파일을 변경하려면 서버와 다른 작업을 먼저 종료해 주세요.") }
             return
@@ -1534,14 +1636,28 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onCommandPermissionResult(granted: Boolean) {
-        if (!granted) {
-            mutableState.update {
-                it.copy(
-                    error = "권한이 허용되지 않았습니다. ‘설정에서 열기’를 눌러 권한 → 추가 권한에서 Termux 명령 실행을 허용해 주세요.",
-                )
-            }
+        if (!granted) mutableState.update { it.copy(
+            environment = it.environment.copy(commandPermissionGranted = false, managerConnected = false),
+            termuxSetup = TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED),
+            section = MainSection.SETUP,
+            error = null,
+        ) }
+        viewModelScope.launch {
+            refreshJob?.join()
+            refresh()
         }
-        refresh()
+    }
+
+    private fun commandEntryBlocked(requireManager: Boolean = true, allowWhileWorking: Boolean = false): Boolean {
+        if ((state.value.isWorking && !allowWhileWorking) || refreshJob?.isActive == true) return true
+        val current = state.value
+        if (!current.termuxSetup.verified || !current.environment.termuxInstalled ||
+            !current.environment.commandPermissionGranted || (requireManager && !current.environment.managerConnected)) {
+            mutableState.update { it.copy(section = MainSection.SETUP) }
+            verifyTermuxSetup()
+            return true
+        }
+        return false
     }
 
     fun consumeNotice() {
@@ -1599,7 +1715,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         backupRequest: BackupRequest? = null,
         block: suspend () -> TermuxCommandResult,
     ) {
-        if (state.value.isWorking) return
+        if (commandEntryBlocked(requireManager = operation != "connect-manager")) return
         operationCancellationRequested = false
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()

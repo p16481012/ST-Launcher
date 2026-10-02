@@ -38,6 +38,8 @@ import app.tavernbridge.launcher.model.UpdateRecord
 import app.tavernbridge.launcher.model.TavernFileEntry
 import app.tavernbridge.launcher.model.ExistingInstallation
 import app.tavernbridge.launcher.model.TavernTextFile
+import app.tavernbridge.launcher.model.TermuxSetupState
+import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.termux.TermuxCommandExecutor
 import app.tavernbridge.launcher.termux.TermuxCommandResult
 import app.tavernbridge.launcher.termux.TermuxContract
@@ -53,6 +55,9 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
@@ -60,6 +65,8 @@ class LauncherRepository(private val context: Context) {
     private val importStaging = SharedImportStaging(context)
     private val backupRequestStore = BackupRequestStore(context)
     @Volatile private var localOperationProgress: WorkProgress? = null
+    @Volatile private var termuxSetup = TermuxSetupState()
+    private val termuxSetupCheck = Mutex()
 
     companion object {
         private const val SYSTEM_URL_HANDLER = "@android-system"
@@ -104,6 +111,38 @@ class LauncherRepository(private val context: Context) {
             termuxBatteryUnrestricted = powerManager?.isIgnoringBatteryOptimizations(TermuxContract.PACKAGE) == true,
             port = configuredPort(),
         )
+    }
+
+    /** Verifies RUN_COMMAND without deploying the manager or touching user data. */
+    suspend fun checkTermuxSetup(): TermuxSetupState = termuxSetupCheck.withLock {
+        setupPrerequisites()?.let {
+            termuxSetup = it
+            return@withLock it
+        }
+        // A previous success must not remain usable during a failed/cancelled recheck.
+        termuxSetup = TermuxSetupState(TermuxSetupStatus.CHECKING)
+        val callbackId = UUID.randomUUID().toString()
+        val marker = "st-launcher-setup:${UUID.randomUUID()}"
+        val checked = try {
+            val result = runRawBash(
+                command = TermuxSetupProbe.command(marker),
+                label = "Termux 연결 확인",
+                description = "파일을 변경하지 않고 외부 명령 실행 응답을 확인합니다.",
+                timeoutMillis = 8_000,
+                callbackId = callbackId,
+                loginShell = false,
+            )
+            TermuxSetupProbe.classify(callbackId, marker, result)
+        } catch (cancelled: CancellationException) {
+            termuxSetup = TermuxSetupState(TermuxSetupStatus.UNVERIFIED)
+            throw cancelled
+        } catch (error: Exception) {
+            setupPrerequisites() ?: TermuxSetupProbe.failure(error.message)
+        }
+        // Permission can be revoked (or Termux removed) while the callback is in flight.
+        val current = setupPrerequisites() ?: checked
+        termuxSetup = current
+        current
     }
 
     suspend fun inspect(onProgress: ((WorkProgress) -> Unit)? = null, progressOperation: String = "refresh"): EnvironmentStatus {
@@ -155,6 +194,7 @@ class LauncherRepository(private val context: Context) {
         operationCheckpoint()
         val requestId = currentCoroutineContext()[OperationCancellationControl]?.requestId.orEmpty()
         val command = "ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_OPERATION_REQUEST_ID=${shellQuote(requestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} server-task"
+        requireVerifiedTermuxSetup()
         executor.executeLongRunningBash(
             command = command,
             label = "SillyTavern 서버",
@@ -707,6 +747,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     fun openServerLogTerminal() {
+        requireVerifiedTermuxSetup()
         val serverLog = "${TermuxContract.HOME_PATH}/.st-launcher/logs/server.log"
         val legacyServerLog = "${TermuxContract.HOME_PATH}/.st-launcher/logs/sillytavern.log"
         val accessLog = "${TermuxContract.HOME_PATH}/SillyTavern/access.log"
@@ -874,8 +915,7 @@ class LauncherRepository(private val context: Context) {
         }.getOrDefault(false)
     }
 
-    fun setupCommand(): String =
-        "mkdir -p ~/.termux && grep -q '^allow-external-apps=true$' ~/.termux/termux.properties 2>/dev/null || echo 'allow-external-apps=true' >> ~/.termux/termux.properties; termux-reload-settings"
+    fun setupCommand(): String = createTermuxSetupCommand()
 
     fun storageSetupCommand(): String = "termux-setup-storage"
 
@@ -918,6 +958,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     private suspend fun runManager(arguments: String, timeoutMillis: Long, backupRequestId: String = ""): TermuxCommandResult {
+        ensureTermuxSetup()
         return runManagedCommand(arguments, timeoutMillis, managerBootstrapCommand() + " && ", backupRequestId)
     }
 
@@ -926,12 +967,14 @@ class LauncherRepository(private val context: Context) {
     }
 
     private suspend fun runManagedCommand(arguments: String, timeoutMillis: Long, bootstrap: String = "", backupRequestId: String = ""): TermuxCommandResult {
+        // Gate before beginDispatch: a setup failure must not look like a live operation.
+        ensureTermuxSetup()
         val operation = arguments.substringBefore(' ')
         val control = currentCoroutineContext().operationCancellationControl()
         control?.beginDispatch(operation)
         val requestId = control?.requestId.orEmpty()
         val command = "${bootstrap}ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_BACKUP_REQUEST_ID=${shellQuote(backupRequestId)} ST_OPERATION_REQUEST_ID=${shellQuote(requestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
-        val result = runBash(
+        val result = runRawBash(
             command = command,
             label = "실리태번 관리",
             description = operation,
@@ -1010,18 +1053,44 @@ class LauncherRepository(private val context: Context) {
         description: String,
         timeoutMillis: Long,
     ): TermuxCommandResult {
-        if (!executor.isTermuxInstalled()) {
-            throw IllegalStateException("Termux가 설치되어 있지 않습니다.")
+        ensureTermuxSetup()
+        return runRawBash(command, label, description, timeoutMillis)
+    }
+
+    private fun setupPrerequisites(): TermuxSetupState? = TermuxSetupProbe.prerequisites(
+        installed = executor.isTermuxInstalled(),
+        permissionGranted = executor.hasRunCommandPermission(),
+    )
+
+    private suspend fun ensureTermuxSetup() {
+        setupPrerequisites()?.let { termuxSetup = it }
+        if (!termuxSetup.verified) checkTermuxSetup()
+        requireVerifiedTermuxSetup()
+    }
+
+    private fun requireVerifiedTermuxSetup() {
+        setupPrerequisites()?.let { termuxSetup = it }
+        check(termuxSetup.verified) {
+            "[TERMUX_SETUP_REQUIRED]\n" + termuxSetup.detail.ifBlank { "Termux 연결을 먼저 확인해 주세요." }
         }
-        if (!executor.hasRunCommandPermission()) {
-            throw SecurityException(
-                "Termux 명령 실행 권한이 없습니다. Android 설정 → 애플리케이션 → 실리태번 런처 → 권한 → 추가 권한에서 ‘Termux 환경에서 명령 실행’을 허용해 주세요.",
-            )
+    }
+
+    /** Only the harmless setup probe may call this without the readiness gate. */
+    private suspend fun runRawBash(
+        command: String,
+        label: String,
+        description: String,
+        timeoutMillis: Long,
+        callbackId: String = UUID.randomUUID().toString(),
+        loginShell: Boolean = true,
+    ): TermuxCommandResult {
+        val result = awaitTermuxCommandResult(callbackId, timeoutMillis, TermuxResultBus.results) {
+            executor.executeBash(callbackId, command, label, description, loginShell)
         }
-        val callbackId = UUID.randomUUID().toString()
-        return awaitTermuxCommandResult(callbackId, timeoutMillis, TermuxResultBus.results) {
-            executor.executeBash(callbackId, command, label, description)
+        if (!result.isSuccess && TermuxSetupProbe.externalAppsDisabled(result.stderr + "\n" + result.errorMessage)) {
+            termuxSetup = TermuxSetupProbe.failure(result.stderr + "\n" + result.errorMessage)
         }
+        return result
     }
 
     private suspend fun pingServer(port: Int): Boolean = withContext(Dispatchers.IO) {
