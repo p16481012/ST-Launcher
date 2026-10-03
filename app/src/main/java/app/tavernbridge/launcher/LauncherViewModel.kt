@@ -28,6 +28,7 @@ import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.beginTermuxSetupCheck
 import app.tavernbridge.launcher.model.finishTermuxSetupCheck
 import app.tavernbridge.launcher.model.sectionAfterEnvironmentCheck
+import app.tavernbridge.launcher.model.indicatesExistingInstallation
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
@@ -69,15 +70,18 @@ import java.util.UUID
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LauncherRepository(application)
     private val operationResultStore = OperationResultStore(application)
+    private val savedOperationResult = operationResultStore.load()
     private val themePreferences = ThemePreferences(application)
     private val mutableState = MutableStateFlow(
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
             theme = themePreferences.loadTheme(),
             configuredPort = repository.configuredPort(),
+            previousInstallationKnown = (repository.hasKnownInstallation() || savedOperationResult.indicatesExistingInstallation())
+                .also { if (it) repository.rememberKnownInstallation() },
             autoBackupBeforeUpdate = repository.autoBackupBeforeUpdate(),
             backgroundStatus = repository.backgroundStatus(),
-            lastOperationResult = operationResultStore.load(),
+            lastOperationResult = savedOperationResult,
             lastTrashedEntryId = repository.lastTrashedEntryId(),
         ),
     )
@@ -257,6 +261,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             try {
                 cancellableOperation("refresh", started) {
                 val environment = repository.inspect(::publishProgress)
+                mutableState.update { it.copy(termuxSetup = repository.termuxSetupState()) }
                 if (environment.processRunning && repository.wakeLockEnabled()) {
                     journal.phase("백그라운드 실행 설정 확인", "실행 중인 서버의 Termux Wake lock 설정을 적용합니다.")
                     repository.setTermuxWakeLock(true).requireSuccess()
@@ -318,6 +323,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     it.copy(
                         environment = environment,
                         environmentChecked = true,
+                        previousInstallationKnown = environment.sillyTavernInstalled,
                         termuxWakeBlocked = false,
                         section = initialSection,
                         isWorking = environment.operationActive,
@@ -340,7 +346,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 if (environment.operationActive) resumeDetachedOperation()
                 }
             } catch (error: Exception) {
-                if (error is CancellationException) throw error
+                if (error is CancellationException) {
+                    val checked = repository.termuxSetupState().let {
+                        if (it.status == TermuxSetupStatus.CHECKING) TermuxSetupState(TermuxSetupStatus.UNVERIFIED,
+                            "환경 확인을 중단했습니다. 기존 설치는 변경하지 않았습니다.") else it
+                    }
+                    mutableState.update { it.finishTermuxSetupCheck(it.environment, checked) }
+                    throw error
+                }
                 val diagnostic = error.userMessage()
                 val wakeBlocked = diagnostic.contains("Not allowed to start service", ignoreCase = true) ||
                     diagnostic.contains("background", ignoreCase = true)
@@ -354,9 +367,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     retryAction = RetryAction.REFRESH,
                 )
                 // A failed inspection must retain the known installation, even if Android blocked Termux.
+                val failedSetup = repository.termuxSetupState().let {
+                    if (it.verified) TermuxSetupState(TermuxSetupStatus.UNVERIFIED, diagnostic) else it
+                }
                 mutableState.update {
-                    it.copy(
-                        environment = it.environment.copy(managerConnected = false),
+                    it.finishTermuxSetupCheck(it.environment, failedSetup).copy(
+                        environmentChecked = false,
                         isWorking = false,
                         workingLabel = "",
                         termuxWakeBlocked = wakeBlocked,
@@ -385,6 +401,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 mutableState.update {
                     it.copy(
                         environment = environment,
+                        termuxSetup = repository.termuxSetupState(),
+                        previousInstallationKnown = environment.sillyTavernInstalled,
                         environmentChecked = true,
                         termuxWakeBlocked = false,
                         section = if (!environment.sillyTavernInstalled) MainSection.SETUP else it.section,
@@ -393,21 +411,26 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
-                // A later background check will retry without interrupting the user.
+            } catch (error: Exception) {
+                val failedSetup = repository.termuxSetupState().let {
+                    if (it.verified) TermuxSetupState(TermuxSetupStatus.UNVERIFIED, error.userMessage()) else it
+                }
+                mutableState.update { it.finishTermuxSetupCheck(it.environment, failedSetup) }
             }
         }
     }
 
-    /** No manager installation, progress polling, or busy dialog before this probe succeeds. */
+    /** Local prerequisites only. The real doctor command verifies the Termux connection. */
     private suspend fun checkSetupBeforeRefresh(): Boolean {
         try {
             val base = repository.baseStatus()
             mutableState.update { it.beginTermuxSetupCheck(base) }
-            val check = repository.checkTermuxSetup()
-            val currentBase = repository.baseStatus()
-            mutableState.update { it.finishTermuxSetupCheck(currentBase, check) }
-            return check.verified
+            val check = repository.prepareTermuxEnvironmentCheck()
+            if (check.requiresUserAction) {
+                mutableState.update { it.finishTermuxSetupCheck(repository.baseStatus(), check) }
+                return false
+            }
+            return true
         } catch (cancelled: CancellationException) {
             mutableState.update { it.copy(termuxSetup = TermuxSetupState()) }
             throw cancelled
@@ -1604,11 +1627,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onCommandPermissionResult(granted: Boolean) {
-        if (!granted) mutableState.update { it.copy(
-            environment = it.environment.copy(commandPermissionGranted = false, managerConnected = false),
-            termuxSetup = TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED),
-            section = MainSection.SETUP,
-            error = null,
+        if (!granted) mutableState.update { it.finishTermuxSetupCheck(
+            it.environment.copy(commandPermissionGranted = false, managerConnected = false),
+            TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED,
+                "Android 설정에서 런처의 ‘Termux 환경에서 명령 실행’ 권한을 허용해 주세요."),
         ) }
         viewModelScope.launch {
             refreshJob?.join()

@@ -16,6 +16,15 @@ class TermuxSetupStateTest {
         commit = "existing-commit",
     )
     private val ready = TermuxSetupState(TermuxSetupStatus.READY)
+    private fun savedResult(operation: String, succeeded: Boolean = true) = OperationResultSummary(
+        operation = operation,
+        title = operation,
+        detail = "saved result",
+        succeeded = succeeded,
+        completedAt = "2026-10-04 12:00:00",
+        completedAtMillis = 1L,
+        durationSeconds = 1L,
+    )
 
     @Test fun missingTermuxCannotBeSkippedByCachedCompletion() {
         assertEquals(1, setupEligibleStep(connected.copy(termuxInstalled = false), ready))
@@ -173,7 +182,7 @@ class TermuxSetupStateTest {
         assertNull(checked.error)
     }
 
-    @Test fun explicitPrerequisiteFailuresShowGuideWithoutClaimingInspectionCompleted() {
+    @Test fun existingInstallationPrerequisiteFailuresStayOnReconnectionWithoutClaimingInspectionCompleted() {
         listOf(TermuxSetupStatus.TERMUX_MISSING, TermuxSetupStatus.PERMISSION_REQUIRED,
             TermuxSetupStatus.EXTERNAL_APPS_DISABLED).forEach { status ->
             val base = connected.copy(
@@ -181,19 +190,100 @@ class TermuxSetupStateTest {
                 commandPermissionGranted = status != TermuxSetupStatus.PERMISSION_REQUIRED,
             )
             val checked = LauncherUiState(environment = connected, environmentChecked = true,
-                termuxSetup = ready).beginTermuxSetupCheck(base)
+                termuxSetup = ready, section = MainSection.LOGS).beginTermuxSetupCheck(base)
                 .finishTermuxSetupCheck(base, TermuxSetupState(status))
             assertTrue(checked.termuxSetup.requiresUserAction)
-            assertEquals(MainSection.SETUP, checked.section)
+            assertFalse(checked.shouldShowSetupGuide)
+            assertTrue(checked.hasInstallationHistory)
+            assertTrue(checked.previousInstallationKnown)
+            assertEquals(MainSection.LOGS, checked.section)
             assertFalse(checked.environmentChecked)
             assertTrue(checked.environment.sillyTavernInstalled)
             assertEquals("existing-commit", checked.environment.commit)
             assertFalse(checked.environment.managerConnected)
+            assertFalse(checked.termuxSetup.verified)
+        }
+    }
+
+    @Test fun newUserExplicitPrerequisiteFailuresStillShowSetupGuide() {
+        listOf(TermuxSetupStatus.TERMUX_MISSING, TermuxSetupStatus.PERMISSION_REQUIRED,
+            TermuxSetupStatus.EXTERNAL_APPS_DISABLED).forEach { status ->
+            val base = EnvironmentStatus(
+                termuxInstalled = status != TermuxSetupStatus.TERMUX_MISSING,
+                commandPermissionGranted = status != TermuxSetupStatus.PERMISSION_REQUIRED,
+            )
+            val checked = LauncherUiState().beginTermuxSetupCheck(base)
+                .finishTermuxSetupCheck(base, TermuxSetupState(status))
+            assertTrue(checked.shouldShowSetupGuide)
+            assertFalse(checked.hasInstallationHistory)
+            assertEquals(MainSection.SETUP, checked.section)
+            assertFalse(checked.environmentChecked)
+            assertFalse(checked.environment.sillyTavernInstalled)
+            assertFalse(checked.environment.managerConnected)
+            assertFalse(checked.termuxSetup.verified)
+        }
+    }
+
+    @Test fun persistedInstallationHintSelectsReconnectionWithoutAuthorizingCommands() {
+        val checked = LauncherUiState(previousInstallationKnown = true)
+            .beginTermuxSetupCheck(connected)
+            .finishTermuxSetupCheck(connected, TermuxSetupState(TermuxSetupStatus.EXTERNAL_APPS_DISABLED))
+        assertTrue(checked.hasInstallationHistory)
+        assertFalse(checked.shouldShowSetupGuide)
+        assertEquals(MainSection.HOME, checked.section)
+        assertFalse(checked.environmentChecked)
+        assertFalse(checked.environment.sillyTavernInstalled)
+        assertFalse(checked.environment.managerConnected)
+        assertFalse(checked.termuxSetup.verified)
+        assertEquals(3, setupEligibleStep(checked.environment, checked.termuxSetup))
+    }
+
+    @Test fun legacySuccessfulStartSelectsReconnectionAndLatchesHistory() {
+        val legacy = LauncherUiState(lastOperationResult = savedResult("start"))
+        assertTrue(legacy.hasInstallationHistory)
+        val checked = legacy.beginTermuxSetupCheck(connected)
+            .finishTermuxSetupCheck(connected, TermuxSetupState(TermuxSetupStatus.EXTERNAL_APPS_DISABLED))
+        assertTrue(checked.previousInstallationKnown)
+        assertTrue(checked.hasInstallationHistory)
+        assertFalse(checked.shouldShowSetupGuide)
+        assertEquals(MainSection.HOME, checked.section)
+        assertFalse(checked.environment.sillyTavernInstalled)
+        assertFalse(checked.environment.managerConnected)
+        assertFalse(checked.termuxSetup.verified)
+    }
+
+    @Test fun failedRefreshReplacingLegacySummaryDoesNotLoseLatchedInstallationHistory() {
+        val failedCheck = LauncherUiState(lastOperationResult = savedResult("start"))
+            .finishTermuxSetupCheck(connected, TermuxSetupState(TermuxSetupStatus.UNVERIFIED))
+            .copy(lastOperationResult = savedResult("refresh", succeeded = false))
+        assertFalse(failedCheck.lastOperationResult.indicatesExistingInstallation())
+        val checked = failedCheck.beginTermuxSetupCheck(connected)
+            .finishTermuxSetupCheck(connected, TermuxSetupState(TermuxSetupStatus.EXTERNAL_APPS_DISABLED))
+        assertTrue(checked.previousInstallationKnown)
+        assertTrue(checked.hasInstallationHistory)
+        assertFalse(checked.shouldShowSetupGuide)
+        assertEquals(MainSection.HOME, checked.section)
+        assertFalse(checked.environmentChecked)
+        assertFalse(checked.environment.sillyTavernInstalled)
+        assertFalse(checked.environment.managerConnected)
+        assertFalse(checked.termuxSetup.verified)
+    }
+
+    @Test fun failedOrUnrelatedLegacyOperationsDoNotFabricateInstallationHistory() {
+        for (result in listOf(null, savedResult("start", succeeded = false),
+            savedResult("refresh"), savedResult("connect-manager"))) {
+            assertFalse(result.indicatesExistingInstallation())
+            val checked = LauncherUiState(lastOperationResult = result)
+                .finishTermuxSetupCheck(connected, TermuxSetupState(TermuxSetupStatus.EXTERNAL_APPS_DISABLED))
+            assertFalse(checked.hasInstallationHistory)
+            assertTrue(checked.shouldShowSetupGuide)
+            assertFalse(checked.environment.managerConnected)
+            assertFalse(checked.termuxSetup.verified)
         }
     }
 
     @Test fun successfulRetryOfExistingInstallationReturnsHomeFromGuide() {
-        val waiting = LauncherUiState(environment = connected, environmentChecked = true)
+        val waiting = LauncherUiState(environment = connected, environmentChecked = true, section = MainSection.SETUP)
             .finishTermuxSetupCheck(connected.copy(commandPermissionGranted = false),
                 TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED))
         val readyToInspect = waiting.beginTermuxSetupCheck(connected).finishTermuxSetupCheck(connected, ready)

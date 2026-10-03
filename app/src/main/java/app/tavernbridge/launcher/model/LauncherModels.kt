@@ -111,6 +111,8 @@ data class LauncherUiState(
     val configuredPort: Int = 8000,
     val environment: EnvironmentStatus = EnvironmentStatus(),
     val termuxSetup: TermuxSetupState = TermuxSetupState(),
+    // Navigation hint only; command access still requires a live doctor response.
+    val previousInstallationKnown: Boolean = false,
     val environmentChecked: Boolean = false,
     val termuxWakeBlocked: Boolean = false,
     val isWorking: Boolean = true,

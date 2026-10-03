@@ -3,9 +3,30 @@ package app.tavernbridge.launcher.data
 import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.security.redactSensitiveText
+import app.tavernbridge.launcher.termux.TermuxCommandResult
 import java.util.Base64
 
 object DoctorOutputParser {
+    /** Never interpret a missing/truncated installation flag as confirmation that it is absent. */
+    fun parseVerified(result: TermuxCommandResult): EnvironmentStatus {
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "[TERMUX_STATUS_INVALID]\nTermux 환경 검사 응답이 잘렸습니다. 다시 확인해 주세요." }
+        val required = mapOf(
+            "protocol" to setOf("1"),
+            "termux_ready" to setOf("1"),
+            "st_installed" to setOf("0", "1"),
+            "running" to setOf("0", "1"),
+            "operation_active" to setOf("0", "1"),
+            "recovery_pending" to setOf("0", "1"),
+        )
+        val lines = result.stdout.lineSequence().toList()
+        check(required.all { (key, allowed) ->
+            val values = lines.filter { it.startsWith("$key=") }.map { it.substringAfter('=') }
+            values.size == 1 && values.single() in allowed
+        }) { "[TERMUX_STATUS_INVALID]\nTermux 환경 검사 응답이 완전하지 않습니다. 기존 설치 상태를 변경하지 않고 다시 확인해 주세요." }
+        return parse(result.stdout)
+    }
+
     fun parse(output: String): EnvironmentStatus {
         val values = output.lineSequence()
             .mapNotNull { line ->

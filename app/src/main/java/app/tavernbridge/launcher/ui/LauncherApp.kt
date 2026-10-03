@@ -145,6 +145,8 @@ import app.tavernbridge.launcher.model.SettingsPanel
 import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.TermuxSetupStatus
+import app.tavernbridge.launcher.model.hasInstallationHistory
+import app.tavernbridge.launcher.model.shouldShowSetupGuide
 import app.tavernbridge.launcher.model.setupEligibleStep
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
@@ -476,13 +478,17 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onOpenTermux = viewModel::openTermux,
                         onRefresh = viewModel::refresh,
                         onRetry = viewModel::retryLastOperation,
+                        setupCommand = viewModel.setupCommand,
+                        onOpenPermissionSettings = viewModel::openPermissionSettings,
                     )
-                    MainSection.SETUP -> if (!state.environmentChecked && !state.termuxSetup.requiresUserAction) {
+                    MainSection.SETUP -> if (!state.environmentChecked && !state.shouldShowSetupGuide) {
                         EnvironmentCheckingScreen(
                             state = state,
                             onOpenTermuxSettings = viewModel::openTermuxAppSettings,
                             onOpenTermux = viewModel::openTermux,
                             onRefresh = viewModel::refresh,
+                            setupCommand = viewModel.setupCommand,
+                            onOpenPermissionSettings = viewModel::openPermissionSettings,
                         )
                     } else if (state.environment.recoveryPending && state.termuxSetup.verified && state.environment.managerConnected) {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
@@ -679,6 +685,8 @@ private fun HomeScreen(
     onOpenTermux: () -> Unit,
     onRefresh: () -> Unit,
     onRetry: () -> Unit,
+    setupCommand: String,
+    onOpenPermissionSettings: () -> Unit,
 ) {
     val environment = state.environment
     LazyColumn(
@@ -688,7 +696,8 @@ private fun HomeScreen(
     ) {
         item {
             if (!state.environmentChecked) {
-                EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh)
+                EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
+                    setupCommand, onOpenPermissionSettings)
             } else if (environment.recoveryPending) {
                 RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
             } else if (!environment.sillyTavernInstalled) {
@@ -763,9 +772,12 @@ private fun EnvironmentCheckingScreen(
     onOpenTermuxSettings: () -> Unit,
     onOpenTermux: () -> Unit,
     onRefresh: () -> Unit,
+    setupCommand: String,
+    onOpenPermissionSettings: () -> Unit,
 ) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh)
+    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+        EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
+            setupCommand, onOpenPermissionSettings)
     }
 }
 
@@ -775,7 +787,10 @@ private fun EnvironmentCheckingCard(
     onOpenTermuxSettings: () -> Unit,
     onOpenTermux: () -> Unit,
     onRefresh: () -> Unit,
+    setupCommand: String,
+    onOpenPermissionSettings: () -> Unit,
 ) {
+    val clipboard = LocalClipboardManager.current
     val checking = state.isWorking || state.termuxSetup.status == TermuxSetupStatus.CHECKING
     val wakeBlocked = state.termuxWakeBlocked
     Card(modifier = Modifier.padding(20.dp)) {
@@ -798,6 +813,7 @@ private fun EnvironmentCheckingCard(
                     when {
                         checking -> "기존 설치를 확인하고 있어요"
                         wakeBlocked -> "Android가 Termux 실행을 막았어요"
+                        state.hasInstallationHistory -> "기존 설치에 다시 연결하지 못했어요"
                         else -> "설치 상태를 확인하지 못했어요"
                     },
                     style = MaterialTheme.typography.titleMedium,
@@ -813,9 +829,28 @@ private fun EnvironmentCheckingCard(
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (!checking) {
+                if (state.termuxSetup.detail.isNotBlank()) {
+                    SelectionContainer {
+                        Text(state.termuxSetup.detail, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 if (wakeBlocked) {
                     Button(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth()) {
                         Text("Termux 배터리 설정 열기")
+                    }
+                }
+                if (state.termuxSetup.status == TermuxSetupStatus.PERMISSION_REQUIRED) {
+                    Button(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
+                        Text("런처 실행 권한 설정")
+                    }
+                }
+                if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED) {
+                    Button(onClick = {
+                        clipboard.setText(AnnotatedString(setupCommand))
+                        onOpenTermux()
+                    }, modifier = Modifier.fillMaxWidth()) {
+                        Text("연결 설정 명령 복사·Termux 열기")
                     }
                 }
                 OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {

@@ -2,9 +2,8 @@ package app.tavernbridge.launcher.data
 
 import app.tavernbridge.launcher.model.TermuxSetupState
 import app.tavernbridge.launcher.model.TermuxSetupStatus
-import app.tavernbridge.launcher.termux.TermuxCommandResult
 
-/** No Android calls or manager/bootstrap commands: readiness needs its own proof. */
+/** Classifies setup prerequisites and explicit refusals; doctor proves readiness. */
 internal object TermuxSetupProbe {
     fun prerequisites(installed: Boolean, permissionGranted: Boolean): TermuxSetupState? = when {
         !installed -> TermuxSetupState(TermuxSetupStatus.TERMUX_MISSING, "Termux를 설치하고 한 번 실행해 주세요.")
@@ -13,26 +12,6 @@ internal object TermuxSetupProbe {
             "Android 설정에서 런처의 ‘Termux 환경에서 명령 실행’ 권한을 허용해 주세요.",
         )
         else -> null
-    }
-
-    fun command(marker: String): String {
-        require(marker.matches(Regex("[A-Za-z0-9:_-]+")))
-        return "printf '%s\\n' '$marker'"
-    }
-
-    fun classify(expectedCallbackId: String, marker: String, result: TermuxCommandResult): TermuxSetupState {
-        if (result.callbackId != expectedCallbackId) return unverified()
-        // Termux's background StreamGobbler reads lines and appends LF even when printf
-        // did not emit one. Accept only one line ending, never trim arbitrary output.
-        // https://github.com/termux/termux-app/blob/v0.118.3/termux-shared/src/main/java/com/termux/shared/shell/StreamGobbler.java#L188-L192
-        val markerMatches = result.stdout == marker || result.stdout == "$marker\n" || result.stdout == "$marker\r\n"
-        if (result.isSuccess && !result.stdoutTruncated && markerMatches) {
-            return TermuxSetupState(TermuxSetupStatus.READY, "Termux 외부 명령 실행과 응답을 확인했습니다.")
-        }
-        if (!result.isSuccess && externalAppsDisabled(result.stderr + "\n" + result.errorMessage)) {
-            return disabled()
-        }
-        return unverified()
     }
 
     fun failure(message: String?): TermuxSetupState =

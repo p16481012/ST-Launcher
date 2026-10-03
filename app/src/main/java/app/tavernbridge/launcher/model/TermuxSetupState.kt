@@ -20,6 +20,18 @@ data class TermuxSetupState(
         status == TermuxSetupStatus.PERMISSION_REQUIRED || status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED
 }
 
+/** Old versions saved results but not installation snapshots. This must never authorize commands. */
+fun OperationResultSummary?.indicatesExistingInstallation(): Boolean = this?.let {
+        it.succeeded && it.operation in setOf("install", "import-install", "start", "stop", "restart",
+            "update", "backup", "restore", "switch-branch")
+    } == true
+
+val LauncherUiState.hasInstallationHistory: Boolean
+    get() = previousInstallationKnown || environment.sillyTavernInstalled || lastOperationResult.indicatesExistingInstallation()
+
+val LauncherUiState.shouldShowSetupGuide: Boolean
+    get() = termuxSetup.requiresUserAction && !hasInstallationHistory
+
 /** A remembered page or a granted Android permission is not proof of a working connection. */
 fun setupEligibleStep(environment: EnvironmentStatus, setup: TermuxSetupState): Int = when {
     !environment.termuxInstalled -> 1
@@ -56,10 +68,11 @@ fun LauncherUiState.finishTermuxSetupCheck(
     base: EnvironmentStatus,
     check: TermuxSetupState,
 ): LauncherUiState = copy(
+    previousInstallationKnown = hasInstallationHistory,
     environment = environment.withTermuxSetup(base, check),
     termuxSetup = check,
     environmentChecked = environmentChecked && check.verified,
-    section = if (check.requiresUserAction) MainSection.SETUP else section,
+    section = if (check.requiresUserAction && !hasInstallationHistory) MainSection.SETUP else section,
     isWorking = false,
     workingLabel = "",
     workProgress = null,

@@ -56,8 +56,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
@@ -66,7 +64,6 @@ class LauncherRepository(private val context: Context) {
     private val backupRequestStore = BackupRequestStore(context)
     @Volatile private var localOperationProgress: WorkProgress? = null
     @Volatile private var termuxSetup = TermuxSetupState()
-    private val termuxSetupCheck = Mutex()
 
     companion object {
         private const val SYSTEM_URL_HANDLER = "@android-system"
@@ -113,63 +110,56 @@ class LauncherRepository(private val context: Context) {
         )
     }
 
-    /** Verifies RUN_COMMAND without deploying the manager or touching user data. */
-    suspend fun checkTermuxSetup(): TermuxSetupState = termuxSetupCheck.withLock {
-        setupPrerequisites()?.let {
-            termuxSetup = it
-            return@withLock it
-        }
-        // A previous success must not remain usable during a failed/cancelled recheck.
-        termuxSetup = TermuxSetupState(TermuxSetupStatus.CHECKING)
-        val callbackId = UUID.randomUUID().toString()
-        val marker = "st-launcher-setup:${UUID.randomUUID()}"
-        val checked = try {
-            val result = runRawBash(
-                command = TermuxSetupProbe.command(marker),
-                label = "Termux 연결 확인",
-                description = "파일을 변경하지 않고 외부 명령 실행 응답을 확인합니다.",
-                timeoutMillis = 8_000,
-                callbackId = callbackId,
-                loginShell = false,
-            )
-            TermuxSetupProbe.classify(callbackId, marker, result)
-        } catch (cancelled: CancellationException) {
-            termuxSetup = TermuxSetupState(TermuxSetupStatus.UNVERIFIED)
-            throw cancelled
+    fun termuxSetupState(): TermuxSetupState = termuxSetup
+
+    /** Presentation hint only: never grants access or substitutes for a current inspection. */
+    fun hasKnownInstallation(): Boolean = preferences.getBoolean("known_st_installation", false)
+
+    /** Preserve a legacy successful-installation UI hint before an error replaces its saved result. */
+    fun rememberKnownInstallation() {
+        preferences.edit().putBoolean("known_st_installation", true).apply()
+    }
+
+    /** Android prerequisites are checked now; the normal doctor response proves command access. */
+    fun prepareTermuxEnvironmentCheck(): TermuxSetupState {
+        try {
+            termuxSetup = setupPrerequisites() ?: TermuxSetupState(TermuxSetupStatus.CHECKING)
+            return termuxSetup
         } catch (error: Exception) {
-            setupPrerequisites() ?: TermuxSetupProbe.failure(error.message)
+            recordEnvironmentCheckFailure(error)
+            throw error
         }
-        // Permission can be revoked (or Termux removed) while the callback is in flight.
-        val current = setupPrerequisites() ?: checked
-        termuxSetup = current
-        current
     }
 
     suspend fun inspect(onProgress: ((WorkProgress) -> Unit)? = null, progressOperation: String = "refresh"): EnvironmentStatus {
-        val progress = onProgress?.let { LocalProgressJournal(progressOperation, it) }
-        progress?.phase("환경 확인", "Android 권한, 서버 응답, Termux 설치 상태를 차례로 확인합니다.", 3)
-        val base = baseStatus()
-        progress?.completedItem("Android 권한·설정 확인")
-        progress?.item("서버 응답 확인", "설정된 로컬 서버의 HTTP 응답을 기다립니다.")
-        val serverReachable = pingServer(base.port)
-        progress?.completedItem("서버 응답 확인")
-        if (!base.termuxInstalled || !base.commandPermissionGranted) {
-            progress?.completedItem("Termux 미설치 또는 명령 권한 없음 확인 · 명령 검사 생략")
-            return base.copy(serverReachable = serverReachable)
-        }
+        try {
+            requireManagerAccess("doctor")
+            val progress = onProgress?.let { LocalProgressJournal(progressOperation, it) }
+            progress?.phase("환경 확인", "Android 권한, 서버 응답, Termux 설치 상태를 차례로 확인합니다.", 3)
+            val base = baseStatus()
+            progress?.completedItem("Android 권한·설정 확인")
+            progress?.item("서버 응답 확인", "설정된 로컬 서버의 HTTP 응답을 기다립니다.")
+            val serverReachable = pingServer(base.port)
+            progress?.completedItem("서버 응답 확인")
+            if (!base.termuxInstalled || !base.commandPermissionGranted) {
+                progress?.completedItem("Termux 미설치 또는 명령 권한 없음 확인 · 명령 검사 생략")
+                termuxSetup = TermuxSetupProbe.prerequisites(base.termuxInstalled, base.commandPermissionGranted)!!
+                throw IllegalStateException("[TERMUX_SETUP_REQUIRED]\n${termuxSetup.detail}")
+            }
 
-        progress?.item("Termux 환경 검사", "명령 응답을 기다립니다. 설치 폴더·실행 상태·도구를 확인합니다.")
-        val result = runManager("doctor", timeoutMillis = 20_000)
-        if (!result.isSuccess) {
-            throw IllegalStateException(result.readableError())
+            progress?.item("Termux 환경 검사", "명령 응답을 기다립니다. 설치 폴더·실행 상태·도구를 확인합니다.")
+            val result = runManager("doctor", timeoutMillis = 20_000)
+            val status = DoctorOutputParser.parseVerified(result).copy(
+                serverReachable = serverReachable,
+                termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
+            )
+            progress?.completedItem("Termux 설치·프로세스·도구 검사")
+            if (!status.operationActive && !status.recoveryPending) importStaging.cleanAbandoned()
+            return status
+        } catch (error: Exception) {
+            recordEnvironmentCheckFailure(error)
+            throw error
         }
-        val status = DoctorOutputParser.parse(result.stdout).copy(
-            serverReachable = serverReachable,
-            termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
-        )
-        progress?.completedItem("Termux 설치·프로세스·도구 검사")
-        if (!status.operationActive && !status.recoveryPending) importStaging.cleanAbandoned()
-        return status
     }
 
     suspend fun connectManager(progressOperation: String = "connect-manager"): TermuxCommandResult {
@@ -958,8 +948,13 @@ class LauncherRepository(private val context: Context) {
     }
 
     private suspend fun runManager(arguments: String, timeoutMillis: Long, backupRequestId: String = ""): TermuxCommandResult {
-        ensureTermuxSetup()
-        return runManagedCommand(arguments, timeoutMillis, managerBootstrapCommand() + " && ", backupRequestId)
+        try {
+            requireManagerAccess(arguments)
+            return runManagedCommand(arguments, timeoutMillis, managerBootstrapCommand() + " && ", backupRequestId)
+        } catch (error: Exception) {
+            if (arguments == "doctor") recordEnvironmentCheckFailure(error)
+            throw error
+        }
     }
 
     private suspend fun runExistingManager(arguments: String, timeoutMillis: Long): TermuxCommandResult {
@@ -968,26 +963,40 @@ class LauncherRepository(private val context: Context) {
 
     private suspend fun runManagedCommand(arguments: String, timeoutMillis: Long, bootstrap: String = "", backupRequestId: String = ""): TermuxCommandResult {
         // Gate before beginDispatch: a setup failure must not look like a live operation.
-        ensureTermuxSetup()
-        val operation = arguments.substringBefore(' ')
-        val control = currentCoroutineContext().operationCancellationControl()
-        control?.beginDispatch(operation)
-        val requestId = control?.requestId.orEmpty()
-        val command = "${bootstrap}ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_BACKUP_REQUEST_ID=${shellQuote(backupRequestId)} ST_OPERATION_REQUEST_ID=${shellQuote(requestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
-        val result = runRawBash(
-            command = command,
-            label = "실리태번 관리",
-            description = operation,
-            timeoutMillis = timeoutMillis,
-        )
-        // A callback is the terminal acknowledgement. A timeout leaves the
-        // dispatch recorded so cancellation/reconnection can still target it.
-        control?.finishDispatch()
-        if (result.exitCode == 130) throw UserOperationCancelled()
-        if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "list-backups", "list-user-folders", "last-update-record")) {
-            control?.checkpoint()
+        requireManagerAccess(arguments)
+        val checkingEnvironment = arguments == "doctor"
+        if (checkingEnvironment) termuxSetup = TermuxSetupState(TermuxSetupStatus.CHECKING)
+        try {
+            val operation = arguments.substringBefore(' ')
+            val control = currentCoroutineContext().operationCancellationControl()
+            control?.beginDispatch(operation)
+            val requestId = control?.requestId.orEmpty()
+            val command = "${bootstrap}ST_PORT=${configuredPort()} ST_LAUNCHER_VERSION=${shellQuote(BuildConfig.VERSION_NAME)} ST_BACKUP_REQUEST_ID=${shellQuote(backupRequestId)} ST_OPERATION_REQUEST_ID=${shellQuote(requestId)} ${shellQuote(TermuxContract.MANAGER_PATH)} $arguments"
+            val result = runRawBash(
+                command = command,
+                label = "실리태번 관리",
+                description = operation,
+                timeoutMillis = timeoutMillis,
+            )
+            // A callback is the terminal acknowledgement. A timeout leaves the
+            // dispatch recorded so cancellation/reconnection can still target it.
+            control?.finishDispatch()
+            if (result.exitCode == 130) throw UserOperationCancelled()
+            if (checkingEnvironment) {
+                val status = DoctorOutputParser.parseVerified(result)
+                // Android permission can change while the callback is in flight.
+                requireManagerAccess("doctor")
+                preferences.edit().putBoolean("known_st_installation", status.sillyTavernInstalled).apply()
+                termuxSetup = TermuxSetupState(TermuxSetupStatus.READY, "Termux 환경 검사와 기존 설치 상태를 확인했습니다.")
+            }
+            if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "list-backups", "list-user-folders", "last-update-record")) {
+                control?.checkpoint()
+            }
+            return result
+        } catch (error: Exception) {
+            if (checkingEnvironment) recordEnvironmentCheckFailure(error)
+            throw error
         }
-        return result
     }
 
     private fun managerBootstrapCommand(): String {
@@ -1062,10 +1071,23 @@ class LauncherRepository(private val context: Context) {
         permissionGranted = executor.hasRunCommandPermission(),
     )
 
-    private suspend fun ensureTermuxSetup() {
-        setupPrerequisites()?.let { termuxSetup = it }
-        if (!termuxSetup.verified) checkTermuxSetup()
-        requireVerifiedTermuxSetup()
+    private fun ensureTermuxSetup() = requireVerifiedTermuxSetup()
+
+    private fun requireManagerAccess(arguments: String) {
+        val blocked = TermuxCommandAccess.blockedState(
+            arguments, termuxSetup, executor.isTermuxInstalled(), executor.hasRunCommandPermission(),
+        ) ?: return
+        termuxSetup = blocked
+        throw IllegalStateException("[TERMUX_SETUP_REQUIRED]\n" + blocked.detail.ifBlank { "Termux 연결을 먼저 확인해 주세요." })
+    }
+
+    private fun recordEnvironmentCheckFailure(error: Exception) {
+        if (TermuxCommandAccess.keepsVerifiedResponse(termuxSetup, error)) return
+        val classified = if (error is CancellationException)
+            TermuxSetupState(TermuxSetupStatus.UNVERIFIED) else TermuxSetupProbe.failure(error.message)
+        termuxSetup = classified.copy(detail = redactSensitiveText(error.message.orEmpty(), maxLength = 3_000)
+            .ifBlank { classified.detail })
+        runCatching { setupPrerequisites() }.getOrNull()?.let { termuxSetup = it }
     }
 
     private fun requireVerifiedTermuxSetup() {
@@ -1075,7 +1097,7 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
-    /** Only the harmless setup probe may call this without the readiness gate. */
+    /** Callers enforce fresh Android prerequisites; doctor itself establishes readiness. */
     private suspend fun runRawBash(
         command: String,
         label: String,

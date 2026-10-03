@@ -1,6 +1,7 @@
 package app.tavernbridge.launcher.data
 
 import app.tavernbridge.launcher.model.SillyBranch
+import app.tavernbridge.launcher.termux.TermuxCommandResult
 import java.util.Base64
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -8,6 +9,67 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DoctorOutputParserTest {
+    private fun completeResponse(installed: Boolean = true) = """
+        recovery_pending=0
+        protocol=1
+        manager_version=7
+        termux_ready=1
+        operation_active=0
+        st_installed=${if (installed) 1 else 0}
+        running=0
+        port=8000
+    """.trimIndent()
+
+    private fun callback(output: String = completeResponse()) =
+        TermuxCommandResult("doctor-callback", output, "", 0, -1, "", output.length)
+
+    @Test
+    fun verifiedDoctorDistinguishesExistingAndConfirmedAbsentInstallations() {
+        for (installed in listOf(true, false)) {
+            val status = DoctorOutputParser.parseVerified(callback(completeResponse(installed)))
+            assertTrue(status.managerConnected)
+            assertEquals(installed, status.sillyTavernInstalled)
+        }
+    }
+
+    @Test
+    fun missingOrInvalidRequiredFieldsCannotBecomeANewInstallation() {
+        val fields = listOf("protocol", "termux_ready", "st_installed", "running", "operation_active", "recovery_pending")
+        for (key in fields) {
+            val missing = completeResponse().lineSequence().filterNot { it.startsWith("$key=") }.joinToString("\n")
+            expectInvalid(callback(missing))
+            expectInvalid(callback("$missing\n$key=unknown"))
+            expectInvalid(callback(completeResponse() + "\n$key=0"))
+        }
+        expectInvalid(callback(""))
+        expectInvalid(callback("protocol=1\nst_installed=0"))
+        expectInvalid(callback(completeResponse().replace("protocol=1", "protocol=2")))
+        expectInvalid(callback(completeResponse().replace("termux_ready=1", "termux_ready=0")))
+    }
+
+    @Test
+    fun truncatedOrFailedCallbackCannotAuthorizeTheParsedStatus() {
+        val successful = callback()
+        expectInvalid(successful.copy(stdoutOriginalLength = successful.stdout.length + 1))
+        expectInvalid(successful.copy(exitCode = 1))
+        expectInvalid(successful.copy(errorCode = 0))
+        expectInvalid(successful.copy(errorCode = 1, errorMessage = "allow-external-apps=false"))
+    }
+
+    @Test
+    fun verifiedDoctorAllowsTransportLineEndingsAndUnrelatedShellOutput() {
+        val status = DoctorOutputParser.parseVerified(callback(
+            "shell greeting\r\n" + completeResponse().replace("\n", "\r\n") + "\r\n",
+        ))
+        assertTrue(status.managerConnected)
+        assertTrue(status.sillyTavernInstalled)
+    }
+
+    private fun expectInvalid(result: TermuxCommandResult) {
+        val failure = runCatching { DoctorOutputParser.parseVerified(result) }.exceptionOrNull()
+        assertTrue("Invalid doctor response must throw instead of returning absent installation", failure is IllegalStateException)
+    }
+
     @Test
     fun parsesExistingReleaseInstallation() {
         val result = DoctorOutputParser.parse(
