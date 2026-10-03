@@ -25,7 +25,9 @@ import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.EnvironmentRefreshGate
 import app.tavernbridge.launcher.model.TermuxSetupState
 import app.tavernbridge.launcher.model.TermuxSetupStatus
-import app.tavernbridge.launcher.model.withTermuxSetup
+import app.tavernbridge.launcher.model.beginTermuxSetupCheck
+import app.tavernbridge.launcher.model.finishTermuxSetupCheck
+import app.tavernbridge.launcher.model.sectionAfterEnvironmentCheck
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
@@ -308,8 +310,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 } else {
                     state.value.lastOperationResult
                 }
-                val initialSection = if (!environment.sillyTavernInstalled) MainSection.SETUP
-                    else if (firstCheck) requestedSection else state.value.section
+                val initialSection = sectionAfterEnvironmentCheck(
+                    environment, firstCheck, requestedSection, state.value.section,
+                )
                 val recoveredProgress = progress?.let(progressLogHistory::merge)
                 mutableState.update {
                     it.copy(
@@ -350,9 +353,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     errorCode = errorCodeFrom(diagnostic),
                     retryAction = RetryAction.REFRESH,
                 )
+                // A failed inspection must retain the known installation, even if Android blocked Termux.
                 mutableState.update {
                     it.copy(
-                        environment = if (wakeBlocked) repository.baseStatus() else it.environment,
+                        environment = it.environment.copy(managerConnected = false),
                         isWorking = false,
                         workingLabel = "",
                         termuxWakeBlocked = wakeBlocked,
@@ -399,54 +403,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private suspend fun checkSetupBeforeRefresh(): Boolean {
         try {
             val base = repository.baseStatus()
-            mutableState.update {
-                val firstCheck = !it.environmentChecked
-                it.copy(
-                    environment = it.environment.copy(
-                        termuxInstalled = base.termuxInstalled,
-                        commandPermissionGranted = base.commandPermissionGranted,
-                        termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
-                    ),
-                    // Keep a configured user's screen mounted during a silent probe.
-                    // Command entry points stay locked by refreshJob until it finishes.
-                    termuxSetup = if (it.termuxSetup.verified && base.termuxInstalled && base.commandPermissionGranted)
-                        it.termuxSetup else TermuxSetupState(TermuxSetupStatus.CHECKING),
-                    environmentChecked = true,
-                    section = if (firstCheck) MainSection.SETUP else it.section,
-                    isWorking = false,
-                    workingLabel = "",
-                    workProgress = null,
-                )
-            }
+            mutableState.update { it.beginTermuxSetupCheck(base) }
             val check = repository.checkTermuxSetup()
             val currentBase = repository.baseStatus()
-            mutableState.update {
-                it.copy(
-                    environment = it.environment.withTermuxSetup(currentBase, check),
-                    termuxSetup = check,
-                    section = if (!check.verified) MainSection.SETUP else it.section,
-                    termuxWakeBlocked = false,
-                    error = if (!check.verified) null else it.error,
-                )
-            }
+            mutableState.update { it.finishTermuxSetupCheck(currentBase, check) }
             return check.verified
         } catch (cancelled: CancellationException) {
             mutableState.update { it.copy(termuxSetup = TermuxSetupState()) }
             throw cancelled
         } catch (_: Exception) {
-            mutableState.update {
-                it.copy(
-                    termuxSetup = TermuxSetupState(TermuxSetupStatus.UNVERIFIED,
-                        "연결을 확인하지 못했어요. Termux를 한 번 열고 돌아온 뒤 다시 확인해 주세요."),
-                    environment = it.environment.copy(managerConnected = false),
-                    environmentChecked = true,
-                    section = MainSection.SETUP,
-                    isWorking = false,
-                    workingLabel = "",
-                    workProgress = null,
-                    error = null,
-                )
-            }
+            val check = TermuxSetupState(TermuxSetupStatus.UNVERIFIED,
+                "연결을 확인하지 못했어요. Termux를 한 번 열고 돌아온 뒤 다시 확인해 주세요.")
+            mutableState.update { it.finishTermuxSetupCheck(it.environment, check) }
             return false
         }
     }

@@ -16,6 +16,8 @@ data class TermuxSetupState(
     val detail: String = "",
 ) {
     val verified: Boolean get() = status == TermuxSetupStatus.READY
+    val requiresUserAction: Boolean get() = status == TermuxSetupStatus.TERMUX_MISSING ||
+        status == TermuxSetupStatus.PERMISSION_REQUIRED || status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED
 }
 
 /** A remembered page or a granted Android permission is not proof of a working connection. */
@@ -34,3 +36,45 @@ fun EnvironmentStatus.withTermuxSetup(base: EnvironmentStatus, setup: TermuxSetu
     termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
     managerConnected = managerConnected && base.termuxInstalled && base.commandPermissionGranted && setup.verified,
 )
+
+/** Checking access does not establish whether an installation exists. */
+fun LauncherUiState.beginTermuxSetupCheck(base: EnvironmentStatus): LauncherUiState = copy(
+    environment = environment.copy(
+        termuxInstalled = base.termuxInstalled,
+        commandPermissionGranted = base.commandPermissionGranted,
+        termuxBatteryUnrestricted = base.termuxBatteryUnrestricted,
+    ),
+    termuxSetup = if (termuxSetup.verified && base.termuxInstalled && base.commandPermissionGranted)
+        termuxSetup else TermuxSetupState(TermuxSetupStatus.CHECKING),
+    isWorking = false,
+    workingLabel = "",
+    workProgress = null,
+)
+
+/** An uncertain callback requires another check, not first-time installation instructions. */
+fun LauncherUiState.finishTermuxSetupCheck(
+    base: EnvironmentStatus,
+    check: TermuxSetupState,
+): LauncherUiState = copy(
+    environment = environment.withTermuxSetup(base, check),
+    termuxSetup = check,
+    environmentChecked = environmentChecked && check.verified,
+    section = if (check.requiresUserAction) MainSection.SETUP else section,
+    isWorking = false,
+    workingLabel = "",
+    workProgress = null,
+    termuxWakeBlocked = false,
+    error = if (!check.verified) null else error,
+)
+
+/** Only a completed environment inspection may route an absent installation to setup. */
+fun sectionAfterEnvironmentCheck(
+    environment: EnvironmentStatus,
+    firstCheck: Boolean,
+    requestedSection: MainSection,
+    currentSection: MainSection,
+): MainSection = when {
+    !environment.sillyTavernInstalled -> MainSection.SETUP
+    firstCheck -> if (requestedSection == MainSection.SETUP) MainSection.HOME else requestedSection
+    else -> currentSection
+}

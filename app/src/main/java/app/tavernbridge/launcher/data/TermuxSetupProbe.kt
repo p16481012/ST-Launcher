@@ -17,12 +17,16 @@ internal object TermuxSetupProbe {
 
     fun command(marker: String): String {
         require(marker.matches(Regex("[A-Za-z0-9:_-]+")))
-        return "printf '%s' '$marker'"
+        return "printf '%s\\n' '$marker'"
     }
 
     fun classify(expectedCallbackId: String, marker: String, result: TermuxCommandResult): TermuxSetupState {
         if (result.callbackId != expectedCallbackId) return unverified()
-        if (result.isSuccess && !result.stdoutTruncated && result.stdout == marker) {
+        // Termux's background StreamGobbler reads lines and appends LF even when printf
+        // did not emit one. Accept only one line ending, never trim arbitrary output.
+        // https://github.com/termux/termux-app/blob/v0.118.3/termux-shared/src/main/java/com/termux/shared/shell/StreamGobbler.java#L188-L192
+        val markerMatches = result.stdout == marker || result.stdout == "$marker\n" || result.stdout == "$marker\r\n"
+        if (result.isSuccess && !result.stdoutTruncated && markerMatches) {
             return TermuxSetupState(TermuxSetupStatus.READY, "Termux 외부 명령 실행과 응답을 확인했습니다.")
         }
         if (!result.isSuccess && externalAppsDisabled(result.stderr + "\n" + result.errorMessage)) {

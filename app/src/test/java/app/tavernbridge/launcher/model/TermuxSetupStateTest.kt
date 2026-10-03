@@ -2,6 +2,7 @@ package app.tavernbridge.launcher.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -79,5 +80,147 @@ class TermuxSetupStateTest {
         assertFalse(state.termuxSetup.verified)
         assertEquals(TermuxSetupStatus.UNKNOWN, state.termuxSetup.status)
         assertEquals(1, setupEligibleStep(state.environment, state.termuxSetup))
+    }
+
+    @Test fun onlyExplicitPrerequisiteFailuresRequireUserAction() {
+        val actionable = setOf(TermuxSetupStatus.TERMUX_MISSING, TermuxSetupStatus.PERMISSION_REQUIRED,
+            TermuxSetupStatus.EXTERNAL_APPS_DISABLED)
+        TermuxSetupStatus.entries.forEach { status ->
+            assertEquals(status in actionable, TermuxSetupState(status).requiresUserAction)
+        }
+    }
+
+    @Test fun coldStartAccessCheckStaysHomeUntilInstallationIsInspected() {
+        val checking = LauncherUiState().beginTermuxSetupCheck(connected)
+        assertEquals(MainSection.HOME, checking.section)
+        assertFalse(checking.environmentChecked)
+        assertFalse(checking.environment.sillyTavernInstalled)
+        assertTrue(checking.environment.termuxInstalled)
+        assertTrue(checking.environment.commandPermissionGranted)
+        assertEquals(TermuxSetupStatus.CHECKING, checking.termuxSetup.status)
+        assertFalse(checking.isWorking)
+        assertEquals("", checking.workingLabel)
+        assertNull(checking.workProgress)
+
+        val checked = checking.finishTermuxSetupCheck(connected, ready)
+        assertEquals(MainSection.HOME, checked.section)
+        assertFalse(checked.environmentChecked)
+    }
+
+    @Test fun existingVerifiedCheckPreservesScreenAndInstallationKnowledge() {
+        val checking = LauncherUiState(
+            environment = connected,
+            environmentChecked = true,
+            section = MainSection.LOGS,
+            termuxSetup = ready,
+            workProgress = WorkProgress(50, "old phase", "old detail"),
+        ).beginTermuxSetupCheck(connected.copy(termuxBatteryUnrestricted = true))
+        assertTrue(checking.environmentChecked)
+        assertEquals(MainSection.LOGS, checking.section)
+        assertEquals(ready, checking.termuxSetup)
+        assertTrue(checking.environment.termuxBatteryUnrestricted)
+        assertTrue(checking.environment.sillyTavernInstalled)
+        assertEquals("existing-commit", checking.environment.commit)
+        assertNull(checking.workProgress)
+    }
+
+    @Test fun revokedPermissionCannotRetainReadyDuringCheck() {
+        val checking = LauncherUiState(environment = connected, termuxSetup = ready)
+            .beginTermuxSetupCheck(connected.copy(commandPermissionGranted = false))
+        assertFalse(checking.environment.commandPermissionGranted)
+        assertEquals(TermuxSetupStatus.CHECKING, checking.termuxSetup.status)
+    }
+
+    @Test fun timeoutDoesNotCompleteInspectionOrRouteToFirstSetup() {
+        val checking = LauncherUiState().beginTermuxSetupCheck(connected)
+        val checked = checking.finishTermuxSetupCheck(connected,
+            TermuxSetupState(TermuxSetupStatus.UNVERIFIED))
+        assertFalse(checked.environmentChecked)
+        assertFalse(checked.termuxSetup.requiresUserAction)
+        assertEquals(MainSection.HOME, checked.section)
+    }
+
+    @Test fun failureBeforeCheckBeginsClearsInitialBusyStateForRetry() {
+        val checked = LauncherUiState(workProgress = WorkProgress(0, "checking", "pending"))
+            .finishTermuxSetupCheck(EnvironmentStatus(), TermuxSetupState(TermuxSetupStatus.UNVERIFIED))
+        assertFalse(checked.isWorking)
+        assertEquals("", checked.workingLabel)
+        assertNull(checked.workProgress)
+        assertFalse(checked.environmentChecked)
+        assertEquals(MainSection.HOME, checked.section)
+        val refreshGate = EnvironmentRefreshGate()
+        assertTrue(refreshGate.tryStart(appInForeground = true, isWorking = true, refreshActive = false))
+        assertTrue(refreshGate.tryStart(appInForeground = true, isWorking = checked.isWorking, refreshActive = false))
+    }
+
+    @Test fun uncertainRecheckPreservesExistingMetadataAndSelectedScreen() {
+        val checked = LauncherUiState(
+            environment = connected,
+            environmentChecked = true,
+            section = MainSection.SETTINGS,
+            termuxSetup = ready,
+            termuxWakeBlocked = true,
+            error = "old error",
+        ).beginTermuxSetupCheck(connected).finishTermuxSetupCheck(connected,
+            TermuxSetupState(TermuxSetupStatus.UNVERIFIED))
+        assertFalse(checked.environmentChecked)
+        assertEquals(MainSection.SETTINGS, checked.section)
+        assertTrue(checked.environment.sillyTavernInstalled)
+        assertTrue(checked.environment.processRunning)
+        assertEquals("existing-commit", checked.environment.commit)
+        assertFalse(checked.environment.managerConnected)
+        assertFalse(checked.termuxWakeBlocked)
+        assertNull(checked.error)
+    }
+
+    @Test fun explicitPrerequisiteFailuresShowGuideWithoutClaimingInspectionCompleted() {
+        listOf(TermuxSetupStatus.TERMUX_MISSING, TermuxSetupStatus.PERMISSION_REQUIRED,
+            TermuxSetupStatus.EXTERNAL_APPS_DISABLED).forEach { status ->
+            val base = connected.copy(
+                termuxInstalled = status != TermuxSetupStatus.TERMUX_MISSING,
+                commandPermissionGranted = status != TermuxSetupStatus.PERMISSION_REQUIRED,
+            )
+            val checked = LauncherUiState(environment = connected, environmentChecked = true,
+                termuxSetup = ready).beginTermuxSetupCheck(base)
+                .finishTermuxSetupCheck(base, TermuxSetupState(status))
+            assertTrue(checked.termuxSetup.requiresUserAction)
+            assertEquals(MainSection.SETUP, checked.section)
+            assertFalse(checked.environmentChecked)
+            assertTrue(checked.environment.sillyTavernInstalled)
+            assertEquals("existing-commit", checked.environment.commit)
+            assertFalse(checked.environment.managerConnected)
+        }
+    }
+
+    @Test fun successfulRetryOfExistingInstallationReturnsHomeFromGuide() {
+        val waiting = LauncherUiState(environment = connected, environmentChecked = true)
+            .finishTermuxSetupCheck(connected.copy(commandPermissionGranted = false),
+                TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED))
+        val readyToInspect = waiting.beginTermuxSetupCheck(connected).finishTermuxSetupCheck(connected, ready)
+        assertFalse(readyToInspect.environmentChecked)
+        assertEquals(MainSection.HOME, sectionAfterEnvironmentCheck(connected,
+            firstCheck = !readyToInspect.environmentChecked,
+            requestedSection = readyToInspect.section, currentSection = readyToInspect.section))
+    }
+
+    @Test fun confirmedAbsentInstallationGoesToSetup() {
+        assertEquals(MainSection.SETUP, sectionAfterEnvironmentCheck(
+            connected.copy(sillyTavernInstalled = false), firstCheck = true,
+            requestedSection = MainSection.HOME, currentSection = MainSection.HOME))
+    }
+
+    @Test fun successfulManagementRefreshKeepsSelectedSection() {
+        val checked = LauncherUiState(environment = connected, environmentChecked = true,
+            termuxSetup = ready, section = MainSection.SETUP)
+            .beginTermuxSetupCheck(connected).finishTermuxSetupCheck(connected, ready)
+        assertTrue(checked.environmentChecked)
+        assertEquals(MainSection.SETUP, sectionAfterEnvironmentCheck(connected,
+            firstCheck = !checked.environmentChecked,
+            requestedSection = checked.section, currentSection = checked.section))
+    }
+
+    @Test fun firstSuccessfulInspectionPreservesOtherRequestedScreens() {
+        assertEquals(MainSection.LOGS, sectionAfterEnvironmentCheck(connected, firstCheck = true,
+            requestedSection = MainSection.LOGS, currentSection = MainSection.SETUP))
     }
 }

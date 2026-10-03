@@ -477,7 +477,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onRefresh = viewModel::refresh,
                         onRetry = viewModel::retryLastOperation,
                     )
-                    MainSection.SETUP -> if (!state.environmentChecked) {
+                    MainSection.SETUP -> if (!state.environmentChecked && !state.termuxSetup.requiresUserAction) {
                         EnvironmentCheckingScreen(
                             state = state,
                             onOpenTermuxSettings = viewModel::openTermuxAppSettings,
@@ -700,7 +700,7 @@ private fun HomeScreen(
         if (!environment.recoveryPending) state.lastOperationResult?.let { summary ->
             item { OperationResultCard(summary, onRetry) }
         }
-        if (environment.sillyTavernInstalled && !environment.recoveryPending) {
+        if (state.environmentChecked && environment.sillyTavernInstalled && !environment.recoveryPending) {
             item {
                 QuickAction(
                     modifier = Modifier.fillMaxWidth(),
@@ -776,7 +776,7 @@ private fun EnvironmentCheckingCard(
     onOpenTermux: () -> Unit,
     onRefresh: () -> Unit,
 ) {
-    val checking = state.isWorking
+    val checking = state.isWorking || state.termuxSetup.status == TermuxSetupStatus.CHECKING
     val wakeBlocked = state.termuxWakeBlocked
     Card(modifier = Modifier.padding(20.dp)) {
         Column(
@@ -812,15 +812,15 @@ private fun EnvironmentCheckingCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
-            if (!checking && wakeBlocked) {
-                Button(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth()) {
-                    Text("Termux 배터리 설정 열기")
+            if (!checking) {
+                if (wakeBlocked) {
+                    Button(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth()) {
+                        Text("Termux 배터리 설정 열기")
+                    }
                 }
                 OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {
                     Text("Termux 한 번 열기")
                 }
-            }
-            if (!checking) {
                 TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
                     Text("설치 상태 다시 확인")
                 }
