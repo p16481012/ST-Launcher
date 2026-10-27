@@ -58,6 +58,7 @@ jobs:
             bash scripts/test-import-normalization.sh
             bash scripts/test-import-ambiguous-native.sh
             bash scripts/test-install-validation.sh
+            bash scripts/test-install-prerequisites.sh
             bash scripts/test-restore-recovery.sh
             bash scripts/test-restore-work-collision.sh
             bash scripts/test-backup-create.sh
@@ -73,17 +74,17 @@ jobs:
           for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release-unsigned.apk; do
             badging="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
             echo "$badging"
-            grep -F "versionCode='4'" <<< "$badging"
+            grep -F "versionCode='5'" <<< "$badging"
             if [[ "$apk" == */release/* ]]; then
               grep -F "package: name='app.tavernbridge.stlauncher'" <<< "$badging"
-              grep -F "versionName='0.3.1'" <<< "$badging"
+              grep -F "versionName='0.3.2'" <<< "$badging"
               if grep -q 'application-debuggable' <<< "$badging"; then
                 echo 'Production APK must not be debuggable' >&2
                 exit 1
               fi
             else
               grep -F "package: name='app.tavernbridge.stlauncher.debug'" <<< "$badging"
-              grep -F "versionName='0.3.1-dev'" <<< "$badging"
+              grep -F "versionName='0.3.2-dev'" <<< "$badging"
             fi
           done
 

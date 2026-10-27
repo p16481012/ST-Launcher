@@ -2157,7 +2157,7 @@ private fun InstallBranchCard(
     ) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("SillyTavern 설치", style = MaterialTheme.typography.titleLarge)
-            Text("설치할 브랜치를 선택하세요.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .72f))
+            Text("설치할 브랜치를 선택하세요. 설치 전 Termux 패키지를 함께 갱신하며 기존 설정 파일은 유지합니다.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .72f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SillyBranch.entries.forEach { branch ->
                     FilterChip(

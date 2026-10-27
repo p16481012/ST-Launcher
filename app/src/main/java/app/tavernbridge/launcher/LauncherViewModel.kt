@@ -13,6 +13,8 @@ import app.tavernbridge.launcher.model.BackupRequest
 import app.tavernbridge.launcher.model.BackupRequestCodec
 import app.tavernbridge.launcher.model.backupFailureDetail
 import app.tavernbridge.launcher.model.backupFailureLog
+import app.tavernbridge.launcher.model.operationErrorSummary
+import app.tavernbridge.launcher.model.operationFailureSummary
 import app.tavernbridge.launcher.model.checkCompletedBackup
 import app.tavernbridge.launcher.model.OperationCancellationControl
 import app.tavernbridge.launcher.model.UserOperationCancelled
@@ -298,14 +300,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 } else {
                     state.value.logs
                 }
+                val recoveredDetail = if (recoveredFailure && !recoveredCancellation && progress != null) {
+                    if (progress.operation == "backup") backupFailureDetail(progress.detail, progress.logText)
+                    else operationFailureSummary(progress.errorCode, progress.detail, progress.logText)
+                } else progress?.detail.orEmpty().ifBlank {
+                    if (recoveredFailure) "작업이 실패했습니다. 로그를 확인해 주세요." else "작업을 완료했습니다."
+                }
                 val recoveredSummary = if (recoveredTerminal && progress != null) {
                     operationSummary(
                         operation = progress.operation,
                         label = operationLabel(progress.operation),
-                        detail = if (recoveredFailure && progress.operation == "backup")
-                            backupFailureDetail(progress.detail, progress.logText) else progress.detail.ifBlank {
-                            if (recoveredFailure) "작업이 실패했습니다. 로그를 확인해 주세요." else "작업을 완료했습니다."
-                        },
+                        detail = recoveredDetail.removePrefix("[${progress.errorCode}]").trim(),
                         succeeded = !recoveredFailure,
                         startedAtMillis = progress.operationStartedAtMillis.takeIf { it > 0L } ?: progress.finishedAtMillis,
                         errorCode = if (recoveredCancellation) "OPERATION_CANCELLED" else progress.errorCode,
@@ -333,7 +338,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             0L, progress?.operationStartedAtMillis ?: 0L, started,
                         ) else it.workingStartedAtMillis,
                         workProgress = if (environment.operationActive) recoveredProgress else null,
-                        error = if (recoveredCancellation) null else if (recoveredFailure) progress?.detail else it.error,
+                        error = if (recoveredCancellation) null else if (recoveredFailure) recoveredDetail else it.error,
                         message = if (recoveredCancellation) "작업이 중단되었습니다. 중단 결과를 복원했습니다."
                             else if (recoveredTerminal && !recoveredFailure) "앱이 종료된 동안 완료된 작업 결과를 복원했습니다." else it.message,
                         lastOperationResult = recoveredSummary,
@@ -540,8 +545,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     cancelled -> progress?.detail?.ifBlank { "작업을 안전하게 중단했습니다." } ?: "작업을 안전하게 중단했습니다."
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
                     failed && operation == "backup" -> backupFailureDetail(progress?.detail.orEmpty(), latestLogs)
-                    failed -> progress?.detail?.ifBlank { "작업이 실패했습니다. 로그를 확인해 주세요." }
-                        ?: "작업이 실패했습니다. 로그를 확인해 주세요."
+                    failed -> operationFailureSummary(progress?.errorCode.orEmpty(), progress?.detail.orEmpty(), progress?.logText.orEmpty())
                     substepNotice != null -> substepNotice
                     operation == "update-preflight" -> "작업은 완료됐지만 업데이트 검사 결과를 받지 못했습니다. 업데이트 확인을 다시 실행해 주세요."
                     operation == "diagnose" -> "작업은 완료됐지만 진단 보고서를 받지 못했습니다. 전체 환경 진단을 다시 실행해 주세요."
@@ -550,7 +554,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val recoveredSummary = operationSummary(
                     operation = operation,
                     label = operationLabel(operation),
-                    detail = resultDetail,
+                    detail = resultDetail.removePrefix("[${progress?.errorCode.orEmpty()}]").trim(),
                     succeeded = !failed,
                     startedAtMillis = startedAtMillis ?: progress?.operationStartedAtMillis?.takeIf { it > 0L }
                         ?: System.currentTimeMillis(),
@@ -1936,11 +1940,5 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         const val COMPLETION_ANIMATION_MILLIS = 1_000L
     }
 
-    private fun Throwable.userMessage(): String = message
-        ?.lineSequence()
-        ?.filter { it.isNotBlank() }
-        ?.take(4)
-        ?.joinToString("\n")
-        ?.take(500)
-        ?: "알 수 없는 오류가 발생했습니다."
+    private fun Throwable.userMessage(): String = operationErrorSummary(message)
 }

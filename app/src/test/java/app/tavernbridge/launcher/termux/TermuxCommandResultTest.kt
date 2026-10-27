@@ -6,6 +6,17 @@ import org.junit.Test
 
 class TermuxCommandResultTest {
     @Test
+    fun `package upgrade and runtime failures retain distinct actionable codes`() {
+        mapOf(61 to "TERMUX_PACKAGE_UPGRADE_FAILED", 62 to "NODE_RUNTIME_FAILED", 63 to "NPM_RUNTIME_FAILED")
+            .forEach { (exitCode, code) ->
+                val result = TermuxCommandResult("test", "", "pkg upgrade 후 다시 확인해 주세요.\n원본 실행 오류", exitCode, -1, "")
+                assertFalse(result.isSuccess)
+                assertTrue(result.readableError().startsWith("[$code]"))
+                assertTrue(result.readableError().contains("원본 실행 오류"))
+            }
+    }
+
+    @Test
     fun `backup failures preserve actionable codes instead of network failure`() {
         mapOf(58 to "BACKUP_NO_SPACE", 59 to "BACKUP_CREATE_FAILED", 60 to "BACKUP_SOURCE_CHANGED")
             .forEach { (exitCode, code) ->

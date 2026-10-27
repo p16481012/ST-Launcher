@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-MANAGER_VERSION="7"
+MANAGER_VERSION="8"
 LAUNCHER_VERSION="${ST_LAUNCHER_VERSION:-unknown}"
 ST_HOME="${ST_HOME:-$HOME/SillyTavern}"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -183,6 +183,9 @@ manager_error_code() {
         *:58) echo "BACKUP_NO_SPACE" ;;
         *:59) echo "BACKUP_CREATE_FAILED" ;;
         *:60) echo "BACKUP_SOURCE_CHANGED" ;;
+        *:61) echo "TERMUX_PACKAGE_UPGRADE_FAILED" ;;
+        *:62) echo "NODE_RUNTIME_FAILED" ;;
+        *:63) echo "NPM_RUNTIME_FAILED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
         *) echo "UNKNOWN_COMMAND_FAILURE" ;;
@@ -904,6 +907,46 @@ refresh_package_indexes() {
     apt_with_selected_sources update -o Acquire::Retries=3 >> "$LOG_FILE" 2>&1
 }
 
+upgrade_install_packages() {
+    # Termux is rolling-release: updating only Node can leave an older libc++
+    # (or another runtime library) unable to satisfy its exported symbols.
+    # Keep this explicit upgrade in the fresh-install workflow only.
+    write_progress 14 "Termux 패키지 확인·갱신" "실행 도구와 라이브러리를 함께 갱신합니다. 기존 설정 파일은 유지합니다."
+    if ! DEBIAN_FRONTEND=noninteractive apt_with_selected_sources \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        -o Acquire::Retries=3 full-upgrade -y >> "$LOG_FILE" 2>&1; then
+        write_progress 0 "Termux 패키지 갱신 실패" "Termux에서 pkg upgrade를 완료한 뒤 다시 시도해 주세요." error
+        echo "Termux 패키지 전체 갱신에 실패했습니다. Termux에서 pkg upgrade를 완료한 뒤 다시 시도해 주세요." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
+        return 61
+    fi
+    record_processing "Termux 패키지 전체 갱신 완료 · 실행 도구 설치를 진행합니다."
+}
+
+verify_node_runtime() {
+    local tool title code output="$RUN_DIR/runtime-check-$$.log" version
+    for tool in node npm; do
+        if [[ "$tool" == node ]]; then title="Node.js"; code=62; else title="npm"; code=63; fi
+        write_progress 0 "$title 실행 검사" "설치된 $title 명령이 실제로 실행되는지 확인합니다."
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            printf '%s 명령을 찾을 수 없습니다.\n' "$tool" > "$output"
+        elif run_cancellable "$tool" --version > "$output" 2>&1 && \
+            grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([+-][[:alnum:].-]+)?[[:space:]]*$' "$output"; then
+            version="$(tr -d '\r\n' < "$output")"
+            record_processing "$title 실행 검사 통과 · $version"
+            rm -f -- "$output"
+            continue
+        fi
+        printf '[launcher] %s 실행 검사 실패\n' "$title" >> "$LOG_FILE"
+        cat "$output" >> "$LOG_FILE"
+        write_progress 0 "$title 실행 실패" "Termux에서 pkg upgrade를 완료한 뒤 다시 확인해 주세요." error
+        printf '%s를 실행하지 못했습니다. Termux에서 pkg upgrade를 완료한 뒤 다시 시도해 주세요.\n' "$title" >&2
+        tail -n 40 "$output" >&2 || true
+        rm -f -- "$output"
+        return "$code"
+    done
+}
+
 dependency_hash() {
     if [[ -f "$ST_HOME/package-lock.json" ]]; then
         sha256sum "$ST_HOME/package-lock.json" | awk '{print $1}'
@@ -923,13 +966,10 @@ install_dependencies() {
     if [[ ! -d "$ST_HOME" ]]; then
         write_progress 0 "설치 실패" "SillyTavern 폴더를 찾을 수 없습니다." error
         echo "SillyTavern 폴더를 찾을 수 없습니다: $ST_HOME" >&2
-        return 1
+        return 12
     fi
-    if ! command -v npm >/dev/null 2>&1; then
-        write_progress 0 "설치 실패" "npm이 설치되지 않았습니다." error
-        echo "npm이 설치되지 않았습니다. Termux 패키지 설치 로그를 확인해 주세요." >&2
-        return 1
-    fi
+    # Do not destroy working modules when the runtime itself cannot execute.
+    verify_node_runtime || return $?
     write_progress 48 "Node 모듈 준비" "손상되거나 오래된 의존성을 정리하고 있습니다."
     enter_cancellation_guard
     echo "[launcher] Rebuilding Node modules..." >> "$LOG_FILE"
@@ -960,7 +1000,7 @@ install_dependencies() {
         echo "Node 모듈 설치에 실패했습니다. 로그를 확인해 주세요." >&2
         tail -n 40 "$LOG_FILE" >&2 || true
         CANCELLATION_GUARD=$((CANCELLATION_GUARD - 1))
-        return 1
+        return 12
     fi
 
     dependency_hash > "$DEPENDENCY_HASH_FILE"
@@ -1078,7 +1118,7 @@ prepare_persistent_start() {
     clear_server_pid
     write_progress 8 "설치 상태 확인" "Node 모듈이 정상인지 확인하고 있습니다."
     if ! dependencies_ready; then
-        install_dependencies || exit 12
+        install_dependencies || exit $?
     else
         write_progress 78 "Node 모듈 확인" "필수 패키지가 정상입니다."
     fi
@@ -1493,18 +1533,25 @@ install_st() {
     if ! refresh_package_indexes; then
         write_progress 0 "패키지 확인 실패" "Termux 패키지 목록을 갱신하지 못했습니다. 로그를 확인해 주세요." error
         echo "Termux 공식 저장소에서도 패키지 목록 갱신에 실패했습니다. 네트워크를 확인하거나 termux-change-repo를 실행해 주세요." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
         exit 14
     fi
+    upgrade_install_packages || exit $?
     write_progress 20 "필수 도구 설치" "Git과 Node.js를 준비하고 있습니다."
-    if ! apt_with_selected_sources install -y git nodejs-lts nano >> "$LOG_FILE" 2>&1; then
+    if ! DEBIAN_FRONTEND=noninteractive apt_with_selected_sources \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        install -y git nodejs-lts nano >> "$LOG_FILE" 2>&1; then
         write_progress 0 "도구 설치 실패" "Git 또는 Node.js를 설치하지 못했습니다. 로그를 확인해 주세요." error
         echo "Git 또는 Node.js 설치에 실패했습니다." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
         exit 15
     fi
+    verify_node_runtime || exit $?
     if [[ "$(getprop ro.product.cpu.abi 2>/dev/null || true)" == *"armeabi-v7a"* ]]; then
         if ! apt_with_selected_sources install -y esbuild >> "$LOG_FILE" 2>&1; then
             write_progress 0 "도구 설치 실패" "esbuild를 설치하지 못했습니다." error
             echo "esbuild 설치에 실패했습니다." >&2
+            tail -n 40 "$LOG_FILE" >&2 || true
             exit 16
         fi
     fi
@@ -1515,12 +1562,15 @@ install_st() {
         rm -rf "$ST_HOME"
         rm -f "$INSTALL_MARKER"
         echo "SillyTavern 다운로드에 실패했습니다." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
         exit 17
     fi
-    if ! install_dependencies; then
+    local dependency_status=0
+    install_dependencies || dependency_status=$?
+    if (( dependency_status != 0 )); then
         rm -rf "$ST_HOME"
         rm -f "$DEPENDENCY_HASH_FILE" "$INSTALL_MARKER"
-        exit 12
+        exit "$dependency_status"
     fi
     rm -f "$INSTALL_MARKER"
     write_progress 100 "설치 완료" "SillyTavern을 시작할 준비가 됐습니다." success
@@ -1548,7 +1598,7 @@ start_st() {
     fi
     write_progress 8 "설치 상태 확인" "Node 모듈이 정상인지 확인하고 있습니다."
     if ! dependencies_ready; then
-        install_dependencies || exit 12
+        install_dependencies || exit $?
     else
         write_progress 78 "Node 모듈 확인" "필수 패키지가 정상입니다."
     fi
