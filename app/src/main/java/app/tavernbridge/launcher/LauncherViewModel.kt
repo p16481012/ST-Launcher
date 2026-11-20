@@ -28,6 +28,12 @@ import app.tavernbridge.launcher.model.EnvironmentRefreshGate
 import app.tavernbridge.launcher.model.TermuxSetupState
 import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.beginTermuxSetupCheck
+import app.tavernbridge.launcher.model.awaitingFirstConnection
+import app.tavernbridge.launcher.model.waitForFirstConnection
+import app.tavernbridge.launcher.model.firstConnectionFailed
+import app.tavernbridge.launcher.model.hasInstallationHistory
+import app.tavernbridge.launcher.model.SetupRefresh
+import app.tavernbridge.launcher.model.setupRefresh
 import app.tavernbridge.launcher.model.finishTermuxSetupCheck
 import app.tavernbridge.launcher.model.sectionAfterEnvironmentCheck
 import app.tavernbridge.launcher.model.indicatesExistingInstallation
@@ -243,7 +249,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun refresh() {
+    fun refresh() = refreshEnvironment(firstConnectionButton = false)
+
+    /** Only the step-3 button is wired here, never a lifecycle or permission callback. */
+    fun confirmFirstConnection() {
+        if (!state.value.awaitingFirstConnection || state.value.isWorking) return
+        refreshEnvironment(firstConnectionButton = true)
+    }
+
+    private fun refreshEnvironment(firstConnectionButton: Boolean) {
         if (refreshJob?.isActive == true) return
         if (!environmentRefreshGate.tryStart(
                 appInForeground = appInForeground,
@@ -252,6 +266,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             )) return
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
+            when (state.value.setupRefresh(firstConnectionButton)) {
+                SetupRefresh.LOCAL_ONLY -> {
+                    val base = repository.baseStatus()
+                    mutableState.update { it.waitForFirstConnection(base) }
+                    return@launch
+                }
+                SetupRefresh.VERIFY_INLINE -> {
+                    verifyFirstConnectionInline()
+                    return@launch
+                }
+                SetupRefresh.NORMAL -> Unit
+            }
             val firstCheck = !state.value.environmentChecked
             val requestedSection = state.value.section
             if (!checkSetupBeforeRefresh()) return@launch
@@ -391,6 +417,34 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /** No operation panel, global notice, persisted failure or queued retry for onboarding. */
+    private suspend fun verifyFirstConnectionInline() {
+        if (!checkSetupBeforeRefresh()) return
+        try {
+            val environment = repository.inspect()
+            mutableState.update {
+                it.copy(environment = environment, environmentChecked = true,
+                    termuxSetup = repository.termuxSetupState(),
+                    previousInstallationKnown = environment.sillyTavernInstalled,
+                    section = sectionAfterEnvironmentCheck(environment, true, it.section, it.section),
+                    backgroundStatus = repository.backgroundStatus(environment.processRunning))
+            }
+            if (environment.operationActive) resumeDetachedOperation()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            val base = repository.baseStatus()
+            val classified = repository.termuxSetupState()
+            val failure = when (classified.status) {
+                TermuxSetupStatus.TERMUX_MISSING, TermuxSetupStatus.PERMISSION_REQUIRED -> classified
+                TermuxSetupStatus.EXTERNAL_APPS_DISABLED -> TermuxSetupState(classified.status,
+                    "Termux에서 외부 명령 실행을 허용하지 않았어요. 위 명령을 붙여넣고 Enter를 누른 뒤 다시 확인해 주세요.")
+                else -> TermuxSetupState(TermuxSetupStatus.UNVERIFIED, error.userMessage())
+            }
+            mutableState.update { it.firstConnectionFailed(base, failure) }
+        }
+    }
+
     fun refreshSilently() {
         if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true) return
         // Setup/reconnection needs the same recovery path as a cold start, not a
@@ -453,6 +507,19 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshAfterResume() {
+        // A delayed resume callback may arrive after a quick button check has
+        // already succeeded. Don't send a second doctor while still onboarding.
+        if (!state.value.hasInstallationHistory) {
+            if (refreshJob?.isActive == true || state.value.environment.operationActive) return
+            if (state.value.termuxSetup.verified) {
+                if (state.value.isWorking) return
+                val base = repository.baseStatus()
+                if (!base.termuxInstalled || !base.commandPermissionGranted) {
+                    mutableState.update { it.waitForFirstConnection(base) }
+                }
+            } else refresh()
+            return
+        }
         if (refreshJob?.isActive == true) {
             viewModelScope.launch {
                 refreshJob?.join()
@@ -1631,6 +1698,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onCommandPermissionResult(granted: Boolean) {
+        if (!state.value.hasInstallationHistory) {
+            refreshAfterResume()
+            return
+        }
         if (!granted) mutableState.update { it.finishTermuxSetupCheck(
             it.environment.copy(commandPermissionGranted = false, managerConnected = false),
             TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED,

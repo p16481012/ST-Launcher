@@ -585,6 +585,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onRequestPermission = { permissionLauncher.launch(TermuxContract.PERMISSION_RUN_COMMAND) },
                             onOpenPermissionSettings = viewModel::openPermissionSettings,
                             onVerifyTermux = viewModel::verifyTermuxSetup,
+                            onConfirmFirstConnection = viewModel::confirmFirstConnection,
                             onConnect = viewModel::connectManager,
                             onSelectBranch = viewModel::selectInstallBranch,
                             onInstall = {
@@ -1868,6 +1869,7 @@ private fun SetupScreen(
     onRequestPermission: () -> Unit,
     onOpenPermissionSettings: () -> Unit,
     onVerifyTermux: () -> Unit,
+    onConfirmFirstConnection: () -> Unit,
     onConnect: () -> Unit,
     onSelectBranch: (SillyBranch) -> Unit,
     onInstall: () -> Unit,
@@ -2040,9 +2042,9 @@ private fun SetupScreen(
                     }
                     TermuxSetupFeedback(state)
                     OutlinedButton(
-                        onClick = onVerifyTermux,
+                        onClick = onConfirmFirstConnection,
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !checking && !state.isWorking,
+                        enabled = !setupReady && !checking && !state.isWorking,
                     ) {
                         if (checking) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -2050,7 +2052,7 @@ private fun SetupScreen(
                             Icon(Icons.Outlined.Refresh, null)
                         }
                         Spacer(Modifier.width(8.dp))
-                        Text(if (checking) "연결 확인 중…" else "실행했어요 · 연결 다시 확인")
+                        Text(if (checking) "연결 확인 중…" else "실행했어요 · 연결 확인")
                     }
                     Button(
                         onClick = { if (setupReady) requestedStep = 4 },

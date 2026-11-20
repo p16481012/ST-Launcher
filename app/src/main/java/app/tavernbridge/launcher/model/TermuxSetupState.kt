@@ -29,8 +29,36 @@ fun OperationResultSummary?.indicatesExistingInstallation(): Boolean = this?.let
 val LauncherUiState.hasInstallationHistory: Boolean
     get() = previousInstallationKnown || environment.sillyTavernInstalled || lastOperationResult.indicatesExistingInstallation()
 
+/** A history hint selects automatic discovery, never command authorization. */
+internal val LauncherUiState.awaitingFirstConnection: Boolean
+    get() = !hasInstallationHistory && !termuxSetup.verified
+
+internal enum class SetupRefresh { LOCAL_ONLY, VERIFY_INLINE, NORMAL }
+
+internal fun LauncherUiState.setupRefresh(firstConnectionButton: Boolean): SetupRefresh = when {
+    !awaitingFirstConnection -> SetupRefresh.NORMAL
+    firstConnectionButton -> SetupRefresh.VERIFY_INLINE
+    else -> SetupRefresh.LOCAL_ONLY
+}
+
 val LauncherUiState.shouldShowSetupGuide: Boolean
-    get() = termuxSetup.requiresUserAction && !hasInstallationHistory
+    get() = awaitingFirstConnection && (termuxSetup.requiresUserAction ||
+        (environment.termuxInstalled && environment.commandPermissionGranted))
+
+/** An automatic refresh during first setup is local-only. Keep an explicit failure
+ * visible on step 3 across activity resumes, until the next button press. */
+internal fun LauncherUiState.waitForFirstConnection(base: EnvironmentStatus): LauncherUiState {
+    val next = when {
+        !base.termuxInstalled -> TermuxSetupState(TermuxSetupStatus.TERMUX_MISSING)
+        !base.commandPermissionGranted -> TermuxSetupState(TermuxSetupStatus.PERMISSION_REQUIRED)
+        termuxSetup.status in setOf(TermuxSetupStatus.UNVERIFIED, TermuxSetupStatus.EXTERNAL_APPS_DISABLED) -> termuxSetup
+        else -> TermuxSetupState()
+    }
+    return finishTermuxSetupCheck(base, next).copy(section = MainSection.SETUP)
+}
+
+internal fun LauncherUiState.firstConnectionFailed(base: EnvironmentStatus, failure: TermuxSetupState): LauncherUiState =
+    finishTermuxSetupCheck(base, failure).copy(section = section, error = null)
 
 /** A remembered page or a granted Android permission is not proof of a working connection. */
 fun setupEligibleStep(environment: EnvironmentStatus, setup: TermuxSetupState): Int = when {

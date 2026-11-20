@@ -299,6 +299,48 @@ class TermuxSetupStateTest {
             requestedSection = MainSection.HOME, currentSection = MainSection.HOME))
     }
 
+    @Test fun permissionThenResumeAndToolbarRefreshWaitForTheButton() {
+        val local = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true)
+        var state = LauncherUiState().waitForFirstConnection(local.copy(commandPermissionGranted = false))
+        assertEquals(2, setupEligibleStep(state.environment, state.termuxSetup))
+        repeat(3) {
+            assertEquals(SetupRefresh.LOCAL_ONLY, state.setupRefresh(firstConnectionButton = false))
+            state = state.waitForFirstConnection(local)
+            assertEquals(MainSection.SETUP, state.section)
+            assertTrue(state.shouldShowSetupGuide)
+            assertEquals(3, setupEligibleStep(state.environment, state.termuxSetup))
+            assertEquals(TermuxSetupStatus.UNKNOWN, state.termuxSetup.status)
+            assertNull(state.error)
+        }
+        assertEquals(SetupRefresh.VERIFY_INLINE, state.setupRefresh(firstConnectionButton = true))
+    }
+
+    @Test fun failedButtonCheckStaysInlineAcrossResumesUntilExplicitRetry() {
+        val local = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true)
+        for (status in listOf(TermuxSetupStatus.EXTERNAL_APPS_DISABLED, TermuxSetupStatus.UNVERIFIED)) {
+            val reason = TermuxSetupState(status, "실제 연결 오류")
+            val state = LauncherUiState().waitForFirstConnection(local)
+                .beginTermuxSetupCheck(local).firstConnectionFailed(local, reason).waitForFirstConnection(local)
+            assertEquals(reason, state.termuxSetup)
+            assertTrue(state.shouldShowSetupGuide)
+            assertEquals(3, setupEligibleStep(state.environment, state.termuxSetup))
+            assertNull(state.error)
+            assertNull(state.lastOperationResult)
+            assertFalse(state.isWorking)
+            assertEquals(SetupRefresh.LOCAL_ONLY, state.setupRefresh(false))
+            assertEquals(SetupRefresh.VERIFY_INLINE, state.setupRefresh(true))
+        }
+    }
+
+    @Test fun knownAndLegacyInstallationsStillInspectAutomatically() {
+        listOf(LauncherUiState(previousInstallationKnown = true),
+            LauncherUiState(lastOperationResult = savedResult("start")),
+            LauncherUiState(environment = connected)).forEach {
+            assertEquals(SetupRefresh.NORMAL, it.setupRefresh(false))
+            assertFalse(it.shouldShowSetupGuide)
+        }
+    }
+
     @Test fun successfulManagementRefreshKeepsSelectedSection() {
         val checked = LauncherUiState(environment = connected, environmentChecked = true,
             termuxSetup = ready, section = MainSection.SETUP)

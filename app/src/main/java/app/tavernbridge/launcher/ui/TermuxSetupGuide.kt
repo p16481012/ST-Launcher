@@ -174,7 +174,7 @@ internal fun TermuxSetupFeedback(state: LauncherUiState) {
         TermuxSetupStatus.UNVERIFIED -> "아직 연결을 확인하지 못했어요"
         TermuxSetupStatus.TERMUX_MISSING -> "Termux 설치를 확인해 주세요"
         TermuxSetupStatus.PERMISSION_REQUIRED -> "Android 실행 권한이 필요해요"
-        TermuxSetupStatus.UNKNOWN -> "돌아오면 실제 연결을 확인할게요"
+        TermuxSetupStatus.UNKNOWN -> "준비되면 ‘실행했어요’를 눌러 주세요"
     }
     val description = setup.detail.ifBlank {
         when (setup.status) {
