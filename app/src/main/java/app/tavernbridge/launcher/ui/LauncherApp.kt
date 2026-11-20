@@ -696,7 +696,9 @@ private fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            if (!state.environmentChecked) {
+            if (state.shouldShowSetupGuide) {
+                EmptyHomeCard(onSetup)
+            } else if (!state.environmentChecked) {
                 EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
                     setupCommand, onOpenPermissionSettings)
             } else if (environment.recoveryPending) {
