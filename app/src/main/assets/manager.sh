@@ -187,6 +187,7 @@ manager_error_code() {
         *:62) echo "NODE_RUNTIME_FAILED" ;;
         *:63) echo "NPM_RUNTIME_FAILED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
+        *:65) echo "ARCHIVE_TOOL_INSTALL_FAILED" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
         *) echo "UNKNOWN_COMMAND_FAILURE" ;;
     esac
@@ -1634,8 +1635,31 @@ ensure_archive_tools() {
     if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
         return 0
     fi
+    # A fresh backup may be the first operation to need these packages. Cached
+    # indexes can point to packages already replaced on a rolling Termux mirror.
+    # Refresh only when tools are missing; do not upgrade the whole environment.
+    if ! refresh_package_indexes; then
+        write_progress 0 "압축 도구 준비 실패" "Termux 패키지 목록을 갱신하지 못했습니다. 인터넷 연결과 패키지 저장소 오류를 확인해 주세요." error
+        echo "압축 도구 준비에 필요한 Termux 패키지 목록 갱신에 실패했습니다. 인터넷 연결과 아래 저장소 오류를 확인해 주세요." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
+        exit 14
+    fi
     write_progress 8 "압축 도구 준비" "ZIP 백업 도구를 설치하고 있습니다."
-    apt_with_selected_sources install -y zip unzip >> "$LOG_FILE" 2>&1
+    if ! DEBIAN_FRONTEND=noninteractive apt_with_selected_sources \
+        -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef \
+        install -y zip unzip >> "$LOG_FILE" 2>&1; then
+        write_progress 0 "압축 도구 설치 실패" "zip·unzip을 설치하지 못했습니다. 상세 로그의 패키지 설치 오류를 확인해 주세요." error
+        echo "압축 도구(zip·unzip) 설치에 실패했습니다. Termux에서 apt-get update && apt-get install zip unzip을 실행해 아래 오류를 확인해 주세요." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
+        exit 65
+    fi
+    if ! command -v zip >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        write_progress 0 "압축 도구 확인 실패" "설치 명령 완료 후에도 zip·unzip을 찾지 못했습니다." error
+        echo "압축 도구 설치 명령은 완료됐지만 zip·unzip을 찾지 못했습니다. Termux에서 apt-get install --reinstall zip unzip을 실행해 설치 상태를 확인해 주세요." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
+        exit 65
+    fi
+    record_processing "압축 도구 준비 완료 · zip·unzip 확인"
 }
 
 archive_expanded_size() {

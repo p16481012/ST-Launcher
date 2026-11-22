@@ -44,6 +44,7 @@ import app.tavernbridge.launcher.termux.TermuxCommandExecutor
 import app.tavernbridge.launcher.termux.TermuxCommandResult
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.termux.TermuxResultBus
+import app.tavernbridge.launcher.termux.LauncherErrorCode
 import app.tavernbridge.launcher.termux.awaitTermuxCommandResult
 import app.tavernbridge.launcher.security.redactSensitiveText
 import java.net.HttpURLConnection
@@ -714,7 +715,7 @@ class LauncherRepository(private val context: Context) {
             lastOperation.ifBlank { "기록 없음" },
             detail = if (lastOperationErrorCode.isBlank()) "오류 코드 없음" else "오류 코드 $lastOperationErrorCode",
             status = if (lastOperationErrorCode.isBlank()) DiagnosticStatus.INFO else DiagnosticStatus.WARNING,
-            recommendation = if (lastOperationErrorCode.isBlank()) "" else "오류 코드와 작업명을 함께 전달하면 문제 확인이 더 빨라집니다.",
+            recommendation = LauncherErrorCode.recommendation(lastOperationErrorCode),
         )
         items += DiagnosticItem(
             "last_error", "최근 서버 오류", if (lastError.isBlank()) "발견되지 않음" else "확인 필요",

@@ -18,6 +18,13 @@ internal object LauncherErrorCode {
         .joinToString("\n")
         .trim()
 
+    fun recommendation(code: String): String = when (code) {
+        "" -> ""
+        "PACKAGE_INDEX_FAILED" -> "Termux 패키지 목록을 갱신하지 못했습니다. 인터넷 연결과 상세 로그의 저장소 오류를 확인한 뒤 다시 시도해 주세요."
+        "ARCHIVE_TOOL_INSTALL_FAILED" -> "ZIP 압축 도구 설치에 실패했습니다. 상세 로그의 패키지 오류를 확인해 주세요. Termux에서 apt-get update && apt-get install zip unzip 실행 결과도 확인할 수 있습니다."
+        else -> "오류 코드와 작업명을 함께 전달하면 문제 확인이 더 빨라집니다."
+    }
+
     private fun fallback(exitCode: Int, androidErrorCode: Int): String = when (exitCode) {
         2 -> "UNSUPPORTED_BRANCH"
         3 -> "INSTALL_PATH_EXISTS"
@@ -75,6 +82,7 @@ internal object LauncherErrorCode {
         62 -> "NODE_RUNTIME_FAILED"
         63 -> "NPM_RUNTIME_FAILED"
         64 -> "INVALID_ARGUMENT"
+        65 -> "ARCHIVE_TOOL_INSTALL_FAILED"
         130 -> "OPERATION_CANCELLED"
         else -> if (androidErrorCode != Activity.RESULT_OK) "TERMUX_COMMAND_FAILED" else "UNKNOWN_COMMAND_FAILURE"
     }

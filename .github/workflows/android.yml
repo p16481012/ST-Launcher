@@ -59,6 +59,7 @@ jobs:
             bash scripts/test-import-ambiguous-native.sh
             bash scripts/test-install-validation.sh
             bash scripts/test-install-prerequisites.sh
+            bash scripts/test-archive-prerequisites.sh
             bash scripts/test-restore-recovery.sh
             bash scripts/test-restore-work-collision.sh
             bash scripts/test-backup-create.sh
