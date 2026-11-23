@@ -2,7 +2,10 @@ package app.tavernbridge.launcher.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.Process
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,19 +17,22 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -90,7 +96,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
@@ -101,7 +106,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -110,10 +114,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
@@ -132,6 +140,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.BuildConfig
+import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupArchive
@@ -162,17 +171,9 @@ import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import app.tavernbridge.launcher.ui.components.WorkElapsedTime
 import app.tavernbridge.launcher.ui.components.FollowLogTail
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
+import app.tavernbridge.launcher.ui.theme.serverStatusIndicatorColor
 import kotlinx.coroutines.delay
 import java.util.Locale
-
-private data class Confirmation(
-    val title: String,
-    val description: String,
-    val confirmLabel: String,
-    val action: () -> Unit,
-    val backupAction: ((Boolean) -> Unit)? = null,
-    val withoutBackupLabel: String = "백업 없이 복원",
-)
 
 internal fun formatUiText(text: String, keepWordsTogether: Boolean): String {
     val sentenceWrapped = text.replace(Regex("""(?<=\.)[ \t]+(?=[가-힣])"""), "\n")
@@ -204,7 +205,7 @@ private fun Text(
         text = formatUiText(
             text = text,
             keepWordsTogether = fontFamily != FontFamily.Monospace &&
-                style.fontFamily != FontFamily.Monospace,
+                style.fontFamily != FontFamily.Monospace && LocalDensity.current.fontScale < 1.3f,
         ),
         modifier = modifier,
         color = color,
@@ -272,8 +273,10 @@ fun LauncherApp(viewModel: LauncherViewModel) {
 @Composable
 private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewModel) {
     BackupTransferHost(state.backupTransfer, viewModel)
+    val context = LocalContext.current
+    val largeText = LocalDensity.current.fontScale >= 1.3f
     val snackbarHostState = remember { SnackbarHostState() }
-    var confirmation by remember { mutableStateOf<Confirmation?>(null) }
+    var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
     var selectedBrowserPackage by rememberSaveable { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -288,8 +291,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     title = "이 ZIP에서 바로 복원할까요?",
                     description = "압축을 한 번만 풀어 구조와 용량을 검사한 뒤 복원합니다. 같은 항목의 현재 데이터는 백업 내용으로 교체되므로, 백업 이후 생긴 대화도 사라질 수 있습니다. 실패 시 복구용 임시 사본은 성공 후 삭제됩니다. 원본 ZIP은 변경하지 않습니다. 서버를 먼저 종료해 주세요.",
                     confirmLabel = "검사 후 복원",
-                    action = { viewModel.importBackup(uri) },
-                    backupAction = if (state.environment.sillyTavernInstalled) ({ backup -> viewModel.importBackup(uri, backup) }) else null,
+                    action = ConfirmationAction.IMPORT_BACKUP,
+                    arguments = listOf(uri.toString()),
+                    allowBackup = state.environment.sillyTavernInstalled,
                 )
             }
         }
@@ -314,6 +318,22 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             .onFailure { viewModel.showMessage("파일 선택 화면을 열 수 없습니다. 잠시 후 다시 시도해 주세요.") }
         Unit
     }
+    val requestBranchSwitch: (SillyBranch) -> Unit = { branch ->
+        val modified = state.environment.modifiedFiles
+        val risk = when {
+            branch == SillyBranch.RELEASE && state.environment.branch == SillyBranch.STAGING -> context.getString(R.string.ui_branch_release_warning)
+            branch == SillyBranch.STAGING -> context.getString(R.string.ui_branch_staging_warning)
+            else -> ""
+        }
+        confirmation = Confirmation(
+            title = context.getString(R.string.ui_branch_change_question, branch.label),
+            description = listOf(risk, if (modified.isEmpty()) context.getString(R.string.ui_branch_keep_description)
+                else context.getString(R.string.ui_branch_modified_description, modified.joinToString("\n"))).filter(String::isNotBlank).joinToString("\n\n"),
+            confirmLabel = context.getString(R.string.ui_branch_change),
+            action = ConfirmationAction.SWITCH_BRANCH,
+            arguments = listOf(branch.value),
+        )
+    }
 
     LaunchedEffect(state.message, state.error, state.lastOperationResult) {
         val notice = state.error ?: state.message
@@ -330,24 +350,44 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
 
     confirmation?.let { pending ->
-        var backupBefore by remember(pending) { mutableStateOf(true) }
         AlertDialog(
             onDismissRequest = { confirmation = null },
             title = { Text(pending.title) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(pending.description)
-                    if (pending.backupAction != null) ReplacementBackupChoice(backupBefore) { backupBefore = it }
+                    if (pending.allowBackup) ReplacementBackupChoice(pending.backupBefore) {
+                        confirmation = pending.copy(backupBefore = it)
+                    }
                 }
             },
             confirmButton = {
                 Button(onClick = {
                     confirmation = null
-                    pending.backupAction?.invoke(backupBefore) ?: pending.action()
-                }) { Text(if (pending.backupAction != null && !backupBefore) pending.withoutBackupLabel else pending.confirmLabel) }
+                    if (ConfirmationCodec.decode(ConfirmationCodec.encode(pending)) == null) {
+                        viewModel.showMessage(context.getString(R.string.ui_confirmation_expired))
+                    } else when (pending.action) {
+                        ConfirmationAction.INSTALL -> {
+                            viewModel.selectInstallBranch(SillyBranch.entries.first { it.value == pending.arguments.single() })
+                            viewModel.install()
+                        }
+                        ConfirmationAction.UPDATE -> viewModel.update()
+                        ConfirmationAction.RESTORE_BACKUP -> viewModel.restoreBackup(pending.arguments.single(), pending.allowBackup && pending.backupBefore)
+                        ConfirmationAction.IMPORT_BACKUP -> {
+                            val uri = Uri.parse(pending.arguments.single())
+                            if (context.checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION) == PackageManager.PERMISSION_GRANTED) {
+                                viewModel.importBackup(uri, pending.allowBackup && pending.backupBefore)
+                            } else viewModel.showMessage(context.getString(R.string.ui_document_access_lost))
+                        }
+                        ConfirmationAction.DELETE_BACKUPS -> viewModel.deleteBackups(pending.arguments)
+                        ConfirmationAction.SWITCH_BRANCH -> viewModel.switchBranch(SillyBranch.entries.first { it.value == pending.arguments.single() })
+                        ConfirmationAction.REPAIR -> viewModel.repair()
+                        ConfirmationAction.RESET -> viewModel.resetInstallation(pending.allowBackup && pending.backupBefore)
+                    }
+                }, enabled = !state.isWorking) { Text(if (pending.allowBackup && !pending.backupBefore) pending.withoutBackupLabel else pending.confirmLabel) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmation = null }) { Text("취소") }
+                TextButton(onClick = { confirmation = null }) { Text(stringResource(R.string.ui_cancel)) }
             },
         )
     }
@@ -428,20 +468,21 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         )
     }
 
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val useRail = chooseLauncherNavigation(maxWidth.value) == LauncherNavigationMode.RAIL
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                modifier = Modifier.statusBarsPadding(),
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
                 title = {
                     Column {
-                        Text("실리태번 런처", style = MaterialTheme.typography.titleLarge)
-                        Text(
+                        Text("실리태번 런처", style = if (largeText) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge)
+                        if (!largeText) Text(
                             "비공식 Termux 런처",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium,
@@ -456,7 +497,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             )
         },
         bottomBar = {
-            NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+            if (!useRail) NavigationBar {
                 MainSection.entries.forEach { section ->
                     NavigationBarItem(
                         selected = state.section == section,
@@ -471,9 +512,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .consumeWindowInsets(padding),
         ) {
-            AnimatedContent(targetState = state.section, label = "section") { section ->
+            Row(Modifier.fillMaxSize()) {
+            if (useRail) LauncherNavigationRail(state.section, viewModel::selectSection, { it.icon() })
+            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+            AnimatedContent(targetState = state.section, label = "section",
+                modifier = Modifier.widthIn(max = 840.dp).fillMaxSize()) { section ->
                 when (section) {
                     MainSection.HOME -> HomeScreen(
                         state = state,
@@ -533,7 +579,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                         "다음 수정 내용을 별도 안전 파일로 보관한 뒤 Git 작업 트리에서는 제거하고 업데이트합니다. 수정 내용은 자동으로 다시 적용되지 않습니다.\n\n${modifiedFiles.joinToString("\n")}"
                                     },
                                     confirmLabel = if (modifiedFiles.isEmpty()) "업데이트" else "보관 후 진행",
-                                    action = viewModel::update,
+                                    action = ConfirmationAction.UPDATE,
                                 )
                             },
                             onCreateBackup = viewModel::createBackup,
@@ -553,8 +599,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     title = "이 백업으로 복원할까요?",
                                     description = backupRestorePreview(backup, state.environment.sillyTavernVersion),
                                     confirmLabel = "안전하게 복원",
-                                    action = { viewModel.restoreBackup(backup.fileName) },
-                                    backupAction = if (state.environment.sillyTavernInstalled) ({ protect -> viewModel.restoreBackup(backup.fileName, protect) }) else null,
+                                    action = ConfirmationAction.RESTORE_BACKUP,
+                                    arguments = listOf(backup.fileName),
+                                    allowBackup = state.environment.sillyTavernInstalled,
                                 )
                             },
                             onDeleteBackups = { backups ->
@@ -562,32 +609,17 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     title = "선택한 백업 ${backups.size}개를 삭제할까요?",
                                     description = "총 ${formatBackupBytes(backups.sumOf { it.sizeBytes })}의 ZIP을 휴대폰 Download 폴더에서 삭제합니다. 삭제한 파일은 앱에서 복구할 수 없습니다.",
                                     confirmLabel = "선택 항목 삭제",
-                                    action = { viewModel.deleteBackups(backups.map { it.fileName }) },
+                                    action = ConfirmationAction.DELETE_BACKUPS,
+                                    arguments = backups.map { it.fileName },
                                 )
                             },
-                            onSwitchBranch = { branch ->
-                                val modifiedFiles = state.environment.modifiedFiles
-                                confirmation = Confirmation(
-                                    title = if (modifiedFiles.isEmpty()) {
-                                        "${branch.label}로 변경할까요?"
-                                    } else {
-                                        "수정된 파일이 있어도 ${branch.label}로 변경할까요?"
-                                    },
-                                    description = if (modifiedFiles.isEmpty()) {
-                                        "실행 중이라면 종료한 뒤 현재 설치를 안전 보관하고 브랜치를 변경합니다."
-                                    } else {
-                                        "다음 수정 내용을 전체 안전 백업에 보관한 뒤 Git 작업 트리에서는 제거하고 브랜치를 변경합니다. 수정 내용은 자동으로 다시 적용되지 않습니다.\n\n${modifiedFiles.joinToString("\n")}"
-                                    },
-                                    confirmLabel = if (modifiedFiles.isEmpty()) "브랜치 변경" else "보관 후 변경",
-                                    action = { viewModel.switchBranch(branch) },
-                                )
-                            },
+                            onSwitchBranch = requestBranchSwitch,
                             onRepair = {
                                 confirmation = Confirmation(
                                     title = "설치 패키지를 점검·복구할까요?",
                                     description = "캐릭터·대화·설정은 유지하고 Termux 도구와 node_modules를 다시 구성합니다. 서버는 먼저 종료해 주세요.",
                                     confirmLabel = "점검·복구",
-                                    action = viewModel::repair,
+                                    action = ConfirmationAction.REPAIR,
                                 )
                             },
                             onResetInstallation = {
@@ -597,8 +629,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     title = "SillyTavern을 완전히 초기화할까요?",
                                     description = "현재 캐릭터·채팅·설정·확장 프로그램을 제거하고 같은 브랜치를 새로 설치합니다. 재설치가 실패하면 현재 설치로 자동 복구하며, 휴대폰 Download의 ZIP 백업은 삭제하지 않습니다. 서버를 먼저 종료해 주세요.\n\n최근 사용자 데이터 백업 생성 기록: $backupDate\n생성 기록만으로 파일이 남아 있다고 보장하지는 않습니다.",
                                     confirmLabel = "초기화 후 재설치",
-                                    action = { viewModel.resetInstallation() },
-                                    backupAction = viewModel::resetInstallation,
+                                    action = ConfirmationAction.RESET,
+                                    allowBackup = true,
                                     withoutBackupLabel = "백업 없이 초기화",
                                 )
                             },
@@ -620,10 +652,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     title = "${state.selectedInstallBranch.label}를 설치할까요?",
                                     description = "기존 ~/SillyTavern 폴더가 있으면 설치를 중단하며 데이터를 덮어쓰지 않습니다.",
                                     confirmLabel = "설치",
-                                    action = viewModel::install,
+                                    action = ConfirmationAction.INSTALL,
+                                    arguments = listOf(state.selectedInstallBranch.value),
                                 )
                             },
-                            onSwitchBranch = viewModel::switchBranch,
+                            onSwitchBranch = requestBranchSwitch,
                             onBackup = viewModel::backup,
                             onPickInstallation = pickInstallation,
                             onInspectInstallation = viewModel::inspectExistingInstallation,
@@ -662,6 +695,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 }
             }
 
+            }
+            }
             if (state.safetyInventory.open && !state.isWorking) {
                 SafetyInventoryDialog(
                     state = state.safetyInventory,
@@ -708,6 +743,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 )
             }
         }
+    }
     }
 }
 
@@ -758,6 +794,7 @@ private fun HomeScreen(
             }
         }
         if (state.environmentChecked && environment.sillyTavernInstalled && !environment.recoveryPending) {
+            if (environment.processRunning) {
             item {
                 QuickAction(
                     modifier = Modifier.fillMaxWidth(),
@@ -765,6 +802,7 @@ private fun HomeScreen(
                     label = "서버 재시작",
                     onClick = onRestart,
                 )
+            }
             }
             item {
                 ServerSessionCard(environment)
@@ -947,9 +985,10 @@ private fun ServerHeroCard(
 ) {
     val readiness = environment.serverReadiness
     val online = readiness == ServerReadiness.READY
+    val containerColor = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+            containerColor = containerColor,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = if (online) 0.dp else 1.dp),
         shape = RoundedCornerShape(28.dp),
@@ -960,7 +999,7 @@ private fun ServerHeroCard(
                     Modifier
                         .size(11.dp)
                         .clip(CircleShape)
-                        .background(if (online) Color(0xFF9AE6B4) else MaterialTheme.colorScheme.outline),
+                        .background(serverStatusIndicatorColor(readiness, containerColor)),
                 )
                 Spacer(Modifier.width(9.dp))
                 Text(
@@ -1042,7 +1081,7 @@ private fun ServerHeroCard(
 private fun QuickAction(modifier: Modifier, icon: ImageVector, label: String, onClick: () -> Unit) {
     FilledTonalButton(
         onClick = onClick,
-        modifier = modifier.height(52.dp),
+        modifier = modifier.heightIn(min = 52.dp),
         shape = RoundedCornerShape(16.dp),
     ) {
         Icon(icon, null)
@@ -1104,14 +1143,7 @@ private fun ServerSessionCard(environment: EnvironmentStatus) {
 
 @Composable
 private fun InfoRow(label: String, value: String, monospace: Boolean = false) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(
-            value,
-            fontWeight = FontWeight.SemiBold,
-            fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
-        )
-    }
+    AdaptiveInfoRow(label, value, monospace)
 }
 
 @Composable
@@ -1151,16 +1183,8 @@ private fun DirectSpinner(
     modifier: Modifier = Modifier,
     strokeWidth: Dp = 2.dp,
 ) {
-    var rotation by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(16)
-            rotation = (rotation + 7f) % 360f
-        }
-    }
     CircularProgressIndicator(
-        progress = { .72f },
-        modifier = modifier.graphicsLayer { rotationZ = rotation },
+        modifier = modifier,
         strokeWidth = strokeWidth,
     )
 }
@@ -1512,19 +1536,8 @@ private fun ManagementScreen(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("관리", style = MaterialTheme.typography.displaySmall)
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                ManagementPanel.entries.forEach { panel ->
-                    FilterChip(
-                        selected = selectedPanel == panel,
-                        onClick = { onSelectPanel(panel) },
-                        label = { Text(panel.label) },
-                    )
-                }
-            }
+            Text("관리", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+            SectionTabs(ManagementPanel.entries, selectedPanel, onSelectPanel) { it.label }
         }
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -1562,17 +1575,7 @@ private fun ManagementScreen(
             Card(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text("설치 유지관리", style = MaterialTheme.typography.titleLarge)
-                    Text("브랜치 변경", style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SillyBranch.entries.forEach { branch ->
-                            FilterChip(
-                                selected = environment.branch == branch,
-                                enabled = environment.branch != branch,
-                                onClick = { onSwitchBranch(branch) },
-                                label = { Text(branch.label) },
-                            )
-                        }
-                    }
+                    BranchChangeButtons(environment.branch, onSwitchBranch, enabled = !state.isWorking)
                     HorizontalDivider()
                     Text(
                         "오류가 반복될 때 사용자 데이터는 유지하고 Termux 도구와 실행 패키지만 다시 구성합니다.",
@@ -1588,25 +1591,11 @@ private fun ManagementScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(if (environment.processRunning) "서버 종료 후 점검·복구" else "설치 점검·복구")
                     }
-                    HorizontalDivider()
-                    Text("SillyTavern 초기화", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "현재 데이터를 비우고 같은 브랜치를 새로 설치합니다. Download 폴더의 백업 ZIP은 유지됩니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    OutlinedButton(
-                        onClick = onResetInstallation,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !environment.processRunning,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    ) {
-                        Icon(Icons.Outlined.RestartAlt, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (environment.processRunning) "서버 종료 후 초기화" else "초기화 후 재설치")
-                    }
                 }
             }
+        }
+        item(key = "dangerous_installation_actions") {
+            DangerousInstallationActions(environment.processRunning, enabled = !state.isWorking, onReset = onResetInstallation)
         }
             }
 
@@ -2284,17 +2273,7 @@ private fun ExistingInstallCard(
                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .76f),
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .12f))
-            Text("브랜치 변경", style = MaterialTheme.typography.titleMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SillyBranch.entries.forEach { branch ->
-                    FilterChip(
-                        selected = environment.branch == branch,
-                        enabled = enabled && environment.branch != branch,
-                        onClick = { onSwitchBranch(branch) },
-                        label = { Text(branch.label) },
-                    )
-                }
-            }
+            BranchChangeButtons(environment.branch, onSwitchBranch, enabled)
             Button(
                 onClick = onBackup,
                 enabled = enabled,
@@ -2348,19 +2327,8 @@ private fun DiagnosticsScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("진단", style = MaterialTheme.typography.displaySmall)
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            DiagnosticPanel.entries.forEach { panel ->
-                FilterChip(
-                    selected = state.diagnosticPanel == panel,
-                    onClick = { onSelectPanel(panel) },
-                    label = { Text(panel.label) },
-                )
-            }
-        }
+        Text("진단", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+        SectionTabs(DiagnosticPanel.entries, state.diagnosticPanel, onSelectPanel) { it.label }
 
         if (state.diagnosticPanel == DiagnosticPanel.OVERVIEW) {
             DiagnosticOverview(
@@ -2644,19 +2612,8 @@ private fun SettingsScreen(
     ) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("설정", style = MaterialTheme.typography.displaySmall)
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SettingsPanel.entries.forEach { panel ->
-                        FilterChip(
-                            selected = selectedPanel == panel,
-                            onClick = { onSelectPanel(panel) },
-                            label = { Text(panel.label) },
-                        )
-                    }
-                }
+                Text("설정", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+                SectionTabs(SettingsPanel.entries, selectedPanel, onSelectPanel) { it.label }
             }
         }
         if (selectedPanel == SettingsPanel.BATTERY) {
@@ -2935,16 +2892,20 @@ private fun WorkingOverlay(
     cancellationRequested: Boolean,
     onCancel: () -> Unit,
 ) {
-    var collapsed by remember { mutableStateOf(false) }
-    var spinnerRotation by remember { mutableFloatStateOf(0f) }
+    var collapsed by rememberSaveable(startedAtMillis) { mutableStateOf(false) }
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
     val finalizing = progress?.status == "success" && !finalConfirmation
     val measuredPercent = progress?.measuredPercent.takeUnless { finalizing }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(16)
-            spinnerRotation = (spinnerRotation + 7f) % 360f
-        }
+    val largeText = LocalDensity.current.fontScale >= 1.3f
+    val fallbackPhase = stringResource(R.string.ui_processing)
+    val phase = if (finalizing) stringResource(R.string.ui_finalizing) else progress?.phase?.takeIf(String::isNotBlank)
+        ?: label.takeIf(String::isNotBlank) ?: fallbackPhase
+    val measuredCount = if (finalizing) "" else when {
+        progress?.progressMode == "bytes" && progress.totalBytes > 0 ->
+            "${formatBackupBytes(progress.completedBytes.coerceIn(0, progress.totalBytes))} / ${formatBackupBytes(progress.totalBytes)}"
+        progress?.progressMode == "files" && progress.totalFiles > 0 ->
+            stringResource(R.string.ui_progress_files, progress.completedFiles.coerceIn(0, progress.totalFiles), progress.totalFiles)
+        else -> ""
     }
     if (collapsed) {
         Box(
@@ -2953,14 +2914,22 @@ private fun WorkingOverlay(
                 .padding(20.dp),
             contentAlignment = Alignment.BottomEnd,
         ) {
-            SmallFloatingActionButton(onClick = { collapsed = false }) {
-                Icon(
-                    Icons.Outlined.KeyboardArrowUp,
-                    contentDescription = "진행창 펼치기",
-                )
+            Card(modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth().clickable { collapsed = false },
+                shape = RoundedCornerShape(20.dp)) {
+                Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(phase, fontWeight = FontWeight.SemiBold)
+                        WorkElapsedTime(startedAtMillis)
+                        if (measuredCount.isNotBlank()) Text(measuredCount, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Icon(Icons.Outlined.KeyboardArrowUp, stringResource(R.string.ui_expand_progress))
+                }
             }
         }
-    } else Box(
+    } else Dialog(
+        onDismissRequest = {},
+        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false),
+    ) { Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.scrim.copy(alpha = .36f)),
@@ -2968,8 +2937,9 @@ private fun WorkingOverlay(
     ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 28.dp),
+                .padding(horizontal = 24.dp, vertical = 24.dp)
+                .widthIn(max = 640.dp)
+                .fillMaxWidth(),
             shape = RoundedCornerShape(22.dp),
             tonalElevation = 6.dp,
         ) {
@@ -2981,26 +2951,20 @@ private fun WorkingOverlay(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(
-                        progress = { .72f },
-                        modifier = Modifier
-                            .size(24.dp)
-                            .graphicsLayer { rotationZ = spinnerRotation },
+                        modifier = Modifier.size(24.dp),
                         strokeWidth = 3.dp,
                     )
                     Spacer(Modifier.width(12.dp))
-                    Text(
-                        if (finalizing) "마무리 확인 중" else progress?.phase?.ifBlank { label }
-                            ?: label.ifBlank { "처리 중" },
-                        modifier = Modifier.weight(1f),
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    if (!largeText) Text(phase, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    else Spacer(Modifier.weight(1f))
                     if (measuredPercent != null) {
-                        Text("${measuredPercent}%", fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.ui_progress_percent, measuredPercent), fontWeight = FontWeight.Bold)
                     }
                     IconButton(onClick = { collapsed = true }) {
-                        Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "진행창 접기")
+                        Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = stringResource(R.string.ui_collapse_progress))
                     }
                 }
+                if (largeText) Text(phase, fontWeight = FontWeight.SemiBold)
                 if (measuredPercent != null) {
                     LinearProgressIndicator(
                         progress = { measuredPercent / 100f },
@@ -3016,6 +2980,7 @@ private fun WorkingOverlay(
                 }
             }
         }
+    }
     }
 }
 
