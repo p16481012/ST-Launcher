@@ -31,9 +31,8 @@ internal class SharedImportStaging(private val context: Context) {
 
     /** Publish a tiny app-owned file so the other app must prove actual read access. */
     suspend fun <T> withReadProbe(action: suspend (ReadProbe) -> T): T = withContext(Dispatchers.IO) {
-        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            "[SHARED_STORAGE_PROBE_UNSUPPORTED]\n실제 공유 파일 접근 검사는 Android 10 이상에서 지원합니다. Android 9 이하는 Termux 저장소 권한을 직접 확인해 주세요."
-        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) throw IllegalStateException(
+            "[SHARED_STORAGE_PROBE_UNSUPPORTED]\n실제 공유 파일 접근 검사는 Android 10 이상에서 지원합니다. Android 9 이하는 Termux 저장소 권한을 직접 확인해 주세요.")
         currentCoroutineContext().ensureActive()
         currentCoroutineContext().operationCancellationControl()?.checkpoint()
         val name = "SillyTavern-Probe-${UUID.randomUUID()}.txt"

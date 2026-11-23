@@ -14,7 +14,7 @@ expect_exit() {
     if [[ "$actual" != "$expected" ]]; then cat "$TEST_ROOT/last-output" >&2; fail "expected $expected, got $actual"; fi
 }
 assert_clean() {
-    [[ -z "$(find "$TEST_ROOT/backups" -mindepth 1 -maxdepth 1 -name '.st-safety-*' -print)" ]] || fail 'partial safety archive directory remains'
+    [[ -z "$(find "$TEST_ROOT/backups" -mindepth 1 -maxdepth 1 -name '.st-safety-*' ! -name '.st-safety-complete.json' -print)" ]] || fail 'partial safety archive directory remains'
 }
 mkdir -p "$TEST_ROOT/SillyTavern/data/empty-dir" "$TEST_ROOT/SillyTavern/.git" "$TEST_ROOT/SillyTavern/node_modules" "$TEST_ROOT/backups"
 export ST_PROGRESS_FILE="$(native_path "$TEST_ROOT/progress.env")"
@@ -46,6 +46,13 @@ bash "$WORKER" "$TEST_ROOT/SillyTavern" "$TEST_ROOT/backups/contents.tar.gz" > "
 [[ "$(value completed_files)" == 143 && "$(value total_files)" == 143 ]] || fail 'file count mismatch'
 [[ "$(value status)" == running && "$(value operation_started_at)" == 12345 ]] || fail 'operation identity/result changed'
 grep -Fq 'safety_backup_b64=' "$TEST_ROOT/result" || fail 'missing result protocol'
+node --input-type=commonjs - "$TEST_ROOT/backups" <<'NODE'
+const fs=require('fs'),path=require('path'),assert=require('assert'),parent=process.argv[2];
+const record=JSON.parse(fs.readFileSync(path.join(parent,'.st-safety-complete.json'),'utf8'));
+const archive=fs.statSync(path.join(parent,'contents.tar.gz'),{bigint:true});
+assert.equal(record.format,'st-launcher-safety-complete-v1');assert.equal(record.file,'contents.tar.gz');
+for(const key of ['dev','ino','size','mtimeNs'])assert.equal(record[key],archive[key].toString());
+NODE
 grep -Fq '파일 143/143개' "$TEST_ROOT/activity.log" || fail 'measured activity log missing'
 grep -Fq '압축 파일의 마무리' "$TEST_ROOT/activity.log" || fail 'gzip completion wait was not logged'
 grep -Fq '원본 변경 여부와 저장 결과를 검증' "$TEST_ROOT/activity.log" || fail 'same-mode verification transition was not logged'
