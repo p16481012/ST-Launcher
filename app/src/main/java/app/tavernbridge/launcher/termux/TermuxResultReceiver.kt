@@ -8,10 +8,14 @@ import android.os.Bundle
 class TermuxResultReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null) return
+        val callbackId = verifiedTermuxCallbackId(
+            intent.dataString, intent.getStringExtra(TermuxContract.EXTRA_CALLBACK_ID),
+        ) ?: return
+        if (!TermuxResultBus.callbacks.isAwaiting(callbackId)) return
 
         val resultBundle = intent.getBundleExtra(TermuxContract.EXTRA_RESULT_BUNDLE)
         val result = TermuxResultDecoder.decode(
-            callbackId = intent.getStringExtra(TermuxContract.EXTRA_CALLBACK_ID).orEmpty(),
+            callbackId = callbackId,
             bundle = resultBundle?.resultFields(),
             legacyExtras = intent.extras?.resultFields().orEmpty(),
         )

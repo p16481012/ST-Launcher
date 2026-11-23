@@ -22,6 +22,8 @@ internal object LauncherErrorCode {
         "" -> ""
         "PACKAGE_INDEX_FAILED" -> "Termux 패키지 목록을 갱신하지 못했습니다. 인터넷 연결과 상세 로그의 저장소 오류를 확인한 뒤 다시 시도해 주세요."
         "ARCHIVE_TOOL_INSTALL_FAILED" -> "ZIP 압축 도구 설치에 실패했습니다. 상세 로그의 패키지 오류를 확인해 주세요. Termux에서 apt-get update && apt-get install zip unzip 실행 결과도 확인할 수 있습니다."
+        "PROCESS_KILLED" -> "작업 프로세스가 강제 종료됐습니다. 먼저 점검·복구로 남은 작업을 확인해 주세요. 메모리 부족이나 Android의 백그라운드 제한, Android 12 이상의 하위 프로세스(phantom process) 제한 등이 원인일 수 있습니다. 종료 코드만으로 원인을 확정할 수 없으며, 반복되면 Termux 공식 안내와 기기의 배터리 제한 설정을 확인해 주세요."
+        "TERMUX_COMMAND_TOO_LARGE" -> "한 번에 전달할 항목이 너무 많습니다. 선택 항목을 나누어 다시 시도해 주세요."
         else -> "오류 코드와 작업명을 함께 전달하면 문제 확인이 더 빨라집니다."
     }
 
@@ -84,6 +86,7 @@ internal object LauncherErrorCode {
         64 -> "INVALID_ARGUMENT"
         65 -> "ARCHIVE_TOOL_INSTALL_FAILED"
         130 -> "OPERATION_CANCELLED"
+        137 -> "PROCESS_KILLED"
         else -> if (androidErrorCode != Activity.RESULT_OK) "TERMUX_COMMAND_FAILED" else "UNKNOWN_COMMAND_FAILURE"
     }
 }

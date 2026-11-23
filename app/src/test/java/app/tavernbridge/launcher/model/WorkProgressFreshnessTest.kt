@@ -24,12 +24,16 @@ class WorkProgressFreshnessTest {
     @Test
     fun rejectsUnknownTimestampAndUnrelatedOperation() {
         assertFalse(progress("import-backup", 0L).belongsToStartedOperation("import-backup", 100_000L))
-        assertFalse(progress("backup", 101_000L).belongsToStartedOperation("import-backup", 100_000L))
+        assertFalse(progress("backup", 101_000L).belongsToStartedOperation("install", 100_000L))
         assertFalse(progress("import-backup", 100_000L).belongsToStartedOperation("import-backup", 0L))
     }
 
     @Test
     fun acceptsOnlyKnownCompositeWorkflowSteps() {
+        listOf("restore", "import-backup", "import-install").forEach {
+            assertTrue(progress("backup", 100_000L).belongsToStartedOperation(it, 100_000L))
+            assertFalse(progress("backup", 90_000L).belongsToStartedOperation(it, 100_000L))
+        }
         listOf("stop", "backup", "update", "start").forEach {
             assertTrue(progress(it, 100_000L).belongsToStartedOperation("update", 100_000L))
         }

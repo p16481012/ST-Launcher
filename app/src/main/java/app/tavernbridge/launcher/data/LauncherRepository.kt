@@ -37,6 +37,7 @@ import app.tavernbridge.launcher.model.UpdatePreflight
 import app.tavernbridge.launcher.model.UpdateRecord
 import app.tavernbridge.launcher.model.TavernFileEntry
 import app.tavernbridge.launcher.model.ExistingInstallation
+import app.tavernbridge.launcher.model.InstallationImportMode
 import app.tavernbridge.launcher.model.TavernTextFile
 import app.tavernbridge.launcher.model.TermuxSetupState
 import app.tavernbridge.launcher.model.TermuxSetupStatus
@@ -57,6 +58,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
@@ -65,6 +70,11 @@ class LauncherRepository(private val context: Context) {
     private val backupRequestStore = BackupRequestStore(context)
     @Volatile private var localOperationProgress: WorkProgress? = null
     @Volatile private var termuxSetup = TermuxSetupState()
+    private val managerDeploymentLock = Mutex()
+    private var managerDeployed = false
+    private val bundledManagerAssets by lazy {
+        managerAssetNames.associateWith { name -> context.assets.open(name).bufferedReader().use { it.readText() } }
+    }
 
     companion object {
         private const val SYSTEM_URL_HANDLER = "@android-system"
@@ -275,8 +285,9 @@ class LauncherRepository(private val context: Context) {
         categories: Set<BackupCategory>,
         includeSecrets: Boolean,
         customFolders: Set<String>,
+        parentOperation: String = "",
     ): TermuxCommandResult = createBackup(BackupRequest(UUID.randomUUID().toString(), categories,
-        includeSecrets, customFolders))
+        includeSecrets, customFolders, parentOperation))
 
     suspend fun createBackup(request: BackupRequest): TermuxCommandResult {
         require(BackupRequestCodec.decode(BackupRequestCodec.encode(request)) == request) {
@@ -296,12 +307,14 @@ class LauncherRepository(private val context: Context) {
     suspend fun listBackups(): List<BackupArchive> {
         val result = runManager("list-backups", timeoutMillis = 2 * 60_000L)
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
+        check(!result.stdoutTruncated) { "백업 목록이 통신 중 잘렸습니다. Download 폴더에서 백업을 확인해 주세요." }
         return BackupOutputParser.parse(result.stdout)
     }
 
     suspend fun listUserBackupFolders(): List<CustomBackupFolder> {
         val result = runManager("list-user-folders", timeoutMillis = 30_000)
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
+        check(!result.stdoutTruncated) { "사용자 폴더 목록이 통신 중 잘렸습니다. 폴더를 정리한 뒤 다시 확인해 주세요." }
         return result.stdout.lineSequence().mapNotNull { line ->
             val fields = line.split('\t')
             if (fields.size != 2 || fields[0] != "folder") return@mapNotNull null
@@ -371,8 +384,8 @@ class LauncherRepository(private val context: Context) {
         return inspectExistingInstallation(localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri)))
     }
 
-    suspend fun importExistingInstallation(path: String): TermuxCommandResult =
-        runManager("import-install ${shellQuote(encodeFileArgument(path))}", 45 * 60_000L)
+    suspend fun importExistingInstallation(path: String, mode: InstallationImportMode, replaceExisting: Boolean): TermuxCommandResult =
+        runManager("import-install ${shellQuote(encodeFileArgument(path))} ${mode.argument} ${if (replaceExisting) "replace" else "empty"}", 45 * 60_000L)
 
     // Cancelling the selection must never delete the selected original installation.
     @Suppress("UNUSED_PARAMETER")
@@ -951,7 +964,10 @@ class LauncherRepository(private val context: Context) {
     private suspend fun runManager(arguments: String, timeoutMillis: Long, backupRequestId: String = ""): TermuxCommandResult {
         try {
             requireManagerAccess(arguments)
-            return runManagedCommand(arguments, timeoutMillis, managerBootstrapCommand() + " && ", backupRequestId)
+            ensureManagerDeployed()
+            return runManagedCommand(arguments, timeoutMillis, backupRequestId = backupRequestId).also {
+                if (it.exitCode == 126 || it.exitCode == 127) managerDeploymentLock.withLock { managerDeployed = false }
+            }
         } catch (error: Exception) {
             if (arguments == "doctor") recordEnvironmentCheckFailure(error)
             throw error
@@ -1000,13 +1016,42 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
-    private fun managerBootstrapCommand(): String {
-        return createManagerBundleBootstrapCommand(
-            TermuxContract.MANAGER_PATH.substringBeforeLast('/'),
-            managerAssetNames.associateWith { name ->
-                context.assets.open(name).bufferedReader().use { it.readText() }
-            },
-        )
+    private suspend fun ensureManagerDeployed() = managerDeploymentLock.withLock {
+        if (managerDeployed) return@withLock
+        operationCheckpoint()
+        val deployment = createManagerDeployment(TermuxContract.MANAGER_PATH.substringBeforeLast('/'),
+            bundledManagerAssets, UUID.randomUUID().toString())
+        val probe = runRawBash(deployment.probe, "관리 도구 확인", "관리 스크립트 무결성 확인", 30_000)
+        check(probe.isSuccess) { probe.readableError() }
+        if (probe.stdout.lineSequence().none { it == "assets_ready=1" }) {
+            val transfer = ManagerDeploymentState()
+            try {
+                for ((index, command) in deployment.commands.withIndex()) {
+                    operationCheckpoint()
+                    transfer.dispatching()
+                    val result = runRawBash(command, "관리 도구 준비", "관리 스크립트 전송", 30_000)
+                    transfer.acknowledged(createsStaging = index == 0, succeeded = result.isSuccess,
+                        removesStaging = index == deployment.commands.lastIndex)
+                    check(result.isSuccess) { result.readableError() }
+                }
+                val verified = runRawBash(deployment.probe, "관리 도구 확인", "전송 결과 검증", 30_000)
+                check(verified.isSuccess && verified.stdout.lineSequence().any { it == "assets_ready=1" }) {
+                    "관리 스크립트 전송 결과를 확인하지 못했습니다. 다시 시도해 주세요."
+                }
+            } finally {
+                if (transfer.canCleanStaging) withContext(NonCancellable) {
+                    // Preserve the original failure/cancellation; a cleanup callback is optional.
+                    // Never reach this while a chunk/install command may still be writing.
+                    runCatching {
+                        withTimeoutOrNull(5_000) {
+                            runRawBash(deployment.cleanup, "관리 도구 정리", "완료된 전송 임시 파일 정리",
+                                4_000, loginShell = false)
+                        }
+                    }
+                }
+            }
+        }
+        managerDeployed = true
     }
 
     private suspend fun stageTransfer(uri: Uri, backup: Boolean): SharedImportStaging.Transfer {
@@ -1108,7 +1153,7 @@ class LauncherRepository(private val context: Context) {
         loginShell: Boolean = true,
     ): TermuxCommandResult {
         val result = awaitTermuxCommandResult(callbackId, timeoutMillis, TermuxResultBus.results) {
-            executor.executeBash(callbackId, command, label, description, loginShell)
+            executor.executeBash(callbackId, checkedTermuxCommand(command), label, description, loginShell)
         }
         if (!result.isSuccess && TermuxSetupProbe.externalAppsDisabled(result.stderr + "\n" + result.errorMessage)) {
             termuxSetup = TermuxSetupProbe.failure(result.stderr + "\n" + result.errorMessage)

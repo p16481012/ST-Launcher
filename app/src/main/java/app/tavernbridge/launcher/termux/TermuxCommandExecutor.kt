@@ -5,15 +5,13 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
-import java.util.concurrent.atomic.AtomicInteger
 
 class TermuxCommandExecutor(private val context: Context) {
-    private val requestCodes = AtomicInteger(1000)
-
     fun isTermuxInstalled(): Boolean {
         return try {
             context.packageManager.getPackageInfo(TermuxContract.PACKAGE, 0)
@@ -36,16 +34,21 @@ class TermuxCommandExecutor(private val context: Context) {
         loginShell: Boolean = true,
     ) {
         val callbackIntent = Intent(context, TermuxResultReceiver::class.java).apply {
+            data = Uri.parse(termuxCallbackUri(callbackId))
             putExtra(TermuxContract.EXTRA_CALLBACK_ID, callbackId)
         }
-        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+        val pendingFlags = PendingIntent.FLAG_ONE_SHOT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
         val callback = PendingIntent.getBroadcast(
             context,
-            requestCodes.incrementAndGet(),
+            0, // The UUID data URI, not a process-local counter, identifies this request.
             callbackIntent,
             pendingFlags,
         )
+        if (!TermuxResultBus.callbacks.attachCancellation(callbackId) { callback.cancel() }) {
+            callback.cancel()
+            throw IllegalStateException("Termux callback has no active waiter")
+        }
 
         val runIntent = Intent(TermuxContract.ACTION_RUN_COMMAND).apply {
             component = ComponentName(TermuxContract.PACKAGE, TermuxContract.SERVICE_CLASS)

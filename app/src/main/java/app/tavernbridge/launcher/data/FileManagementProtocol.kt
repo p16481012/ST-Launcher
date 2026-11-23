@@ -57,6 +57,7 @@ internal object FileManagementProtocol {
             sizeBytes = values.getValue("source_bytes").toLong().also { require(it >= 0) },
             destinationPath = decode(values.getValue("destination_path_b64")),
             sameInstallation = values.getValue("same_installation") == "1",
+            destinationExists = values["destination_exists"] == "1",
         )
     }
 

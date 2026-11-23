@@ -190,6 +190,7 @@ manager_error_code() {
         *:64) echo "INVALID_ARGUMENT" ;;
         *:65) echo "ARCHIVE_TOOL_INSTALL_FAILED" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
+        *:137) echo "PROCESS_KILLED" ;;
         *) echo "UNKNOWN_COMMAND_FAILURE" ;;
     esac
 }
@@ -751,8 +752,10 @@ operation_cleanup() {
             code=25
         fi
     fi
-    if (( code != 0 )) && [[ "$CURRENT_OPERATION" == "reset-installation" ]]; then
-        if ! rollback_reset_installation; then RESTORE_RECOVERY_RETAINED=1; code=25; fi
+    if (( GIT_TRANSACTION_ACTIVE )); then
+        restore_interrupted=1
+        (( code == 0 )) && code=25
+        if ! rollback_git_transaction; then RESTORE_RECOVERY_RETAINED=1; code=25; fi
     fi
     if [[ "$progress_status" == "success" ]] && (( ! restore_interrupted )); then
         # A completed operation remains successful even if its result stream closes late.
@@ -991,14 +994,16 @@ install_dependencies() {
     enter_cancellation_guard
     echo "[launcher] Rebuilding Node modules..." >> "$LOG_FILE"
     record_processing "기존 Node 모듈 정리 시작 · 파일 수에 따라 시간이 걸리며 정리 명령의 완료를 기다립니다."
-    rm -rf "$ST_HOME/node_modules"
+    # An update preallocates and journals this replacement directory before
+    # moving old modules. Preserve its inode so SIGKILL recovery can identify it.
+    if ! git_transaction_modules_prepared; then rm -rf "$ST_HOME/node_modules"; fi
     record_processing "기존 Node 모듈 정리 완료"
 
     write_progress 55 "Node 모듈 설치" "필수 패키지를 내려받고 있습니다. 몇 분 걸릴 수 있어요."
     (
         cd "$ST_HOME"
         export NODE_ENV=production
-        npm install --no-save --no-audit --no-fund --loglevel=notice --no-progress --omit=dev --ignore-scripts
+        run_transaction_command npm install --no-save --no-audit --no-fund --loglevel=notice --no-progress --omit=dev --ignore-scripts
     ) >> "$LOG_FILE" 2>&1 &
     local npm_pid=$!
     local previous_count=-1
@@ -1691,6 +1696,33 @@ unsigned_decimal() {
     printf '%s\n' "$((10#$value))"
 }
 
+valid_backup_filename() {
+    local LC_ALL=C
+    [[ ${#1} -le 255 && "$1" =~ ^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}(-[0-9]+)?(\ \([0-9]+\))*\.zip$ ]]
+}
+
+read_backup_manifest() {
+    local archive="$1" encoded bytes manifest
+    [[ -f "$archive" && ! -L "$archive" ]] || return 1
+    # Inspect only the directory entry, not every payload. Duplicate metadata
+    # must not be concatenated by unzip, even if its combined size is small.
+    unzip -Z1 "$archive" .st-launcher-manifest 2>/dev/null |
+        awk '$0 != ".st-launcher-manifest" { invalid=1 } { count++ } END { exit (invalid || count != 1) }' || return 1
+    # Bound the decompressed stream BEFORE Bash stores it. Base64 preserves
+    # NULs and trailing newlines until the exact byte count has been checked.
+    encoded="$(unzip -p -P '' "$archive" .st-launcher-manifest 2>/dev/null | head -c 65537 | base64 -w 0)" || return 1
+    bytes=$(( ${#encoded} / 4 * 3 ))
+    case "$encoded" in *==) bytes=$((bytes - 2)) ;; *=) bytes=$((bytes - 1)) ;; esac
+    (( bytes > 0 && bytes <= 65536 )) || return 1
+    { manifest="$(printf '%s' "$encoded" | base64 -d; printf '.')"; } 2>/dev/null
+    manifest="${manifest%.}"
+    # Shell variables cannot represent NUL bytes; reject rather than silently
+    # accepting different metadata after command substitution strips them.
+    [[ "$(printf '%s' "$manifest" | base64 -w 0)" == "$encoded" ]] || return 1
+    backup_metadata_valid "$manifest" || return 1
+    printf '%s' "$manifest"
+}
+
 backup_metadata_valid() {
     local manifest="$1" field value
     [[ "$(printf '%s\n' "$manifest" | sed -n 's/^format=//p' | head -n 1)" == "st-launcher-backup-v1" ]] || return 1
@@ -1872,7 +1904,8 @@ backup_selected() {
     size="$(stat -c %s "$archive" 2>/dev/null || wc -c < "$archive")"
     # Preserve an unrelated file that appeared while compression was running.
     enter_cancellation_guard
-    while [[ -e "$output" ]]; do output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S)-$RANDOM.zip"; done
+    while [[ -e "$output" || -L "$output" ]]; do output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S)-$RANDOM.zip"; done
+    valid_backup_filename "${output##*/}" || backup_failure 59 "백업 파일 이름을 안전하게 생성하지 못했습니다."
     LC_ALL=C mv -n -- "$archive" "$output" 2> "$error_log" || backup_failure 59 "검증한 백업의 최종 저장에 실패했습니다." "$error_log"
     [[ ! -e "$archive" ]] || backup_failure 59 "백업 파일 이름이 충돌하여 기존 파일을 보호했습니다."
     rmdir "$CURRENT_BACKUP_OUTPUT_DIR"
@@ -1892,10 +1925,10 @@ list_backups() {
     available_restore_bytes="$(unsigned_decimal "${available_restore_bytes:-0}" || echo 0)"
     shopt -s nullglob
     for file in "$DOWNLOAD_DIR"/SillyTavern-Launcher-*.zip; do
+        valid_backup_filename "${file##*/}" || continue
         # Creation, import, and restore perform full integrity checks. Reading the embedded
         # manifest is enough for the list screen and avoids rescanning multi-gigabyte ZIPs.
-        manifest="$(unzip -p "$file" .st-launcher-manifest 2>/dev/null || true)"
-        backup_metadata_valid "$manifest" || continue
+        manifest="$(read_backup_manifest "$file")" || continue
         format="$(printf '%s\n' "$manifest" | sed -n 's/^format=//p' | head -n 1)"
         [[ "$format" == "st-launcher-backup-v1" ]] || continue
         created="$(printf '%s\n' "$manifest" | sed -n 's/^created_at=//p' | head -n 1)"
@@ -2699,16 +2732,15 @@ backup_storage_status() {
 
 delete_backup() {
     local file_name="${1:-}"
-    [[ "$file_name" =~ ^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}\.zip$ ]] || {
+    valid_backup_filename "$file_name" || {
         echo "허용되지 않는 백업 파일 이름입니다." >&2
         exit 64
     }
     local archive="$DOWNLOAD_DIR/$file_name"
-    [[ -f "$archive" ]] || { echo "삭제할 백업 파일을 찾을 수 없습니다." >&2; exit 6; }
+    [[ -f "$archive" && ! -L "$archive" ]] || { echo "삭제할 백업 파일을 찾을 수 없습니다." >&2; exit 6; }
     local manifest
-    manifest="$(unzip -p "$archive" .st-launcher-manifest 2>/dev/null || true)"
-    [[ "$(printf '%s\n' "$manifest" | sed -n 's/^format=//p' | head -n 1)" == "st-launcher-backup-v1" ]] || {
-        echo "런처에서 만든 백업만 앱에서 삭제할 수 있습니다." >&2
+    manifest="$(read_backup_manifest "$archive")" || {
+        echo "정상적인 런처 백업만 삭제할 수 있습니다. 메타데이터가 없거나 중복·손상·크기 초과 상태입니다." >&2
         exit 23
     }
     begin_operation "delete-backup"
@@ -2728,14 +2760,13 @@ delete_backups() {
     local file_name archive manifest
     while IFS= read -r file_name; do
         [[ -n "$file_name" ]] || continue
-        [[ "$file_name" =~ ^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}\.zip$ ]] || {
+        valid_backup_filename "$file_name" || {
             echo "허용되지 않는 백업 파일 이름입니다." >&2; exit 64;
         }
         archive="$DOWNLOAD_DIR/$file_name"
-        [[ -f "$archive" ]] || { echo "삭제할 백업 파일을 찾을 수 없습니다: $file_name" >&2; exit 6; }
-        manifest="$(unzip -p "$archive" .st-launcher-manifest 2>/dev/null || true)"
-        [[ "$(printf '%s\n' "$manifest" | sed -n 's/^format=//p' | head -n 1)" == "st-launcher-backup-v1" ]] || {
-            echo "런처에서 만든 백업만 앱에서 삭제할 수 있습니다." >&2; exit 23;
+        [[ -f "$archive" && ! -L "$archive" ]] || { echo "삭제할 백업 파일을 찾을 수 없습니다: $file_name" >&2; exit 6; }
+        manifest="$(read_backup_manifest "$archive")" || {
+            echo "정상적인 런처 백업만 삭제할 수 있습니다. 메타데이터가 없거나 중복·손상·크기 초과 상태입니다." >&2; exit 23;
         }
         archives+=("$archive")
     done <<< "$decoded"
@@ -2930,14 +2961,22 @@ inspect_install() {
     echo "source_version_b64=$(printf '%s' "$(version_from_file "$source/package.json")" | base64 -w 0)"
     echo "source_bytes=$bytes"
     echo "destination_path_b64=$(printf '%s' "$destination" | base64 -w 0)"
+    if [[ -e "$ST_HOME" || -L "$ST_HOME" ]]; then echo "destination_exists=1"; else echo "destination_exists=0"; fi
     echo "same_installation=$same"
     echo "tools_ready=$tools_ready"
 }
 
 import_install() {
     local source destination identity snapshot after_snapshot bytes free_bytes work extracted
+    local source_mode="${2:-keep}" destination_policy="${3:-empty}"
+    [[ "$source_mode" == keep || "$source_mode" == move ]] || { echo "원본 폴더 처리 방식이 올바르지 않습니다." >&2; exit 64; }
+    [[ "$destination_policy" == empty || "$destination_policy" == replace ]] || { echo "기존 설치 교체 설정이 올바르지 않습니다." >&2; exit 64; }
     source="$(resolve_install_source "${1:-}")" || exit $?
-    if is_running; then echo "설치 폴더를 옮기기 전에 SillyTavern 서버를 종료해 주세요." >&2; exit 10; fi
+    destination="$(realpath -m "$ST_HOME")"
+    if [[ "$source" != "$destination" && "$destination_policy" != replace && ( -e "$ST_HOME" || -L "$ST_HOME" ) ]]; then
+        echo "대상 위치에 기존 설치가 있습니다. 다시 검사하고 백업·교체 여부를 확인해 주세요." >&2; exit 51
+    fi
+    if is_running; then echo "설치 폴더를 가져오기 전에 SillyTavern 서버를 종료해 주세요." >&2; exit 10; fi
     begin_operation "import-install"
     ensure_restore_target_stopped
     if installation_server_running "$source"; then
@@ -2951,7 +2990,6 @@ import_install() {
     write_progress 0 "Node.js 요구 조건 검사" "가져올 설치의 버전 조건을 현재 Node.js와 정확히 비교하고 있습니다."
     validate_install_runtime "$source" || exit $?
     record_processing "가져올 설치의 Node.js 요구 조건 검사 완료"
-    destination="$(realpath -m "$ST_HOME")"
     if [[ "$source" == "$destination" ]]; then
         write_progress 100 "설치 확인 완료" "이미 런처의 설치 위치에 있는 SillyTavern입니다. 폴더를 이동하지 않았습니다." success
         echo "imported_installation=1"
@@ -2964,11 +3002,11 @@ import_install() {
     write_progress 0 "원본 상태 기록" "원본 파일 내용(SHA256)과 메타데이터를 검사합니다. 파일이 많으면 시간이 걸릴 수 있습니다."
     snapshot="$(install_source_snapshot "$source")" || exit 53
     record_processing "원본 파일 상태 기록 완료"
-    write_progress 0 "설치 이동 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
+    write_progress 0 "설치 가져오기 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
     bytes="$(unsigned_decimal "$(run_cancellable du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 54
-    (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 옮길 저장 공간이 부족합니다." >&2; exit 54; }
-    record_processing "설치 이동 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
+    (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 가져올 저장 공간이 부족합니다." >&2; exit 54; }
+    record_processing "설치 가져오기 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
     work="$BACKUP_DIR/install-import-work-$$"
     mkdir -m 700 -- "$work" || { echo "임시 복원 폴더를 새로 만들지 못했습니다. 기존 경로는 변경하지 않습니다: $work" >&2; exit 25; }
     track_current_work_dir "$work"
@@ -2987,16 +3025,25 @@ import_install() {
         exit 55
     }
     printf 'format=st-launcher-backup-v1\nitems=full\ncustom=\nsecrets=1\n' > "$extracted/.st-launcher-manifest"
+    if [[ "$destination_policy" != replace && ( -e "$ST_HOME" || -L "$ST_HOME" ) ]]; then
+        echo "검사 후 대상 위치에 설치가 생겼습니다. 기존 폴더를 변경하지 않았습니다. 다시 검사하고 교체 여부를 확인해 주세요." >&2; exit 51
+    fi
     restore_extracted_tree "$extracted" "existing-installation"
     # Destination is now complete and the rollback transaction has committed.
     # A late source change or cleanup failure does not invalidate that success.
-    write_progress 0 "원본 변경 재확인 및 정리" "새 설치는 준비되었습니다. 원본 내용을 마지막으로 검사하고 변경되지 않은 원본만 정리합니다."
-    if remove_verified_install_source "$source" "$identity" "$snapshot"; then
-        echo "source_removed=1"
-        write_progress 100 "설치 이동 완료" "기존 설치를 런처 위치로 옮겼습니다. 검증된 원본 폴더를 정리했습니다." success
+    if [[ "$source_mode" == keep ]]; then
+        echo "source_kept=1"
+        echo "source_removed=0"
+        write_progress 100 "설치 가져오기 완료" "런처 위치의 설치를 사용합니다. 선택한 원본 폴더는 유지하며 자동 동기화하지 않습니다." success
     else
-        echo "source_cleanup_failed=1"
-        write_progress 100 "설치 이동 완료 · 원본 정리 필요" "새 설치는 정상입니다. 원본 변경·접근 오류·실행 중 상태 또는 정리 실패로 원본 자동 정리를 완료하지 않았습니다." success
+        write_progress 0 "원본 변경 재확인 및 정리" "새 설치는 준비되었습니다. 원본 내용을 마지막으로 검사하고 변경되지 않은 원본만 정리합니다."
+        if remove_verified_install_source "$source" "$identity" "$snapshot"; then
+            echo "source_removed=1"
+            write_progress 100 "설치 이동 완료" "기존 설치를 런처 위치로 옮겼습니다. 검증된 원본 폴더를 정리했습니다." success
+        else
+            echo "source_cleanup_failed=1"
+            write_progress 100 "설치 이동 완료 · 원본 정리 필요" "새 설치는 정상입니다. 원본 변경·접근 오류·실행 중 상태 또는 정리 실패로 원본 자동 정리를 완료하지 않았습니다." success
+        fi
     fi
     echo "imported_installation=1"
     echo "same_installation=0"
@@ -3055,7 +3102,7 @@ restore_file_identity() {
 
 restore_recovery_work_safe() {
     local work="$1" name="${1##*/}" base installation
-    [[ "$name" =~ ^(restore|import|install-import)-work-[0-9]+$ ]] || return 1
+    [[ "$name" =~ ^(restore|import|install-import|reset)-work-[0-9]+$ ]] || return 1
     [[ -d "$work" && ! -L "$work" && ! -L "$BACKUP_DIR" && ! -L "$work/rollback" && ! -L "$work/recovery.env" ]] || return 1
     base="$(realpath -m "$BACKUP_DIR")" || return 1
     installation="$(realpath -m "$ST_HOME")" || return 1
@@ -3105,6 +3152,7 @@ write_restore_journal() {
 }
 
 commit_restore_transaction() {
+    transaction_writers_quiet "$CURRENT_WORK_DIR" || return 1
     RESTORE_JOURNAL_STATE=committed
     if ! write_restore_journal; then
         # Once atomically published, a committed marker must never describe an
@@ -3191,7 +3239,7 @@ inspect_restore_recovery() {
     # owner (including diagnose) must still inspect a previous writer's files.
     if operation_active && [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" != "$$" ]]; then return 0; fi
     local work state
-    for work in "$BACKUP_DIR"/restore-work-* "$BACKUP_DIR"/import-work-* "$BACKUP_DIR"/install-import-work-*; do
+    for work in "$BACKUP_DIR"/restore-work-* "$BACKUP_DIR"/import-work-* "$BACKUP_DIR"/install-import-work-* "$BACKUP_DIR"/reset-work-*; do
         [[ -e "$work/recovery.env" || -L "$work/recovery.env" ]] || continue
         if state="$(load_restore_journal "$work" && printf '%s' "$RESTORE_JOURNAL_STATE")"; then
             [[ "$state" == committed || "$state" == rolled-back ]] && continue
@@ -3200,11 +3248,12 @@ inspect_restore_recovery() {
         fi
         RESTORE_PENDING_WORKS+=("$work")
     done
+    inspect_git_transaction_recovery
     if (( ${#RESTORE_PENDING_WORKS[@]} )); then
-        RESTORE_PENDING_DETAIL="중단된 복원 기록이 있습니다. 다음 변경 작업 전에 기존 데이터를 복구합니다. 보호 사본: ${RESTORE_PENDING_WORKS[*]}"
+        RESTORE_PENDING_DETAIL="중단된 작업의 복구 기록이 있습니다. 다음 변경 작업 전에 이전 설치를 복구합니다. 보호 사본: ${RESTORE_PENDING_WORKS[*]}"
         if (( RESTORE_PENDING_BLOCKED || ${#RESTORE_PENDING_WORKS[@]} > 1 )); then
             RESTORE_PENDING_BLOCKED=1
-            RESTORE_PENDING_DETAIL="복원 기록이 손상되었거나 이전 형식/여러 기록이 있어 자동으로 변경하지 않습니다. 보호 사본을 확인해 주세요: ${RESTORE_PENDING_WORKS[*]}"
+            RESTORE_PENDING_DETAIL="복구 기록이 손상되었거나 이전 형식/여러 기록이 있어 자동으로 변경하지 않습니다. 보호 사본을 확인해 주세요: ${RESTORE_PENDING_WORKS[*]}"
         fi
     fi
 }
@@ -3216,6 +3265,18 @@ recover_pending_restore() {
     if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
         echo "중단된 복원을 복구하려면 먼저 서버를 종료해 주세요. 보호 사본: ${RESTORE_PENDING_WORKS[0]}" >&2
         return 25
+    fi
+    if [[ -f "${RESTORE_PENDING_WORKS[0]}/git-recovery.env" ]]; then
+        GIT_TRANSACTION_DIR="${RESTORE_PENDING_WORKS[0]}"
+        GIT_TRANSACTION_ACTIVE=1
+        if ! rollback_git_transaction; then
+            GIT_TRANSACTION_ACTIVE=0; RESTORE_RECOVERY_RETAINED=1
+            echo "중단된 업데이트·브랜치 변경을 복구하지 못했습니다. 보호 사본을 유지합니다: $GIT_TRANSACTION_DIR" >&2
+            return 25
+        fi
+        RESTORE_RECOVERY_RETAINED=0
+        record_activity "중단된 업데이트·브랜치 변경의 이전 설치 복구 완료"
+        return 0
     fi
     if ! load_restore_journal "${RESTORE_PENDING_WORKS[0]}"; then
         CURRENT_WORK_DIR=""; echo "$RESTORE_PENDING_DETAIL" >&2; return 25
@@ -3252,6 +3313,7 @@ rollback_restore_transaction() {
     (( RESTORE_TRANSACTION_ACTIVE )) || return 0
     [[ -n "$CURRENT_WORK_DIR" && "$RESTORE_ROLLBACK_DIR" == "$CURRENT_WORK_DIR/rollback" ]] || return 1
     restore_recovery_work_safe "$CURRENT_WORK_DIR" || return 1
+    transaction_writers_quiet "$CURRENT_WORK_DIR" || return 1
     if [[ "$RESTORE_JOURNAL_STATE" == committed || "$RESTORE_JOURNAL_STATE" == rolled-back ]]; then
         RESTORE_TRANSACTION_ACTIVE=0
         return 0
@@ -3336,7 +3398,7 @@ rollback_restore_transaction() {
 
 restore_backup() {
     local file_name="${1:-}"
-    [[ "$file_name" =~ ^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}\.zip$ ]] || { echo "허용되지 않는 백업 파일 이름입니다." >&2; exit 64; }
+    valid_backup_filename "$file_name" || { echo "허용되지 않는 백업 파일 이름입니다." >&2; exit 64; }
     local archive="$DOWNLOAD_DIR/$file_name"
     [[ -f "$archive" && ! -L "$archive" ]] || { echo "선택한 백업 파일을 찾을 수 없습니다." >&2; exit 6; }
     if is_running; then
@@ -3593,16 +3655,7 @@ repair_st() {
 }
 
 rollback_reset_installation() {
-    local rollback_dir="$BACKUP_DIR/reset-rollback-$$"
-    [[ -d "$rollback_dir/full-install" ]] || return 0
-    rm -rf "$ST_HOME"
-    mv "$rollback_dir/full-install" "$ST_HOME" || return 1
-    if [[ -f "$rollback_dir/dependency-lock.sha256" ]]; then
-        cp -a "$rollback_dir/dependency-lock.sha256" "$DEPENDENCY_HASH_FILE"
-    else
-        rm -f "$DEPENDENCY_HASH_FILE"
-    fi
-    rm -rf "$rollback_dir"
+    rollback_restore_transaction
 }
 
 reset_installation() {
@@ -3611,7 +3664,7 @@ reset_installation() {
         exit 8
     }
     is_running && { echo "초기화 전에 SillyTavern 서버를 종료해 주세요." >&2; exit 10; }
-    local branch free_bytes rollback_dir
+    local branch free_bytes rollback_dir replacement
     branch="$(current_branch)"
     [[ "$branch" == "release" || "$branch" == "staging" ]] || {
         echo "지원하지 않는 현재 브랜치입니다: $branch" >&2
@@ -3625,17 +3678,32 @@ reset_installation() {
     }
 
     begin_operation "reset-installation"
-    rollback_dir="$BACKUP_DIR/reset-rollback-$$"
-    mkdir -p "$rollback_dir"
+    local work="$BACKUP_DIR/reset-work-$$"
+    mkdir -m 700 -- "$work" || exit 25
+    track_current_work_dir "$work"
+    rollback_dir="$work/rollback"
+    replacement="$work/replacement-install"
+    mkdir "$rollback_dir" "$replacement" || exit 25
+    prepare_restore_transaction full "$rollback_dir"
+    RESTORE_HAD_INSTALLATION=1
+    RESTORE_INSTALLATION_ID="$(restore_file_identity "$replacement")" || exit 25
+    [[ "$(stat -c %d "$replacement")" == "$(stat -c %d "$(dirname "$ST_HOME")")" ]] || exit 25
+    if [[ -f "$DEPENDENCY_HASH_FILE" ]]; then
+        cp -a "$DEPENDENCY_HASH_FILE" "$rollback_dir/dependency-lock.sha256" || exit 25
+        RESTORE_DEPENDENCY_SAVED=1
+    fi
+    write_restore_journal || exit 25
+    RESTORE_TRANSACTION_ACTIVE=1
     write_progress 8 "현재 설치 보호" "재설치에 실패하면 되돌릴 수 있도록 현재 설치를 임시 보관합니다."
     enter_cancellation_guard
     mv "$ST_HOME" "$rollback_dir/full-install"
-    [[ -f "$DEPENDENCY_HASH_FILE" ]] && cp -a "$DEPENDENCY_HASH_FILE" "$rollback_dir/dependency-lock.sha256"
+    RESTORE_FULL_ORIGINAL_MOVED=1
+    mv "$replacement" "$ST_HOME" || exit 25
     rm -f "$DEPENDENCY_HASH_FILE"
     leave_cancellation_guard
 
     write_progress 28 "새 설치 다운로드" "$branch 브랜치를 초기 상태로 다시 받고 있습니다."
-    if ! run_cancellable git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
+    if ! run_transaction_command git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
         echo "새 SillyTavern을 내려받지 못해 기존 설치로 되돌립니다." >&2
         exit 17
     fi
@@ -3645,7 +3713,9 @@ reset_installation() {
         exit 12
     fi
     enter_cancellation_guard
-    rm -rf "$rollback_dir"
+    commit_restore_transaction || exit 25
+    CANCELLATION_COMMITTED=1
+    rm -rf "$work"
     write_progress 100 "초기화 완료" "기존 데이터 없이 현재 브랜치를 새로 설치했습니다. Download 백업은 유지됩니다." success
     echo "reset=1"
     echo "branch=$branch"
@@ -3654,6 +3724,7 @@ reset_installation() {
 rollback_update() {
     local old_commit="$1"
     local rollback_dir="$2"
+    if [[ -n "$GIT_TRANSACTION_DIR" ]]; then rollback_git_transaction; return $?; fi
     terminate_server_process
     git -C "$ST_HOME" reset --hard "$old_commit" >> "$LOG_FILE" 2>&1 || return 1
     rm -rf "$ST_HOME/node_modules"
@@ -3748,31 +3819,32 @@ update_st() {
     record_processing "Node.js 호환성·저장 공간 검사 통과 · 이전 설치 보호 시작"
     local timestamp rollback_dir state_file old_version
     timestamp="$(date +%Y%m%d-%H%M%S)"
-    rollback_dir="$BACKUP_DIR/update-rollback-$timestamp"
+    rollback_dir="$BACKUP_DIR/update-work-$$"
     state_file="$UPDATE_DIR/update-$timestamp.env"
     old_version="$(version_from_file "$ST_HOME/package.json")"
-    mkdir -p "$rollback_dir"
+    local modified_backup=""
     if [[ -n "$dirty_files" ]]; then
-        local modified_backup="$BACKUP_DIR/before-forced-update-$timestamp.tar.gz"
+        modified_backup="$BACKUP_DIR/before-forced-update-$timestamp.tar.gz"
         write_progress 8 "수정 파일 보호" "사용자 데이터를 포함한 현재 설치를 별도 안전 파일로 압축하고 있습니다."
         SAFETY_PHASE="수정 파일 보호" safety_backup "$modified_backup" contents "$required_bytes" || exit $?
         modified_backup="$SAFETY_BACKUP_PATH"
-        enter_cancellation_guard
-        record_processing "수정 파일 안전 보관 완료 · Git 작업 트리 정리 시작"
-        write_progress 0 "Git 작업 트리 정리" "안전 백업을 저장했습니다. Git 수정 파일 정리 명령의 완료를 기다립니다."
-        git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
-        git -C "$ST_HOME" clean -fd >> "$LOG_FILE" 2>&1
         echo "[launcher] Modified files saved to $modified_backup" >> "$LOG_FILE"
     fi
     (( CANCELLATION_GUARD > 0 )) || enter_cancellation_guard
+    prepare_git_transaction update "$branch" "$remote_commit" || exit 25
+    if [[ -n "$dirty_files" ]]; then
+        record_processing "수정 파일 안전 보관·복구 기록 완료 · Git 수정 파일 정리 시작"
+        write_progress 0 "Git 작업 트리 정리" "추적 파일만 정리합니다. 추적하지 않는 사용자 파일은 삭제하지 않습니다."
+        run_transaction_command git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
+    fi
     printf 'created_at=%s\nbranch=%s\nold_commit=%s\ntarget_commit=%s\nold_version=%s\nnode_required=%s\nresult=running\n' \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$branch" "$old_commit" "$remote_commit" "$old_version" "$node_required" > "$state_file"
     write_progress 12 "업데이트 상태 기록" "현재 브랜치와 커밋, 기존 패키지를 기록하고 있습니다."
-    [[ -f "$DEPENDENCY_HASH_FILE" ]] && cp -a "$DEPENDENCY_HASH_FILE" "$rollback_dir/dependency-lock.sha256"
     [[ -d "$ST_HOME/node_modules" ]] && mv "$ST_HOME/node_modules" "$rollback_dir/node_modules"
+    mv "$rollback_dir/new-node_modules" "$ST_HOME/node_modules" || exit 25
 
     write_progress 32 "업데이트 적용" "$branch 브랜치의 새 커밋을 적용하고 있습니다."
-    if ! git -C "$ST_HOME" merge --ff-only "$remote_commit" >> "$LOG_FILE" 2>&1; then
+    if ! run_transaction_command git -C "$ST_HOME" merge --ff-only "$remote_commit" >> "$LOG_FILE" 2>&1; then
         if rollback_update "$old_commit" "$rollback_dir" "$keep_running"; then
             sed -i 's/^result=.*/result=rolled_back_git/' "$state_file"
             write_progress 0 "업데이트 롤백" "Git 업데이트에 실패하여 이전 커밋과 패키지로 되돌렸습니다." error
@@ -3817,7 +3889,8 @@ update_st() {
     if [[ "$keep_running" == "0" ]] || cancellation_requested; then terminate_server_process; fi
     sed -i 's/^result=.*/result=success/' "$state_file"
     printf 'new_commit=%s\nnew_version=%s\n' "$(git -C "$ST_HOME" rev-parse HEAD)" "$(version_from_file "$ST_HOME/package.json")" >> "$state_file"
-    rm -rf "$rollback_dir"
+    finish_git_transaction committed || exit 25
+    CANCELLATION_COMMITTED=1
     write_progress 100 "업데이트 완료" "패키지 설치와 서버 응답 검사를 모두 통과했습니다." success
     echo "updated=1"
     echo "previous_commit=$old_commit"
@@ -3850,32 +3923,37 @@ switch_branch() {
         echo "수정된 파일이 있어 브랜치를 변경할 수 없습니다." >&2
         exit 9
     fi
+    # Complete network access and fast-forward validation before touching even
+    # the first modified file. Later steps use this pinned local commit only.
+    write_progress 5 "브랜치 다운로드" "$branch 브랜치 정보를 먼저 확인하고 있습니다."
+    if ! ensure_remote_branch "$branch" >> "$LOG_FILE" 2>&1; then
+        echo "GitHub에서 브랜치 정보를 가져오지 못했습니다. 현재 설치는 변경하지 않았습니다." >&2
+        exit 18
+    fi
+    local target_commit current_target
+    target_commit="$(git -C "$ST_HOME" rev-parse "refs/remotes/origin/$branch")" || exit 18
+    if current_target="$(git -C "$ST_HOME" rev-parse --verify "refs/heads/$branch" 2>/dev/null)"; then
+        git -C "$ST_HOME" merge-base --is-ancestor "$current_target" "$target_commit" || {
+            echo "대상 브랜치가 원격과 갈라져 있습니다. 현재 설치는 변경하지 않았습니다." >&2; exit 34;
+        }
+    fi
     write_progress 10 "안전 백업" "브랜치 변경 전 현재 설정을 백업하고 있습니다."
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
     SAFETY_PHASE="브랜치 변경 안전 백업" safety_backup "$safety_backup" directory || exit $?
     safety_backup="$SAFETY_BACKUP_PATH"
     enter_cancellation_guard
+    prepare_git_transaction branch "$branch" "$target_commit" || exit 25
     record_processing "브랜치 변경 전 안전 백업 생성 완료"
     if [[ -n "$dirty_files" ]]; then
         write_progress 24 "수정 파일 정리" "확인된 수정 내용을 안전 백업 후 Git 작업 트리에서 정리합니다."
-        git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
-        git -C "$ST_HOME" clean -fd >> "$LOG_FILE" 2>&1
+        run_transaction_command git -C "$ST_HOME" reset --hard HEAD >> "$LOG_FILE" 2>&1
     fi
-    write_progress 35 "브랜치 다운로드" "$branch 브랜치 정보를 받고 있습니다."
-    local refspec="+refs/heads/$branch:refs/remotes/origin/$branch"
-    if ! git -C "$ST_HOME" config --get-all remote.origin.fetch | grep -Fxq "$refspec"; then
-        git -C "$ST_HOME" config --add remote.origin.fetch "$refspec"
-    fi
-    git -C "$ST_HOME" fetch --progress origin "$refspec" >> "$LOG_FILE" 2>&1
-    record_processing "브랜치 정보 수신 완료 · $branch 작업 트리 적용 시작"
+    record_processing "검증된 브랜치 커밋 적용 시작 · $branch · ${target_commit:0:7}"
     write_progress 70 "브랜치 적용" "작업 트리를 $branch 브랜치로 변경하고 있습니다."
-    if git -C "$ST_HOME" show-ref --verify --quiet "refs/heads/$branch"; then
-        git -C "$ST_HOME" switch "$branch" >> "$LOG_FILE" 2>&1
-    else
-        git -C "$ST_HOME" switch --track -c "$branch" "origin/$branch" >> "$LOG_FILE" 2>&1
-    fi
+    run_transaction_command git -C "$ST_HOME" switch -C "$branch" "$target_commit" >> "$LOG_FILE" 2>&1
     git -C "$ST_HOME" branch --set-upstream-to="origin/$branch" "$branch" >> "$LOG_FILE" 2>&1
-    git -C "$ST_HOME" pull --progress --ff-only >> "$LOG_FILE" 2>&1
+    finish_git_transaction committed || exit 25
+    CANCELLATION_COMMITTED=1
     record_processing "브랜치 변경·최신 커밋 반영 확인 완료"
     write_progress 100 "브랜치 변경 완료" "다음 시작 시 필요한 Node 모듈을 자동으로 맞춥니다." success
     echo "switched=1"
@@ -4074,6 +4152,9 @@ diagnose() {
     write_progress 100 "진단 완료" "전체 환경 검사를 완료했습니다." success
 }
 
+# Keep transaction implementation separate without changing the restore format.
+source "$(dirname "$MANAGER_SCRIPT_PATH")/transaction-recovery.sh"
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 CURRENT_OPERATION="${1:-doctor}"
 case "$CURRENT_OPERATION" in
@@ -4100,7 +4181,7 @@ case "${1:-doctor}" in
     list-backups) list_backups ;;
     import-backup) import_backup "${2:-}" ;;
     inspect-install) inspect_install "${2:-}" ;;
-    import-install) import_install "${2:-}" ;;
+    import-install) import_install "${2:-}" "${3:-keep}" "${4:-empty}" ;;
     list-user-folders) list_user_folders ;;
     list-st-files) list_st_files "${2:-}" "${3:-0}" ;;
     read-st-file) read_st_file "${2:-}" ;;

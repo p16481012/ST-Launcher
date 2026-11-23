@@ -10,25 +10,35 @@ data class BackupRequest(
     val categories: Set<BackupCategory>,
     val includeSecrets: Boolean,
     val customFolders: Set<String>,
+    val parentOperation: String = "",
 ) {
-    fun newAttempt(): BackupRequest = copy(id = UUID.randomUUID().toString())
+    // A retry from a recovered backup card is only another backup, never a replacement.
+    fun newAttempt(): BackupRequest = copy(id = UUID.randomUUID().toString(), parentOperation = "")
 }
 
 internal object BackupRequestCodec {
     private val identifier = Regex("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+    private val parentOperations = setOf("update", "restore", "import-backup", "import-install")
 
     fun encode(request: BackupRequest): String {
         val folders = request.customFolders.sorted().joinToString(",") {
             Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
         }
-        return listOf("1", request.id, request.categories.sortedBy { it.key }.joinToString(",") { it.key },
-            if (request.includeSecrets) "1" else "0", folders).joinToString("|")
+        val fields = listOf(if (request.parentOperation.isEmpty()) "1" else "2", request.id,
+            request.categories.sortedBy { it.key }.joinToString(",") { it.key },
+            if (request.includeSecrets) "1" else "0", folders)
+        return (if (request.parentOperation.isEmpty()) fields else fields + request.parentOperation).joinToString("|")
     }
 
     fun decode(value: String?): BackupRequest? = runCatching {
         if (value == null || value.length > 32_768) return null
         val fields = value.split('|')
-        if (fields.size != 5 || fields[0] != "1" || !identifier.matches(fields[1])) return null
+        val parent = when {
+            fields.size == 5 && fields[0] == "1" -> ""
+            fields.size == 6 && fields[0] == "2" && fields[5] in parentOperations -> fields[5]
+            else -> return null
+        }
+        if (!identifier.matches(fields[1])) return null
         val keys = fields[2].split(',')
         val categories = keys.map { BackupCategory.fromKey(it) ?: return null }.toSet()
         if (categories.isEmpty() || categories.size != keys.size ||
@@ -41,13 +51,17 @@ internal object BackupRequestCodec {
         if (folders.size > 512 || folders.any { folder -> folder.isBlank() || folder.length > 255 ||
                 folder.any { it.isISOControl() || it == '/' || it == '\\' || it == ',' } || folder in setOf(".", "..") }) return null
         if ((BackupCategory.CUSTOM in categories) != folders.isNotEmpty()) return null
-        BackupRequest(fields[1], categories, secrets, folders)
+        BackupRequest(fields[1], categories, secrets, folders, parent)
     }.getOrNull()
 
     fun matching(saved: BackupRequest?, progress: WorkProgress?): BackupRequest? = saved?.takeIf {
         progress?.operation == "backup" && identifier.matches(progress.backupRequestId) &&
             progress.backupRequestId == it.id
     }
+
+    /** Never infer a parent from a different, older or unidentified backend backup. */
+    fun parentOperation(saved: BackupRequest?, progress: WorkProgress?): String? =
+        matching(saved, progress)?.parentOperation?.takeIf { it in parentOperations }
 }
 
 /** Redact the whole text before truncation, keeping the actual failure at the end of the log. */
@@ -76,10 +90,6 @@ internal fun backupFailureLog(detail: String, logText: String): String =
     redactSensitiveText(logText, maxLength = null).trim().takeLast(40_000)
         .ifBlank { backupFailureDetail(detail, "") }
 
-internal data class BackupCompletionCheck<T>(val value: T, val refreshFailed: Boolean)
-
-/** A failed status refresh does not undo an already verified backup. */
-internal suspend fun <T> checkCompletedBackup(fallback: T, inspect: suspend () -> T): BackupCompletionCheck<T> =
-    try { BackupCompletionCheck(inspect(), false) }
-    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-    catch (_: Exception) { BackupCompletionCheck(fallback, true) }
+/** Kept for existing backup callers; all operations share the same completion rule. */
+internal suspend fun <T> checkCompletedBackup(fallback: T, inspect: suspend () -> T): OperationCompletionCheck<T> =
+    checkCompletedOperation(fallback, inspect)

@@ -282,8 +282,17 @@ function copyFile(entry, destination, destinationRoot, buffer, hardLinks) {
     const hardLinkKey = `${entry.stat.dev}:${entry.stat.ino}`;
     const existingLink = entry.stat.nlink > 1 ? hardLinks.get(hardLinkKey) : undefined;
     if (existingLink) {
+        let linked = false;
         try {
             fs.linkSync(existingLink, temporary);
+            linked = true;
+        } catch (error) {
+            // Android may forbid link() even on the same filesystem. Only a
+            // failed link creation may fall back; later verification errors
+            // must still abort without replacing the destination.
+            if (!['EXDEV', 'EACCES', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP'].includes(error.code)) throw error;
+        }
+        if (linked) {
             verifySource(entry);
             fs.renameSync(temporary, destination);
             temporaryFiles.delete(temporary);
@@ -292,8 +301,6 @@ function copyFile(entry, destination, destinationRoot, buffer, hardLinks) {
             activity();
             publish();
             return;
-        } catch (error) {
-            if (error.code !== 'EXDEV') throw error;
         }
     }
     let input;

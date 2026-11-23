@@ -6,6 +6,17 @@ import org.junit.Test
 
 class TermuxCommandResultTest {
     @Test
+    fun forcedTerminationHasAnActionableButNonSpeculativeDiagnostic() {
+        val result = TermuxCommandResult("test", "", "Process completed (signal 9)", 137, -1, "")
+        assertTrue(result.readableError().startsWith("[PROCESS_KILLED]"))
+        val hint = LauncherErrorCode.recommendation(result.stableErrorCode)
+        assertTrue(hint.contains("원인일 수"))
+        assertTrue(hint.contains("확정할 수 없습니다"))
+        assertTrue(result.copy(exitCode = 130).readableError().startsWith("[OPERATION_CANCELLED]"))
+        assertTrue(result.copy(stderr = "error_code=UPDATE_PACKAGES_FAILED").readableError().startsWith("[UPDATE_PACKAGES_FAILED]"))
+    }
+
+    @Test
     fun `package upgrade and runtime failures retain distinct actionable codes`() {
         mapOf(61 to "TERMUX_PACKAGE_UPGRADE_FAILED", 62 to "NODE_RUNTIME_FAILED", 63 to "NPM_RUNTIME_FAILED")
             .forEach { (exitCode, code) ->

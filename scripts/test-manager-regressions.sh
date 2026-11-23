@@ -42,7 +42,10 @@ if unsigned_decimal 9999999999999999999 >/dev/null; then fail "overflowing metad
 list_result="$(
     : > "$DOWNLOAD_DIR/SillyTavern-Launcher-20260101-000000.zip"
     ensure_archive_tools() { :; }
-    unzip() { printf 'format=st-launcher-backup-v1\nitems=user_data\nsecrets=0\nexpanded_bytes=%s\nentry_count=1\n' "$poison"; }
+    unzip() {
+        if [[ "${1:-}" == -Z1 ]]; then printf '.st-launcher-manifest\n'
+        else printf 'format=st-launcher-backup-v1\nitems=user_data\nsecrets=0\nexpanded_bytes=%s\nentry_count=1\n' "$poison"; fi
+    }
     list_backups 2>&1
 )"
 [[ -z "$list_result" ]] || fail "list_backups evaluated or displayed unsafe numeric metadata"

@@ -56,6 +56,49 @@ class BackupRequestTest {
         assertEquals(request(), BackupRequestCodec.matching(request(), progress))
     }
 
+    @Test fun legacySavedRequestsRemainStandaloneBackups() {
+        val legacy = BackupRequestCodec.decode("1|$id|full|1|")
+        assertEquals(BackupRequest(id, setOf(BackupCategory.FULL), true, emptySet()), legacy)
+        assertEquals("", legacy?.parentOperation)
+    }
+
+    @Test fun serializedParentRecoversOnlyForTheSameBackup() {
+        val progress = WorkProgress(100, "백업 완료", "", status = "success", operation = "backup", backupRequestId = id)
+        listOf("update", "restore", "import-backup", "import-install").forEach { parent ->
+            val original = request().copy(parentOperation = parent)
+            val saved = BackupRequestCodec.decode(BackupRequestCodec.encode(original))
+            assertEquals(original, saved)
+            assertEquals(parent, BackupRequestCodec.parentOperation(saved, progress))
+            val notice = recoveredSubstepNotice(BackupRequestCodec.parentOperation(saved, progress),
+                progress.operation, progress.status).orEmpty()
+            assertTrue(notice.contains("후속 단계는 자동으로 진행하지 않았습니다"))
+            // These cover death before dispatch, stale/unknown callbacks and replacement already started.
+            assertNull(BackupRequestCodec.parentOperation(saved, progress.copy(backupRequestId = request().newAttempt().id)))
+            assertNull(BackupRequestCodec.parentOperation(saved, progress.copy(backupRequestId = "")))
+            assertNull(BackupRequestCodec.parentOperation(saved, progress.copy(operation = parent)))
+            assertNull(BackupRequestCodec.parentOperation(saved, null))
+            assertNull(BackupRequestCodec.parentOperation(null, progress))
+        }
+        assertNull(BackupRequestCodec.parentOperation(request(), progress))
+    }
+
+    @Test fun recoveredBackupRetryDoesNotRetainItsReplacementParent() {
+        val original = request().copy(parentOperation = "import-install")
+        val retried = original.newAttempt()
+        assertNotEquals(original.id, retried.id)
+        assertEquals("", retried.parentOperation)
+        assertEquals(original.copy(id = retried.id, parentOperation = ""), retried)
+    }
+
+    @Test fun invalidParentRecordsCannotNameAnArbitraryOperation() {
+        listOf("", "backup", "delete-backup", "reset-installation", "unknown", "restore|extra").forEach {
+            assertNull(BackupRequestCodec.decode("2|$id|full|1||$it"))
+        }
+        assertNull(BackupRequestCodec.decode("1|$id|full|1||restore"))
+        assertNull(BackupRequestCodec.parentOperation(request().copy(parentOperation = "unknown"),
+            WorkProgress(100, "완료", "", operation = "backup", backupRequestId = id)))
+    }
+
     @Test fun recoveredFailureKeepsActualZipReasonAndHidesSecrets() {
         val raw = "api_key=private-key-value\nzip I/O error: Permission denied\n백업 대상 파일을 읽지 못했습니다."
         val detail = backupFailureDetail("작업이 중단되었습니다. 로그를 확인해 주세요.", raw)

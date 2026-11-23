@@ -4,6 +4,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FileManagementProtocolTest {
+    @Test fun installationInspectionCarriesDestinationReplacementConsent() {
+        val source = "/storage/emulated/0/Documents/SillyTavern"
+        val destination = "/data/data/com.termux/files/home/SillyTavern"
+        val output = "source_path_b64=${encodeFileArgument(source)}\n" +
+            "source_version_b64=${encodeFileArgument("1.0.0")}\nsource_bytes=1024\n" +
+            "destination_path_b64=${encodeFileArgument(destination)}\nsame_installation=0\n"
+        assertFalse(FileManagementProtocol.installation(output).destinationExists)
+        assertFalse(FileManagementProtocol.installation(output + "destination_exists=0\n").destinationExists)
+        val existing = FileManagementProtocol.installation(output + "destination_exists=1\n")
+        assertTrue(existing.destinationExists)
+        assertFalse(existing.sameInstallation)
+        assertEquals(source, existing.sourcePath)
+        assertEquals(destination, existing.destinationPath)
+    }
+
     @Test fun mapsLocalTreesWithoutMakingCopies() {
         assertEquals("/storage/emulated/0/Documents/SillyTavern", localFolderPathForTree(
             "com.android.externalstorage.documents", "primary:Documents/SillyTavern"))

@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -48,7 +49,7 @@ internal fun ExistingInstallationImportCard(
                 Spacer(Modifier.width(8.dp))
                 Text("Termux 폴더 경로 입력")
             }
-            Text("서버를 종료한 뒤 진행하세요. 검사 후 이동할 내용을 확인합니다.", style = MaterialTheme.typography.bodySmall)
+            Text("서버를 종료한 뒤 진행하세요. 검사 후 원본 유지 또는 이동을 선택합니다.", style = MaterialTheme.typography.bodySmall)
         }
     }
     if (pathPrompt) AlertDialog(
@@ -73,29 +74,67 @@ internal fun ExistingInstallationImportCard(
 internal fun InstallationImportConfirmation(
     installation: ExistingInstallation,
     destinationExists: Boolean,
-    onConfirm: () -> Unit,
+    onConfirm: (InstallationImportMode, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var moveSource by rememberSaveable(installation.sourcePath) { mutableStateOf(false) }
+    var backupExisting by rememberSaveable(installation.sourcePath) { mutableStateOf(true) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (installation.sameInstallation) "현재 설치를 사용할까요?" else "이 설치를 이동할까요?") },
+        title = { Text(if (installation.sameInstallation) "현재 설치를 사용할까요?" else "이 설치를 가져올까요?") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("원본: ${installation.sourcePath}", fontFamily = FontFamily.Monospace)
                 Text("버전: ${installation.version.ifBlank { "알 수 없음" }}")
                 Text("파일 용량: ${fileBytes(installation.sizeBytes)}")
                 Text("사용할 위치: ${installation.destinationPath}", fontFamily = FontFamily.Monospace)
-                Text(if (installation.sameInstallation) "이미 런처가 사용하는 설치 폴더입니다. 이 폴더를 복사하거나 삭제하지 않습니다."
-                    else "다른 런처에서 실행한 서버도 먼저 종료해 주세요. 원본을 임시 복사하고 구조·용량·실행 패키지를 검사합니다. 이동이 성공한 뒤에만 선택한 원본 폴더를 삭제합니다. 실패하면 원본을 유지합니다.")
-                if (!installation.sameInstallation) Text(
-                    if (destinationExists) "현재 ~/SillyTavern의 데이터와 설정은 가져온 설치로 교체됩니다. 교체 전 현재 설치를 안전 보관합니다."
-                    else "대상 위치에 기존 폴더가 남아 있다면 먼저 안전 보관하고 가져온 설치로 교체합니다.",
-                    color = MaterialTheme.colorScheme.error)
+                if (installation.sameInstallation) {
+                    Text("이미 런처가 사용하는 설치 폴더입니다. 이 폴더를 복사하거나 삭제하지 않습니다.")
+                } else {
+                    Text("다른 런처에서 실행한 서버도 먼저 종료해 주세요. 가져오기가 실패하거나 중단되면 원본을 삭제하지 않습니다.")
+                    Row(Modifier.fillMaxWidth().clickable { moveSource = false }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = !moveSource, onClick = { moveSource = false })
+                        Text("복사해서 가져오기 · 원본 유지")
+                    }
+                    Row(Modifier.fillMaxWidth().clickable { moveSource = true }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = moveSource, onClick = { moveSource = true })
+                        Text("옮겨오기 · 검증 성공 후 원본 삭제")
+                    }
+                    Text(if (moveSource) "완료 후 원본이 변경되지 않았는지 다시 확인하고 삭제합니다."
+                        else "이후 런처는 새 위치의 설치를 사용합니다. 원본과 자동 동기화되지 않으며 두 폴더가 남습니다.",
+                        style = MaterialTheme.typography.bodySmall)
+                    if (destinationExists) {
+                        Text("현재 ${installation.destinationPath}의 데이터와 설정은 가져온 설치로 교체됩니다.", color = MaterialTheme.colorScheme.error)
+                        ReplacementBackupChoice(backupExisting) { backupExisting = it }
+                    }
+                }
             }
         },
-        confirmButton = { Button(onClick = onConfirm) { Text(if (installation.sameInstallation) "현재 설치 사용" else "검증 후 이동") } },
+        confirmButton = { Button(onClick = {
+            onConfirm(if (moveSource) InstallationImportMode.MOVE else InstallationImportMode.COPY,
+                destinationExists && !installation.sameInstallation && backupExisting)
+        }) { Text(when {
+            installation.sameInstallation -> "현재 설치 사용"
+            destinationExists && !backupExisting -> "백업 없이 교체"
+            moveSource -> "검증 후 이동"
+            else -> "검증 후 가져오기"
+        }) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
     )
+}
+
+@Composable
+internal fun ReplacementBackupChoice(checked: Boolean, onChange: (Boolean) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }, verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = checked, onCheckedChange = onChange)
+            Text("현재 설치를 먼저 ZIP으로 백업", modifier = Modifier.weight(1f))
+        }
+        Text(if (checked) "Download에 전체 백업을 만듭니다. 데이터 크기만큼 시간·공간이 추가되며, 백업 실패 시 교체하지 않습니다. API 키 등 비밀 설정도 포함되며 암호화되지 않습니다."
+            else "교체가 완료되면 기존 데이터의 임시 보호 사본은 삭제됩니다. 별도 백업이 없으면 이전 상태로 되돌릴 수 없습니다.",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (checked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+    }
 }
 
 @Composable

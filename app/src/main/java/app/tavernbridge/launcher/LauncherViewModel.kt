@@ -15,7 +15,7 @@ import app.tavernbridge.launcher.model.backupFailureDetail
 import app.tavernbridge.launcher.model.backupFailureLog
 import app.tavernbridge.launcher.model.operationErrorSummary
 import app.tavernbridge.launcher.model.operationFailureSummary
-import app.tavernbridge.launcher.model.checkCompletedBackup
+import app.tavernbridge.launcher.model.checkCompletedOperation
 import app.tavernbridge.launcher.model.OperationCancellationControl
 import app.tavernbridge.launcher.model.UserOperationCancelled
 import app.tavernbridge.launcher.model.cancellationTarget
@@ -55,6 +55,8 @@ import app.tavernbridge.launcher.model.resolveWorkingStartedAtMillis
 import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
 import app.tavernbridge.launcher.model.retryActionAfterFailure
 import app.tavernbridge.launcher.model.ExistingInstallation
+import app.tavernbridge.launcher.model.InstallationImportMode
+import app.tavernbridge.launcher.model.protectBeforeReplacement
 import app.tavernbridge.launcher.model.canModifyTavernFiles
 import app.tavernbridge.launcher.model.validTavernEntryName
 import app.tavernbridge.launcher.termux.TermuxCommandResult
@@ -315,6 +317,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     (progress?.finishedAtMillis ?: 0L) > (state.value.lastOperationResult?.completedAtMillis ?: 0L)
                 val recoveredFailure = recoveredTerminal && progress?.status != "success"
                 val recoveredCancellation = recoveredTerminal && progress?.status == "cancelled"
+                val substepNotice = if (recoveredTerminal) recoveredSubstepNotice(
+                    BackupRequestCodec.parentOperation(repository.savedBackupRequest(), progress),
+                    progress?.operation.orEmpty(), progress?.status,
+                ) else null
                 val recoveredLogs = if (recoveredFailure && progress?.operation == "backup") {
                     backupFailureLog(progress.detail, progress.logText)
                 } else if (recoveredFailure) {
@@ -329,7 +335,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val recoveredDetail = if (recoveredFailure && !recoveredCancellation && progress != null) {
                     if (progress.operation == "backup") backupFailureDetail(progress.detail, progress.logText)
                     else operationFailureSummary(progress.errorCode, progress.detail, progress.logText)
-                } else progress?.detail.orEmpty().ifBlank {
+                } else substepNotice ?: progress?.detail.orEmpty().ifBlank {
                     if (recoveredFailure) "작업이 실패했습니다. 로그를 확인해 주세요." else "작업을 완료했습니다."
                 }
                 val recoveredSummary = if (recoveredTerminal && progress != null) {
@@ -366,7 +372,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         workProgress = if (environment.operationActive) recoveredProgress else null,
                         error = if (recoveredCancellation) null else if (recoveredFailure) recoveredDetail else it.error,
                         message = if (recoveredCancellation) "작업이 중단되었습니다. 중단 결과를 복원했습니다."
-                            else if (recoveredTerminal && !recoveredFailure) "앱이 종료된 동안 완료된 작업 결과를 복원했습니다." else it.message,
+                            else if (recoveredTerminal && !recoveredFailure) substepNotice
+                                ?: "앱이 종료된 동안 완료된 작업 결과를 복원했습니다." else it.message,
                         lastOperationResult = recoveredSummary,
                         logs = recoveredLogs,
                         backupStorageReady = backupStorageReady ?: it.backupStorageReady,
@@ -607,7 +614,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
                 val operation = progress?.operation.orEmpty().ifBlank { "unknown" }
                 val reportUnavailable = operation in setOf("update-preflight", "diagnose")
-                val substepNotice = recoveredSubstepNotice(requestedOperation, operation, progress?.status)
+                val substepNotice = recoveredSubstepNotice(
+                    requestedOperation ?: BackupRequestCodec.parentOperation(repository.savedBackupRequest(), progress),
+                    operation, progress?.status,
+                )
                 val resultDetail = when {
                     cancelled -> progress?.detail?.ifBlank { "작업을 안전하게 중단했습니다." } ?: "작업을 안전하게 중단했습니다."
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
@@ -910,6 +920,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         categories = setOf(BackupCategory.USER_DATA, BackupCategory.EXTENSIONS, BackupCategory.CONFIG),
                         includeSecrets = false,
                         customFolders = emptySet(),
+                        parentOperation = "update",
                     ).requireSuccess()
                     refreshBackupListAfterOperation()
                 }
@@ -1088,7 +1099,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun importBackup(uri: Uri) {
+    fun importBackup(uri: Uri, backupBefore: Boolean = false) {
         if (state.value.environment.processRunning) {
             mutableState.update { it.copy(error = "백업 파일을 가져오려면 먼저 SillyTavern 서버를 종료해 주세요.") }
             return
@@ -1098,7 +1109,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             label = "ZIP에서 바로 복원 중",
             successMessage = "선택한 ZIP의 복원을 완료했습니다. 원본 ZIP은 변경하지 않았습니다.",
         ) {
-            val result = repository.importBackup(uri)
+            val result = protectBeforeReplacement(backupBefore, { backupBeforeReplacement("import-backup") }) {
+                repository.importBackup(uri)
+            }
             if (result.isSuccess) refreshBackupListAfterOperation()
             result
         }
@@ -1157,15 +1170,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun confirmInstallationImport() {
+    fun confirmInstallationImport(mode: InstallationImportMode, backupBefore: Boolean) {
         val candidate = state.value.pendingInstallation ?: return
         if (commandEntryBlocked() || state.value.environment.processRunning) return
         mutableState.update { it.copy(pendingInstallation = null) }
         perform(
             operation = "import-install",
-            label = "기존 설치 이동 중",
+            label = if (mode == InstallationImportMode.MOVE) "기존 설치 이동 중" else "기존 설치 가져오는 중",
             successMessage = if (candidate.sameInstallation) "현재 SillyTavern 설치를 확인했습니다. 기존 폴더를 그대로 사용합니다."
-                else "기존 설치를 안전하게 이동했습니다.",
+                else "기존 설치를 가져왔습니다.",
             successMessageForResult = { result ->
                 when {
                     candidate.sameInstallation -> "현재 SillyTavern 설치를 확인했습니다. 기존 폴더를 그대로 사용합니다."
@@ -1173,10 +1186,26 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         "설치는 가져왔지만 원본 폴더를 정리하지 못했습니다. 새 설치를 확인한 뒤 원본을 직접 정리해 주세요."
                     result.stdout.lineSequence().any { it == "source_removed=1" } ->
                         "기존 설치를 이동했습니다. 검증 완료 후 원본 폴더를 정리했습니다."
+                    result.stdout.lineSequence().any { it == "source_kept=1" } ->
+                        "기존 설치를 가져왔습니다. 선택한 원본 폴더는 유지했으며, 이후 런처는 새 위치의 설치를 사용합니다."
                     else -> "기존 설치를 가져왔습니다. 원본 정리 여부는 작업 기록을 확인해 주세요."
                 }
             },
-        ) { repository.importExistingInstallation(candidate.sourcePath) }
+        ) {
+            protectBeforeReplacement(backupBefore && !candidate.sameInstallation, { backupBeforeReplacement("import-install") }) {
+                repository.importExistingInstallation(candidate.sourcePath, mode, candidate.destinationExists)
+            }
+        }
+    }
+
+    private suspend fun backupBeforeReplacement(parentOperation: String) {
+        // Full replacement needs a full recovery copy, including secrets. The confirmation
+        // explicitly discloses that the ZIP is not encrypted and remains in Download.
+        repository.createBackup(setOf(BackupCategory.FULL), includeSecrets = true, customFolders = emptySet(),
+            parentOperation = parentOperation)
+            .requireSuccess()
+        refreshBackupListAfterOperation()
+        operationCheckpoint()
     }
 
     fun createBackup(
@@ -1214,7 +1243,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun restoreBackup(fileName: String) {
+    fun restoreBackup(fileName: String, backupBefore: Boolean = false) {
         if (state.value.environment.processRunning) {
             mutableState.update { it.copy(error = "안전한 복원을 위해 먼저 SillyTavern 서버를 종료해 주세요.") }
             return
@@ -1222,9 +1251,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         perform(
             operation = "restore",
             label = "백업 복원 중",
-            successMessage = "백업 복원을 완료했습니다. 기존 상태는 임시 보호 후 교체했습니다.",
+            successMessage = if (backupBefore) "복원을 완료했습니다. 복원 전 전체 ZIP 백업은 Download에 보관했습니다."
+                else "백업 복원을 완료했습니다. 기존 상태의 임시 보호 사본은 정리했습니다.",
         ) {
-            val result = repository.restoreBackup(fileName)
+            val result = protectBeforeReplacement(backupBefore, { backupBeforeReplacement("restore") }) {
+                repository.restoreBackup(fileName)
+            }
             if (result.isSuccess) refreshBackupListAfterOperation()
             result
         }
@@ -1792,9 +1824,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             LocalProgressJournal(operation, ::publishProgress).phase(
                 "작업 요청 준비", "$label 요청을 Termux에 전달하고 있습니다.")
             val progressJob = pollOperationProgress(operation, operationStartedAt)
+            var committedResult: OperationResultSummary? = null
             try {
                 val result = cancellableOperation(operation, operationStartedAt, backupRequest) { block() }
-                var resolvedSuccessMessage = successMessageForResult(result)
                 if (!result.isSuccess && operationCancellationRequested && result.exitCode == 130) {
                     progressJob.cancel()
                     val environment = runCatching { repository.inspect() }.getOrElse { state.value.environment }
@@ -1819,6 +1851,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     return@launch
                 }
                 if (!result.isSuccess) throw IllegalStateException(result.readableError())
+                // Persist the terminal command result before any optional reads or animation.
+                // Process death/cancellation during refresh must not erase that success.
+                var resolvedSuccessMessage = try { successMessageForResult(result) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { successMessage }
+                val completed = operationSummary(
+                    operation, label, resolvedSuccessMessage, true, operationStartedAt,
+                    backupRequest = backupRequest,
+                )
+                committedResult = completed
+                mutableState.update { it.copy(lastOperationResult = completed) }
                 if (!appInForeground) {
                     mutableState.update {
                         it.copy(
@@ -1826,26 +1869,24 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             workingLabel = "",
                             workProgress = null,
                             message = "$resolvedSuccessMessage 앱으로 돌아오면 설치 상태를 다시 확인합니다.",
-                            lastOperationResult = operationSummary(
-                                operation, label, resolvedSuccessMessage, true, operationStartedAt,
-                                backupRequest = backupRequest,
-                            ),
+                            lastOperationResult = completed,
                         )
                     }
                     return@launch
                 }
                 progressJob.cancel()
-                val environment = if (operation == "backup") {
-                    val check = checkCompletedBackup(state.value.environment) {
-                        repository.inspect(::publishProgress, operation)
-                    }
-                    if (check.refreshFailed) resolvedSuccessMessage += " 상태 확인 응답은 받지 못했습니다. 새로고침해 주세요."
-                    check.value
-                } else repository.inspect(::publishProgress, operation)
+                val check = checkCompletedOperation(state.value.environment to state.value.backgroundStatus) {
+                    val refreshed = repository.inspect(::publishProgress, operation)
+                    refreshed to repository.backgroundStatus(refreshed.processRunning)
+                }
+                if (check.refreshFailed) resolvedSuccessMessage += " 작업은 완료했지만 상태를 갱신하지 못했습니다. 새로고침해 주세요."
+                val (environment, backgroundStatus) = check.value
+                val refreshedResult = completed.copy(detail = resolvedSuccessMessage).also(operationResultStore::save)
+                committedResult = refreshedResult
                 mutableState.update {
                     it.copy(
                         environment = environment,
-                        backgroundStatus = repository.backgroundStatus(environment.processRunning),
+                        backgroundStatus = backgroundStatus,
                         section = if (environment.sillyTavernInstalled) MainSection.HOME else it.section,
                         isWorking = true,
                         workingLabel = "작업 완료",
@@ -1859,15 +1900,22 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         workingLabel = "",
                         workProgress = null,
                         message = resolvedSuccessMessage,
-                        lastOperationResult = operationSummary(
-                            operation, label, resolvedSuccessMessage, true, operationStartedAt,
-                            backupRequest = backupRequest,
-                        ),
+                        lastOperationResult = refreshedResult,
                     )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                val completed = committedResult
+                if (completed != null) {
+                    // A later UI-only failure cannot turn an acknowledged write into a retry.
+                    mutableState.update { it.copy(
+                        isWorking = false, workingLabel = "", workProgress = null,
+                        message = "${completed.detail} 작업은 완료했습니다. 상태를 다시 확인해 주세요.",
+                        lastOperationResult = completed,
+                    ) }
+                    return@launch
+                }
                 val backupProgress = if (operation == "backup" && backupRequest != null) {
                     val current = try { repository.readProgress() }
                     catch (cancelled: CancellationException) { throw cancelled }
@@ -1961,7 +2009,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "switch-branch" -> "브랜치 변경"
         "backup" -> "백업 생성"
         "import-backup" -> "ZIP에서 바로 복원"
-        "import-install" -> "기존 설치 이동"
+        "import-install" -> "기존 설치 가져오기"
         "write-st-file" -> "파일 저장"
         "mkdir-st" -> "폴더 만들기"
         "create-st-file" -> "파일 만들기"

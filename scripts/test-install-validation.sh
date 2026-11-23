@@ -134,6 +134,11 @@ setup_case() {
     curl() { return 1; }
     ensure_import_runtime() { return 0; }
     begin_operation() { CURRENT_OPERATION="$1"; OPERATION_STARTED_EPOCH="$(date +%s)"; }
+    if [[ "$OSTYPE" == msys* ]]; then
+        # Git Bash cannot set POSIX directory modes on some Windows ACLs.
+        # Keep real exclusive creation/collision behavior; Linux CI checks modes.
+        mkdir() { if [[ "${1:-}" == -m ]]; then shift 2; fi; command mkdir "$@"; }
+    fi
 }
 make_install() {
     local target="$1" manifest="${2:-$TEST_ROOT/ranges/missing/package.json}"
@@ -147,12 +152,14 @@ make_install() {
     git -C "$target" -c user.name='Install Test' -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -qm fixture
 }
 run_import_case() (
-    local kind="$1" old timestamp
+    local kind="$1" old timestamp source_mode=move destination_policy=replace
     setup_case "$kind"
     old="$TEST_ROOT/$kind/source/SillyTavern"
     make_install "$old" "$TEST_ROOT/ranges/exact/package.json"
-    make_install "$ST_HOME"
-    printf destination-original > "$ST_HOME/data/default-user/state.txt"
+    if [[ "$kind" != keep-default && "$kind" != late-destination ]]; then
+        make_install "$ST_HOME"
+        printf destination-original > "$ST_HOME/data/default-user/state.txt"
+    fi
     case "$kind" in
         incompatible)
             cp "$TEST_ROOT/ranges/future/package.json" "$old/package.json"
@@ -185,8 +192,32 @@ run_import_case() (
             installation_server_running() { [[ -f "$TEST_ROOT/$kind/server-running" && "$1" == "$old" ]]; }
             ;;
         offline-success) : ;; # Use the actual npm installer with offline config.
+        keep-default|keep-existing)
+            source_mode=keep
+            install_dependencies() { mkdir -p "$ST_HOME/node_modules"; }
+            remove_verified_install_source() { fail 'keep mode reached source deletion'; }
+            eval "$(declare -f install_source_snapshot | sed '1s/install_source_snapshot/original_source_snapshot/')"
+            install_source_snapshot() {
+                local count=0
+                [[ ! -f "$TEST_ROOT/$kind/check-count" ]] || count="$(cat "$TEST_ROOT/$kind/check-count")"
+                count=$((count + 1)); printf '%s' "$count" > "$TEST_ROOT/$kind/check-count"
+                original_source_snapshot "$@"
+            }
+            ;;
+        no-replace) source_mode=keep; destination_policy=empty ;;
+        late-destination)
+            source_mode=keep; destination_policy=empty
+            eval "$(declare -f measured_copy | sed '1s/measured_copy/original_measured_copy/')"
+            measured_copy() {
+                original_measured_copy "$@" || return $?
+                make_install "$ST_HOME"
+                printf late-destination > "$ST_HOME/data/default-user/state.txt"
+            }
+            ;;
+        cancelled) measured_copy() { exit 130; } ;;
     esac
-    import_install "$(printf '%s' "$old" | base64 -w 0)"
+    if [[ "$kind" == keep-default ]]; then import_install "$(printf '%s' "$old" | base64 -w 0)"
+    else import_install "$(printf '%s' "$old" | base64 -w 0)" "$source_mode" "$destination_policy"; fi
 )
 expect_exit 56 run_import_case incompatible
 [[ "$(cat "$TEST_ROOT/incompatible/destination/data/default-user/state.txt")" == destination-original ]] || fail 'incompatible install changed destination'
@@ -208,6 +239,26 @@ expect_exit 0 run_import_case offline-success
 grep -Fxq source_removed=1 "$TEST_ROOT/last-output" || fail 'validated unchanged source was not removed'
 [[ ! -e "$TEST_ROOT/offline-success/source/SillyTavern" ]] || fail 'unchanged source remains after success'
 echo 'PASS: real imports reject incompatible runtime, preserve late edits/read failures/new servers/deletion failures, and succeed with actual offline npm'
+
+for kind in keep-default keep-existing; do
+    expect_exit 0 run_import_case "$kind"
+    grep -Fxq source_kept=1 "$TEST_ROOT/last-output" || fail "$kind did not report intentionally retained source"
+    [[ "$(cat "$TEST_ROOT/$kind/source/SillyTavern/data/default-user/state.txt")" == before ]] || fail "$kind changed source"
+    [[ "$(cat "$TEST_ROOT/$kind/destination/data/default-user/state.txt")" == before ]] || fail "$kind did not import source"
+    [[ "$(cat "$TEST_ROOT/$kind/check-count")" == 2 ]] || fail "$kind added an unnecessary deletion-only hash pass"
+done
+expect_exit 51 run_import_case no-replace
+[[ "$(cat "$TEST_ROOT/no-replace/destination/data/default-user/state.txt")" == destination-original ]] || fail 'unconfirmed existing destination changed'
+expect_exit 51 run_import_case late-destination
+[[ "$(cat "$TEST_ROOT/late-destination/destination/data/default-user/state.txt")" == late-destination ]] || fail 'late destination was overwritten'
+expect_exit 130 run_import_case cancelled
+[[ "$(cat "$TEST_ROOT/cancelled/destination/data/default-user/state.txt")" == destination-original ]] || fail 'cancel changed destination'
+[[ "$(cat "$TEST_ROOT/cancelled/source/SillyTavern/data/default-user/state.txt")" == before ]] || fail 'cancel removed source'
+echo 'PASS: keep/move choice, two-pass keep verification, explicit replacement permission, late destination and cancellation boundaries'
+invalid_source_mode() ( import_install ignored invalid-mode replace )
+invalid_destination_policy() ( import_install ignored keep invalid-policy )
+expect_exit 64 invalid_source_mode
+expect_exit 64 invalid_destination_policy
 
 full_restore_incompatible() (
     setup_case full-restore

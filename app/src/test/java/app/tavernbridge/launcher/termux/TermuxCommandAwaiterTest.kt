@@ -25,6 +25,7 @@ class TermuxCommandAwaiterTest {
         }
         assertSame(expected, actual)
         assertEquals(0, results.subscriptionCount.value)
+        assertFalse(TermuxResultBus.callbacks.isAwaiting("ours"))
     }
 
     @Test
@@ -35,6 +36,7 @@ class TermuxCommandAwaiterTest {
         assertFalse(error is CancellationException)
         assertTrue(error?.message.orEmpty().startsWith("[TERMUX_TIMEOUT]"))
         assertEquals(0, results.subscriptionCount.value)
+        assertFalse(TermuxResultBus.callbacks.isAwaiting("ours"))
     }
 
     @Test
@@ -45,6 +47,7 @@ class TermuxCommandAwaiterTest {
         }.exceptionOrNull()
         assertTrue(error is TimeoutCancellationException)
         assertEquals(0, results.subscriptionCount.value)
+        assertFalse(TermuxResultBus.callbacks.isAwaiting("ours"))
     }
 
     @Test
@@ -58,5 +61,36 @@ class TermuxCommandAwaiterTest {
         assertEquals(expected.javaClass, error?.javaClass)
         assertEquals(expected.message, error?.message)
         assertEquals(0, results.subscriptionCount.value)
+        assertFalse(TermuxResultBus.callbacks.isAwaiting("ours"))
+    }
+
+    @Test
+    fun activeBusResponseArrivesOnceAndTokenIsReleased() = runBlocking {
+        val id = "11111111-2222-3333-4444-555555555555"
+        var released = false
+        val actual = awaitTermuxCommandResult(id, 1_000, TermuxResultBus.results) {
+            assertTrue(TermuxResultBus.callbacks.attachCancellation(id) { released = true })
+            TermuxResultBus.publish(result("unknown"))
+            TermuxResultBus.publish(result(id))
+            TermuxResultBus.publish(result(id).copy(stdout = "duplicate must not replace first"))
+        }
+        assertEquals("ok", actual.stdout)
+        assertTrue(released)
+        assertFalse(TermuxResultBus.callbacks.isAwaiting(id))
+    }
+
+    @Test
+    fun timedOutRequestReleasesTokenAndLateResultIsIgnored() = runBlocking {
+        val id = "11111111-2222-3333-4444-666666666666"
+        var released = false
+        val error = runCatching {
+            awaitTermuxCommandResult(id, 10, TermuxResultBus.results) {
+                TermuxResultBus.callbacks.attachCancellation(id) { released = true }
+            }
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(released)
+        assertFalse(TermuxResultBus.callbacks.isAwaiting(id))
+        TermuxResultBus.publish(result(id))
     }
 }

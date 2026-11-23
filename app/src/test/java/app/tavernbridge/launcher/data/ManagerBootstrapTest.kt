@@ -18,12 +18,15 @@ class ManagerBootstrapTest {
     @get:Rule val temporary = TemporaryFolder()
 
     @Test
-    fun bundledManagerAndHelpersFitSingleShellArgumentAfterCompression() {
-        val command = createManagerBundleBootstrapCommand(
+    fun bundledManagerAndHelpersTravelInBoundedCommands() {
+        val deployment = createManagerDeployment(
             "/data/data/com.termux/files/home/.st-launcher",
             bundledAssets().associate { it.name to it.readText() },
+            "11111111-2222-3333-4444-555555555555",
         )
-        assertTrue("Combined manager/helper bootstrap exceeds safe argument size", command.toByteArray(Charsets.UTF_8).size < 100_000)
+        for (command in deployment.commands + deployment.probe) {
+            assertTrue("Deployment fragment exceeds safe transport budget", command.toByteArray(Charsets.UTF_8).size < 32_000)
+        }
     }
 
     @Test
@@ -31,11 +34,14 @@ class ManagerBootstrapTest {
         assumeLinuxShell()
         val directory = temporary.newFolder("bundled ' helpers")
         val sources = bundledAssets()
-        val command = createManagerBundleBootstrapCommand(directory.path, sources.associate { it.name to it.readText() })
+        val deployment = createManagerDeployment(directory.path, sources.associate { it.name to it.readText() },
+            "11111111-2222-3333-4444-555555555555")
         // Each production bootstrap validates bash syntax before replacing its
         // file. Exercise the complete chained payload, not only a sample script.
-        assertEquals(0, runShell(command))
-        assertEquals(sources.map { it.name }.toSet(), directory.list().orEmpty().toSet())
+        assertEquals("assets_ready=0", runShellOutput(deployment.probe).trim())
+        deployment.commands.forEach { assertEquals(0, runShell(it)) }
+        assertEquals("assets_ready=1", runShellOutput(deployment.probe).trim())
+        assertEquals(sources.map { it.name }.toSet() + ".assets-sha256", directory.list().orEmpty().toSet())
         for (source in sources) {
             val target = directory.resolve(source.name)
             assertEquals(source.readText(), target.readText())
@@ -44,6 +50,35 @@ class ManagerBootstrapTest {
                 Files.getPosixFilePermissions(target.toPath()),
             )
         }
+        directory.resolve(sources.first().name).appendText("# changed\n")
+        assertEquals("assets_ready=0", runShellOutput(deployment.probe).trim())
+    }
+
+    @Test
+    fun realCommandBudgetIncludesUtf8ContentAndArguments() {
+        assertEquals("echo ok", checkedTermuxCommand("echo ok"))
+        val text = "한".repeat(40_000)
+        try {
+            checkedTermuxCommand("manager write-st-file '$text'")
+            throw AssertionError("oversized UTF-8 command accepted")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().contains("TERMUX_COMMAND_TOO_LARGE"))
+        }
+    }
+
+    @Test
+    fun interruptedOrCorruptedTransferDoesNotDeployOrClaimReadiness() {
+        assumeLinuxShell()
+        val directory = temporary.newFolder("interrupted deployment")
+        val target = directory.resolve("manager.sh").apply { writeText("old\n") }
+        val deployment = createManagerDeployment(directory.path, mapOf("manager.sh" to "#!/bin/bash\necho ready\n"),
+            "11111111-2222-3333-4444-555555555555")
+        assertEquals(0, runShell(deployment.commands.first()))
+        assertEquals("assets_ready=0", runShellOutput(deployment.probe).trim())
+        assertTrue(runShell(deployment.commands.last()) != 0)
+        assertEquals("old\n", target.readText())
+        assertEquals("assets_ready=0", runShellOutput(deployment.probe).trim())
+        assertEquals(0, runShell(deployment.cleanup))
     }
 
     @Test
@@ -153,5 +188,12 @@ class ManagerBootstrapTest {
         val process = ProcessBuilder("bash", "-c", command).redirectErrorStream(true).start()
         process.inputStream.bufferedReader().use { it.readText() }
         return process.waitFor()
+    }
+
+    private fun runShellOutput(command: String): String {
+        val process = ProcessBuilder("bash", "-c", command).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals(output, 0, process.waitFor())
+        return output
     }
 }

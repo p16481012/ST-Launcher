@@ -281,7 +281,7 @@ zip_regression_folder_move() {
         printf 'current-device-module\n' > "$ST_HOME/node_modules/current.txt"
         dependency_hash > "$DEPENDENCY_HASH_FILE"
     }
-    import_install "$(printf '%s' "$source" | base64 -w 0)"
+    import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
 }
 zip_regression_expect_exit 0 folder-move zip_regression_folder_move
 [[ "$(cat "$TEST_ROOT/zip-folder-move/install/data/default-user/state.txt")" == incoming ]] || fail "existing folder was not adopted"
@@ -295,7 +295,7 @@ zip_regression_folder_failure() {
     local source="$ZIP_CASE_ROOT/TermuxOld/SillyTavern"
     zip_regression_install "$source" incoming 1
     install_dependencies() { return 1; }
-    import_install "$(printf '%s' "$source" | base64 -w 0)"
+    import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
 }
 zip_regression_expect_exit 26 folder-failure zip_regression_folder_failure
 [[ "$(cat "$TEST_ROOT/zip-folder-failure/install/data/default-user/state.txt")" == original ]] || fail "failed folder import did not roll back destination"
@@ -322,7 +322,7 @@ zip_regression_folder_changed() {
     local source="$ZIP_CASE_ROOT/old/SillyTavern"
     zip_regression_install "$source" incoming 1
     install_dependencies() { printf 'late-edit\n' > "$source/data/default-user/new.txt"; }
-    import_install "$(printf '%s' "$source" | base64 -w 0)"
+    import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
 }
 zip_regression_expect_exit 0 folder-changed zip_regression_folder_changed
 [[ -f "$TEST_ROOT/zip-folder-changed/old/SillyTavern/data/default-user/new.txt" ]] || fail "late source edit was deleted"
@@ -334,7 +334,7 @@ zip_regression_folder_source_running() {
     local source="$ZIP_CASE_ROOT/old/SillyTavern"
     zip_regression_install "$source" incoming 1
     installation_server_running() { [[ "$1" == "$source" ]]; }
-    import_install "$(printf '%s' "$source" | base64 -w 0)"
+    import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
 }
 zip_regression_expect_exit 10 folder-source-running zip_regression_folder_source_running
 [[ "$(cat "$TEST_ROOT/zip-folder-source-running/install/data/default-user/state.txt")" == original ]] || fail "active source changed destination"
@@ -347,7 +347,7 @@ zip_regression_folder_source_started_late() {
     zip_regression_install "$source" incoming 1
     installation_server_running() { [[ "$1" == "$source" && "$source_started" == 1 ]]; }
     install_dependencies() { source_started=1; }
-    import_install "$(printf '%s' "$source" | base64 -w 0)"
+    import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
 }
 zip_regression_expect_exit 0 folder-source-started-late zip_regression_folder_source_started_late
 [[ "$(cat "$TEST_ROOT/zip-folder-source-started-late/install/data/default-user/state.txt")" == incoming ]] || fail "late source startup invalidated completed destination"
@@ -360,7 +360,7 @@ zip_regression_folder_target_running() {
     local source="$ZIP_CASE_ROOT/old/SillyTavern"
     zip_regression_install "$source" incoming 1
     curl() { return 0; }
-    import_install "$(printf '%s' "$source" | base64 -w 0)"
+    import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
 }
 zip_regression_expect_exit 10 folder-target-running zip_regression_folder_target_running
 [[ "$(cat "$TEST_ROOT/zip-folder-target-running/install/data/default-user/state.txt")" == original ]] || fail "HTTP-active target was changed"
@@ -397,7 +397,7 @@ if [[ "$OSTYPE" != msys* ]]; then
         local source="$ZIP_CASE_ROOT/old/SillyTavern"
         zip_regression_install "$source" incoming 1
         ln -s "$ST_HOME/data" "$source/data/outside"
-        import_install "$(printf '%s' "$source" | base64 -w 0)"
+        import_install "$(printf '%s' "$source" | base64 -w 0)" move replace
     }
     zip_regression_expect_exit 53 folder-symlink zip_regression_folder_symlink
     [[ "$(cat "$TEST_ROOT/zip-folder-symlink/install/data/default-user/state.txt")" == original ]] || fail "unsafe folder modified destination"

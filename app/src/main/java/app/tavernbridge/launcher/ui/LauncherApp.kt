@@ -163,6 +163,7 @@ private data class Confirmation(
     val description: String,
     val confirmLabel: String,
     val action: () -> Unit,
+    val backupAction: ((Boolean) -> Unit)? = null,
 )
 
 internal fun formatUiText(text: String, keepWordsTogether: Boolean): String {
@@ -276,9 +277,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             result.data?.data?.let { uri ->
                 confirmation = Confirmation(
                     title = "이 ZIP에서 바로 복원할까요?",
-                    description = "압축을 한 번만 풀어 구조와 용량을 검사한 뒤 복원합니다. 같은 항목의 현재 데이터는 백업 내용으로 교체되며, 교체 전 현재 상태를 안전 보관합니다. 원본 ZIP은 변경하지 않습니다. 서버를 먼저 종료해 주세요.",
+                    description = "압축을 한 번만 풀어 구조와 용량을 검사한 뒤 복원합니다. 같은 항목의 현재 데이터는 백업 내용으로 교체되므로, 백업 이후 생긴 대화도 사라질 수 있습니다. 실패 시 복구용 임시 사본은 성공 후 삭제됩니다. 원본 ZIP은 변경하지 않습니다. 서버를 먼저 종료해 주세요.",
                     confirmLabel = "검사 후 복원",
                     action = { viewModel.importBackup(uri) },
+                    backupAction = if (state.environment.sillyTavernInstalled) ({ backup -> viewModel.importBackup(uri, backup) }) else null,
                 )
             }
         }
@@ -319,15 +321,21 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
 
     confirmation?.let { pending ->
+        var backupBefore by remember(pending) { mutableStateOf(true) }
         AlertDialog(
             onDismissRequest = { confirmation = null },
             title = { Text(pending.title) },
-            text = { Text(pending.description) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(pending.description)
+                    if (pending.backupAction != null) ReplacementBackupChoice(backupBefore) { backupBefore = it }
+                }
+            },
             confirmButton = {
                 Button(onClick = {
                     confirmation = null
-                    pending.action()
-                }) { Text(pending.confirmLabel) }
+                    pending.backupAction?.invoke(backupBefore) ?: pending.action()
+                }) { Text(if (pending.backupAction != null && !backupBefore) "백업 없이 복원" else pending.confirmLabel) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmation = null }) { Text("취소") }
@@ -338,7 +346,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     state.pendingInstallation?.let { candidate ->
         InstallationImportConfirmation(
             installation = candidate,
-            destinationExists = state.environment.sillyTavernInstalled,
+            destinationExists = candidate.destinationExists,
             onConfirm = viewModel::confirmInstallationImport,
             onDismiss = viewModel::dismissInstallationImport,
         )
@@ -532,6 +540,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     description = backupRestorePreview(backup),
                                     confirmLabel = "안전하게 복원",
                                     action = { viewModel.restoreBackup(backup.fileName) },
+                                    backupAction = if (state.environment.sillyTavernInstalled) ({ protect -> viewModel.restoreBackup(backup.fileName, protect) }) else null,
                                 )
                             },
                             onDeleteBackups = { backups ->
@@ -726,7 +735,8 @@ private fun HomeScreen(
             }
             item {
                 Text(
-                    "서버는 이 기기의 127.0.0.1에서만 열립니다. 외부 네트워크에는 노출되지 않습니다.",
+                    if (environment.externalAccessEnabled) "외부 접속이 허용되어 있습니다. 다른 기기의 접속은 서버의 네트워크·접근 허용 설정에 따릅니다."
+                    else "현재 설정은 이 기기에서만 접속하도록 되어 있습니다. 설정 변경은 서버를 다시 시작한 뒤 적용됩니다.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -1393,7 +1403,7 @@ private fun backupRestorePreview(backup: BackupArchive): String = buildString {
     appendLine("비밀 설정: ${if (backup.includesSecrets) "포함됨" else "포함되지 않음 · 현재 secrets.json 유지"}")
     appendLine("무결성: ${if (backup.integrity == "zip-crc32") "ZIP CRC 검사" else "복원 전 전체 ZIP 검사"}")
     appendLine()
-    append("현재 데이터를 임시 보관한 뒤 교체하며, 실패하면 기존 상태로 자동 복구합니다.")
+    append("현재 데이터를 백업 내용으로 교체합니다. 백업 이후 생긴 대화는 사라질 수 있습니다. 실패 시 복구용 임시 사본은 성공 후 삭제됩니다.")
 }.trim()
 
 private fun formatBackupBytes(bytes: Long): String = when {

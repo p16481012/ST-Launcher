@@ -40,6 +40,7 @@ jobs:
           bash -n app/src/main/assets/archive-progress.sh
           bash -n app/src/main/assets/safe-backup.sh
           bash -n app/src/main/assets/install-validation.sh
+          bash -n app/src/main/assets/transaction-recovery.sh
 
       - name: Test manager safety helpers
         run: |
@@ -62,6 +63,9 @@ jobs:
             bash scripts/test-archive-prerequisites.sh
             bash scripts/test-safety-storage.sh
             bash scripts/test-safety-manager.sh
+            bash scripts/test-transaction-recovery.sh
+            bash scripts/test-backup-surface.sh
+            bash scripts/test-progress-hardlinks.sh
             bash scripts/test-restore-recovery.sh
             bash scripts/test-restore-work-collision.sh
             bash scripts/test-backup-create.sh

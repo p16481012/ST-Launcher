@@ -6,6 +6,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OperationErrorSummaryTest {
+    @Test fun forcedTerminationEvidenceSurvivesCleanupWithoutInventingACause() {
+        val detail = operationErrorSummary("[UNKNOWN_COMMAND_FAILURE]\n작업 실패\n준비 중\n" +
+            "Process completed (signal 9)\n" + "정리 중\n".repeat(30))
+        assertTrue(detail.contains("signal 9"))
+        assertFalse(detail.contains("phantom"))
+        assertFalse(detail.contains("메모리 부족"))
+    }
+
     @Test fun recoveredFailureUsesMatchingOperationLogWithStableCodeFirst() {
         val detail = operationFailureSummary("NODE_RUNTIME_FAILED", "Node.js를 실행하지 못했습니다. pkg upgrade 후 다시 시도해 주세요.",
             "패키지 확인 중\n".repeat(20) + "CANNOT LINK EXECUTABLE node: cannot locate symbol missing_runtime\n")

@@ -17,12 +17,15 @@ internal suspend fun awaitTermuxCommandResult(
     val pending = async(start = CoroutineStart.UNDISPATCHED) {
         withTimeoutOrNull(timeoutMillis) { results.first { it.callbackId == callbackId } }
     }
+    var registration: TermuxCallbackRegistry.Registration? = null
     try {
+        registration = TermuxResultBus.callbacks.register(callbackId)
         execute()
         pending.await() ?: throw IllegalStateException(
             "[TERMUX_TIMEOUT]\nTermux 응답 대기 시간이 지났습니다. 작업이 계속 실행 중일 수 있으므로 상태를 확인해 주세요.",
         )
     } finally {
+        registration?.let(TermuxResultBus.callbacks::unregister)
         pending.cancel()
     }
 }

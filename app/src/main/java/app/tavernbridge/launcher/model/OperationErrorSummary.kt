@@ -64,7 +64,8 @@ private val routineFailure = Regex(
     RegexOption.IGNORE_CASE,
 )
 private val runtimeFailure = Regex(
-    "CANNOT LINK EXECUTABLE|cannot locate symbol|library .+ not found|no space left on device|permission denied",
+    "CANNOT LINK EXECUTABLE|cannot locate symbol|library .+ not found|no space left on device|permission denied|" +
+        "\\bSIGKILL\\b|\\bsignal\\s*[:=]?\\s*9\\b",
     RegexOption.IGNORE_CASE,
 )
 private val specificFailure = Regex(
