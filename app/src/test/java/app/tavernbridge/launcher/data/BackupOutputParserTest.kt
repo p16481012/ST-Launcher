@@ -28,6 +28,8 @@ class BackupOutputParserTest {
         assertEquals(setOf(BackupCategory.USER_DATA, BackupCategory.CUSTOM), parsed.first().categories)
         assertEquals(setOf("characters", "chats"), parsed.first().customFolders)
         assertTrue(parsed.first().includesSecrets)
+        assertEquals(null, parsed.first().characterFiles)
+        assertEquals(null, parsed.first().chatFiles)
     }
 
     @Test
@@ -50,6 +52,14 @@ class BackupOutputParserTest {
         assertEquals(12, parsed.entryCount)
         assertEquals("zip-crc32", parsed.integrity)
         assertTrue(parsed.restoreSpaceReady)
+        val withCounts = BackupOutputParser.parse("$record\t3\t0").single()
+        assertEquals(3, withCounts.characterFiles)
+        assertEquals(0, withCounts.chatFiles)
+        for (bad in listOf("-1", "500001", "99999999999999", "broken", "")) {
+            val unknown = BackupOutputParser.parse("$record\t$bad\t$bad").single()
+            assertEquals(null, unknown.characterFiles)
+            assertEquals(null, unknown.chatFiles)
+        }
     }
 
     private fun line(

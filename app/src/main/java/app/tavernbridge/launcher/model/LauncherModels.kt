@@ -139,6 +139,7 @@ data class LauncherUiState(
     val backupTransfer: BackupTransferState? = null,
     val backupFolders: List<CustomBackupFolder> = emptyList(),
     val backupStorageReady: Boolean? = null,
+    val safetyInventory: SafetyInventoryUiState = SafetyInventoryUiState(),
     val autoBackupBeforeUpdate: Boolean = true,
     val updatePreflight: UpdatePreflight? = null,
     val lastUpdateRecord: UpdateRecord? = null,

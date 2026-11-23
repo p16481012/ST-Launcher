@@ -28,6 +28,8 @@ object BackupOutputParser {
                 integrity = fields.getOrNull(12)?.let(::decode).orEmpty(),
                 requiredRestoreBytes = fields.getOrNull(13)?.toLongOrNull() ?: 0,
                 availableRestoreBytes = fields.getOrNull(14)?.toLongOrNull() ?: 0,
+                characterFiles = fields.getOrNull(15)?.toIntOrNull()?.takeIf { it in 0..500_000 },
+                chatFiles = fields.getOrNull(16)?.toIntOrNull()?.takeIf { it in 0..500_000 },
             )
         }.getOrNull()
     }

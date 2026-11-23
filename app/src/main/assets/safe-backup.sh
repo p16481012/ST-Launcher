@@ -89,6 +89,39 @@ function syncDirectory(target) {
     const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | (fs.constants.O_NOFOLLOW || 0));
     try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
+function recordCompletion() {
+    // This optional record lets inventory distinguish a durable successful
+    // snapshot from old, unmarked archives without re-reading many GiB. Never
+    // turn a completed archive into a failed backup merely for a marker error.
+    const temporary = path.join(parent, `.st-safety-complete-${process.pid}.tmp`);
+    const destination = path.join(parent, '.st-safety-complete.json');
+    let fd = null, writtenIdentity = null, published = false;
+    try {
+        if (!sameDirectory(parent, parentIdentity) || fs.existsSync(destination)) return false;
+        const current = fs.lstatSync(archive, { bigint: true });
+        const record = { format: 'st-launcher-safety-complete-v1', file: path.basename(archive) };
+        for (const key of ['dev', 'ino', 'size', 'mtimeNs']) record[key] = current[key].toString();
+        fd = fs.openSync(temporary, 'wx', 0o600);
+        writtenIdentity = fs.fstatSync(fd);
+        fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd);
+        fs.closeSync(fd); fd = null;
+        if (!sameDirectory(parent, parentIdentity) || !sameArchive(fs.lstatSync(archive))) return false;
+        fs.renameSync(temporary, destination); published = true;
+        syncDirectory(parent);
+        return true;
+    } catch (_) {
+        return false;
+    } finally {
+        if (fd !== null) try { fs.closeSync(fd); } catch (_) {}
+        if (!published && writtenIdentity) {
+            try {
+                const current = fs.lstatSync(temporary);
+                if (sameDirectory(parent, parentIdentity) && sameNodeIdentity(current, writtenIdentity)) fs.unlinkSync(temporary);
+            } catch (_) {}
+        }
+    }
+}
+function sameNodeIdentity(a, b) { return a.dev === b.dev && a.ino === b.ino && !a.isSymbolicLink(); }
 function prepareStorage() {
     // Reserve the actual output atomically, rather than checking exists then
     // replacing it. This rejects existing files AND dangling symbolic links.
@@ -302,8 +335,10 @@ async function main() {
     // Only a successful, durable result permits the manager to retain the
     // private snapshot directory and subsequently clean the Git worktree.
     committed = true;
+    const completionRecorded = recordCompletion();
     state.progress_mode = state.total_bytes > 0 ? 'bytes' : 'files'; activity(); publish(true, '안전 백업 저장과 원본 변경 검사를 완료했습니다.');
     log(`안전 백업 저장 및 원본 변경 검사 완료 · 압축 파일 ${bytes(fs.statSync(archive).size)}`);
+    if (!completionRecorded) log('안전 백업 원본은 저장했습니다. 목록용 완료 기록은 남기지 못했으며 파일은 유지합니다.');
     console.log(`safety_backup_b64=${Buffer.from(archive).toString('base64')}`);
 }
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {

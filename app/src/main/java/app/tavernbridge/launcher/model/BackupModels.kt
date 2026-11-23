@@ -62,6 +62,10 @@ data class BackupArchive(
     val integrity: String = "",
     val requiredRestoreBytes: Long = 0,
     val availableRestoreBytes: Long = 0,
+    // Metadata counts of matching files, not verified character/chat entities.
+    // null is an older backup without these fields; never rescan it automatically.
+    val characterFiles: Int? = null,
+    val chatFiles: Int? = null,
 ) {
     val restoreSpaceReady: Boolean
         get() = requiredRestoreBytes <= 0 || availableRestoreBytes >= requiredRestoreBytes

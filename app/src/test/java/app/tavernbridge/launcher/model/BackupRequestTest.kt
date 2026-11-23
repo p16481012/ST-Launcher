@@ -64,7 +64,7 @@ class BackupRequestTest {
 
     @Test fun serializedParentRecoversOnlyForTheSameBackup() {
         val progress = WorkProgress(100, "백업 완료", "", status = "success", operation = "backup", backupRequestId = id)
-        listOf("update", "restore", "import-backup", "import-install").forEach { parent ->
+        listOf("update", "restore", "import-backup", "import-install", "reset-installation").forEach { parent ->
             val original = request().copy(parentOperation = parent)
             val saved = BackupRequestCodec.decode(BackupRequestCodec.encode(original))
             assertEquals(original, saved)
@@ -91,7 +91,7 @@ class BackupRequestTest {
     }
 
     @Test fun invalidParentRecordsCannotNameAnArbitraryOperation() {
-        listOf("", "backup", "delete-backup", "reset-installation", "unknown", "restore|extra").forEach {
+        listOf("", "backup", "delete-backup", "unknown", "restore|extra").forEach {
             assertNull(BackupRequestCodec.decode("2|$id|full|1||$it"))
         }
         assertNull(BackupRequestCodec.decode("1|$id|full|1||restore"))

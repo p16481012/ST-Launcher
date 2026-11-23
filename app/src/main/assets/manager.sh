@@ -24,6 +24,7 @@ PROGRESS_FILE="$RUN_DIR/progress.env"
 HEARTBEAT_FILE="$RUN_DIR/progress-heartbeat.env"
 PROGRESS_HELPER="${ST_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/progress.sh}"
 ARCHIVE_PROGRESS_HELPER="${ST_ARCHIVE_PROGRESS_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/archive-progress.sh}"
+SAFETY_INVENTORY_HELPER="${ST_SAFETY_INVENTORY_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/safety-inventory.sh}"
 SAFETY_BACKUP_HELPER="${ST_SAFETY_BACKUP_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/safe-backup.sh}"
 INSTALL_VALIDATION_HELPER="${ST_INSTALL_VALIDATION_HELPER:-$(dirname "$MANAGER_SCRIPT_PATH")/install-validation.sh}"
 PROGRESS_MONITOR_PID=""
@@ -188,6 +189,12 @@ manager_error_code() {
         *:62) echo "NODE_RUNTIME_FAILED" ;;
         *:63) echo "NPM_RUNTIME_FAILED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
+        safety-*:65) echo "SAFETY_ITEM_CHANGED" ;;
+        safety-*:66) echo "SAFETY_PATH_UNSAFE" ;;
+        safety-*:67) echo "SAFETY_RECOVERY_PENDING" ;;
+        safety-*:68) echo "SAFETY_EXPORT_FAILED" ;;
+        safety-*:69) echo "SAFETY_ITEM_UNSUPPORTED" ;;
+        safety-*:70) echo "SAFETY_INVENTORY_FAILED" ;;
         *:65) echo "ARCHIVE_TOOL_INSTALL_FAILED" ;;
         *:130) echo "OPERATION_CANCELLED" ;;
         *:137) echo "PROCESS_KILLED" ;;
@@ -226,7 +233,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash)
+        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
             return 0
             ;;
         *)
@@ -862,7 +869,7 @@ begin_operation() {
     export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
-    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install ]]; then
+    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
         CANCELLATION_GUARD=0
@@ -1775,6 +1782,23 @@ backup_metadata_valid() {
         # These fields were absent from early v1 backups.
         unsigned_decimal "${value:-0}" >/dev/null || return 1
     done
+    for field in character_files chat_files; do
+        value="$(printf '%s\n' "$manifest" | sed -n "s/^${field}=//p")"
+        # Empty/missing is unknown for old archives, never a reason to rescan them.
+        [[ -n "$value" ]] || continue
+        value="$(unsigned_decimal "$value")" || return 1
+        (( value <= 500000 )) || return 1
+    done
+}
+
+archive_content_counts() {
+    # Reuse the existing entry-name enumeration: no content reads and no extra
+    # whole-archive pass. These count files only, not valid cards/conversations.
+    unzip -Z1 "$1" 2>/dev/null | LC_ALL=C awk '
+        { entries++; name=tolower($0); sub(/^\.\//, "", name)
+          if (name ~ /^(data\/[^/]+|public)\/characters\/[^/]+\.png$/) characters++
+          if (name ~ /^(data\/[^/]+|public)\/(chats|group chats)\/.+\.jsonl$/) chats++ }
+        END { printf "entry_count=%d\ncharacter_files=%d\nchat_files=%d\n", entries, characters, chats }'
 }
 
 ensure_restore_space() {
@@ -1913,10 +1937,10 @@ backup_selected() {
         compress "$ST_HOME" "$archive" "${paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2> "$error_log" || code=$?
     (( code == 0 )) || backup_failure "$code" "선택한 파일을 ZIP으로 만드는 데 실패했습니다." "$error_log"
     write_progress 0 "백업 메타데이터 기록" "압축 정보와 항목 수를 기록하고 있습니다. ZIP 후처리 명령의 완료를 기다립니다."
-    local expanded_bytes entry_count
+    local expanded_bytes content_counts
     expanded_bytes="$(archive_expanded_size "$archive")" || backup_failure 59 "생성한 ZIP의 용량 정보를 읽지 못했습니다."
-    entry_count="$(unzip -Z1 "$archive" 2>/dev/null | wc -l | tr -d ' ')" || backup_failure 59 "생성한 ZIP의 항목 정보를 읽지 못했습니다."
-    { printf 'expanded_bytes=%s\nentry_count=%s\n' "${expanded_bytes:-0}" "${entry_count:-0}" >> "$manifest"; } 2> "$error_log" || \
+    content_counts="$(archive_content_counts "$archive")" || backup_failure 59 "생성한 ZIP의 항목 정보를 읽지 못했습니다."
+    { printf 'expanded_bytes=%s\n%s\n' "${expanded_bytes:-0}" "$content_counts" >> "$manifest"; } 2> "$error_log" || \
         backup_failure 59 "백업 용량 정보를 기록하지 못했습니다." "$error_log"
     # The entry did not exist during compression. -g appends the final manifest
     # in place, avoiding Info-ZIP's full-archive rewrite for a replaced entry.
@@ -1960,7 +1984,7 @@ list_backups() {
     compgen -G "$DOWNLOAD_DIR/SillyTavern-Launcher-*.zip" >/dev/null || return 0
     ensure_archive_tools
     local file manifest format created items custom secrets version branch launcher_version expanded_bytes entry_count integrity
-    local required_restore_bytes available_restore_bytes
+    local required_restore_bytes available_restore_bytes character_files chat_files
     available_restore_bytes="$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
     available_restore_bytes="$(unsigned_decimal "${available_restore_bytes:-0}" || echo 0)"
     shopt -s nullglob
@@ -1981,16 +2005,18 @@ list_backups() {
         expanded_bytes="$(printf '%s\n' "$manifest" | sed -n 's/^expanded_bytes=//p' | head -n 1)"
         entry_count="$(printf '%s\n' "$manifest" | sed -n 's/^entry_count=//p' | head -n 1)"
         integrity="$(printf '%s\n' "$manifest" | sed -n 's/^integrity=//p' | head -n 1)"
+        character_files="$(printf '%s\n' "$manifest" | sed -n 's/^character_files=//p' | head -n 1)"
+        chat_files="$(printf '%s\n' "$manifest" | sed -n 's/^chat_files=//p' | head -n 1)"
         expanded_bytes="$(unsigned_decimal "${expanded_bytes:-0}")" || continue
         entry_count="$(unsigned_decimal "${entry_count:-0}")" || continue
         required_restore_bytes=$((expanded_bytes * 2 + 268435456))
-        printf 'backup\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf 'backup\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$(printf '%s' "$(basename "$file")" | base64 -w 0)" "$(stat -c %s "$file" 2>/dev/null || wc -c < "$file")" \
             "$(printf '%s' "$created" | base64 -w 0)" "$(printf '%s' "$items" | base64 -w 0)" \
             "$(printf '%s' "$custom" | base64 -w 0)" "${secrets:-0}" "$(printf '%s' "$version" | base64 -w 0)" \
             "$(printf '%s' "$branch" | base64 -w 0)" "$(printf '%s' "$launcher_version" | base64 -w 0)" \
             "$expanded_bytes" "${entry_count:-0}" "$(printf '%s' "$integrity" | base64 -w 0)" \
-            "$required_restore_bytes" "$available_restore_bytes"
+            "$required_restore_bytes" "$available_restore_bytes" "$character_files" "$chat_files"
     done
 }
 
@@ -2786,6 +2812,54 @@ verify_shared_read() {
     # The app removes only its own MediaStore URI in finally; the shell never deletes a probe.
     echo "shared_read_ready=$([[ "$reason" == ok ]] && echo 1 || echo 0)"
     echo "shared_read_reason=$reason"
+}
+
+safety_list() {
+    command -v node >/dev/null 2>&1 || { echo "안전 백업 목록을 읽으려면 Node.js가 필요합니다." >&2; return 12; }
+    bash "$SAFETY_INVENTORY_HELPER" list "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" "${1:-0}"
+}
+
+begin_safety_mutation() {
+    begin_operation "$1"
+    inspect_restore_recovery
+    if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+        echo "error_code=SAFETY_RECOVERY_PENDING" >&2
+        echo "중단된 작업의 점검·복구가 끝날 때까지 안전 백업을 변경할 수 없습니다." >&2
+        return 67
+    fi
+    command -v node >/dev/null 2>&1 || { echo "안전 백업 관리에 필요한 Node.js를 찾을 수 없습니다." >&2; return 12; }
+}
+
+safety_export() {
+    begin_safety_mutation safety-export || return $?
+    write_progress 0 "안전 백업 내보내기" "원본 안전 백업을 유지한 채 Download 폴더로 복사합니다."
+    ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
+        ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
+        ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \
+        bash "$SAFETY_INVENTORY_HELPER" export "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" "${1:-}" "${2:-}" || return $?
+    write_progress 100 "안전 백업 내보내기 완료" "Download 폴더에 복사했습니다. 내부 원본은 유지했습니다." success
+}
+
+safety_delete() {
+    begin_safety_mutation safety-delete || return $?
+    write_progress 0 "선택 항목 삭제" "선택한 항목의 식별 정보와 복구 참조 여부를 다시 확인합니다."
+    bash "$SAFETY_INVENTORY_HELPER" delete "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" "${1:-}" "${2:-}" || return $?
+    write_progress 100 "선택 항목 삭제 완료" "확인한 항목만 삭제했습니다." success
+}
+
+safety_restore() {
+    begin_safety_mutation safety-restore || return $?
+    if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+        echo "휴지통 항목을 복구하려면 먼저 SillyTavern 서버를 종료해 주세요." >&2
+        return 10
+    fi
+    local result trash_id
+    result="$(bash "$SAFETY_INVENTORY_HELPER" validate-trash "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" "${1:-}" "${2:-}")" || return $?
+    trash_id="$(printf '%s\n' "$result" | sed -n 's/^trash_id=//p')"
+    [[ "$trash_id" =~ ^[0-9]+-[a-f0-9-]{36}$ ]] || return 69
+    write_progress 0 "휴지통 항목 복구" "선택 항목을 원래 위치에 복구합니다. 같은 이름의 현재 파일은 덮어쓰지 않습니다."
+    st_file_action untrash "$trash_id" || return $?
+    write_progress 100 "휴지통 항목 복구 완료" "선택한 항목을 원래 위치에 복구했습니다." success
 }
 
 backup_storage_status() {
@@ -4268,6 +4342,10 @@ case "${1:-doctor}" in
     restore-st-trash) restore_st_trash "${2:-}" ;;
     backup-storage-status) backup_storage_status ;;
     verify-shared-read) verify_shared_read "${2:-}" "${3:-}" ;;
+    safety-list) safety_list "${2:-0}" ;;
+    safety-export) safety_export "${2:-}" "${3:-}" ;;
+    safety-delete) safety_delete "${2:-}" "${3:-}" ;;
+    safety-restore) safety_restore "${2:-}" "${3:-}" ;;
     delete-backup) delete_backup "${2:-}" ;;
     delete-backups) delete_backups "${2:-}" ;;
     restore) restore_backup "${2:-}" ;;

@@ -18,6 +18,8 @@ import app.tavernbridge.launcher.model.BackgroundStatus
 import app.tavernbridge.launcher.model.BrowserOption
 import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.BackupArchive
+import app.tavernbridge.launcher.model.SafetyInventoryItem
+import app.tavernbridge.launcher.model.SafetyInventoryPage
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupRequest
 import app.tavernbridge.launcher.model.BackupRequestCodec
@@ -311,6 +313,21 @@ class LauncherRepository(private val context: Context) {
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
         check(!result.stdoutTruncated) { "백업 목록이 통신 중 잘렸습니다. Download 폴더에서 백업을 확인해 주세요." }
         return BackupOutputParser.parse(result.stdout)
+    }
+
+    suspend fun listSafetyInventory(cursor: Int = 0): SafetyInventoryPage {
+        require(cursor >= 0)
+        val result = runManager("safety-list $cursor", timeoutMillis = 60_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "보관 목록이 통신 중 잘렸습니다. 다시 열어 주세요." }
+        return SafetyInventoryParser.parse(result.stdout)
+    }
+
+    suspend fun changeSafetyItem(action: String, item: SafetyInventoryItem): TermuxCommandResult {
+        require(action in setOf("export", "delete", "restore"))
+        require(item.revision.matches(Regex("[a-f0-9]{64}")))
+        require(item.id.length <= 8192 && item.id.matches(Regex("[A-Za-z0-9+/]+={0,2}")))
+        return runManager("safety-$action ${shellQuote(item.id)} ${shellQuote(item.revision)}", 10 * 60_000L)
     }
 
     suspend fun listUserBackupFolders(): List<CustomBackupFolder> {
@@ -1060,7 +1077,7 @@ class LauncherRepository(private val context: Context) {
                 preferences.edit().putBoolean("known_st_installation", status.sillyTavernInstalled).apply()
                 termuxSetup = TermuxSetupState(TermuxSetupStatus.READY, "Termux 환경 검사와 기존 설치 상태를 확인했습니다.")
             }
-            if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "verify-shared-read", "list-backups", "list-user-folders", "last-update-record")) {
+            if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "verify-shared-read", "list-backups", "list-user-folders", "last-update-record", "safety-list")) {
                 control?.checkpoint()
             }
             return result

@@ -11,6 +11,7 @@ import app.tavernbridge.launcher.data.ThemePreferences
 import app.tavernbridge.launcher.data.BackupReminderStore
 import app.tavernbridge.launcher.data.BackupTransferController
 import app.tavernbridge.launcher.model.BackupArchive
+import app.tavernbridge.launcher.model.SafetyInventoryItem
 import app.tavernbridge.launcher.model.BackupTransferAction
 import app.tavernbridge.launcher.model.BackupTransferPhase
 import app.tavernbridge.launcher.model.BackupTransferState
@@ -1216,12 +1217,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         result
     }
 
-    fun resetInstallation() = perform(
+    fun resetInstallation(backupBefore: Boolean = true) = perform(
         operation = "reset-installation",
         label = "SillyTavern 초기화 중",
         successMessage = "SillyTavern을 초기 상태로 다시 설치했습니다. Download의 백업 파일은 유지됩니다.",
     ) {
-        val result = repository.resetInstallation()
+        val result = protectBeforeReplacement(backupBefore, { backupBeforeReplacement("reset-installation") }) {
+            repository.resetInstallation()
+        }
         if (result.isSuccess) {
             mutableState.update { it.copy(updatePreflight = null) }
         }
@@ -1229,6 +1232,72 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun backup() = createBackup(setOf(BackupCategory.FULL), false, emptySet())
+
+    fun openSafetyInventory() {
+        if (commandEntryBlocked()) return
+        mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(open = true)) }
+        loadSafetyInventory()
+    }
+
+    fun closeSafetyInventory() {
+        mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(open = false)) }
+    }
+
+    fun loadSafetyInventory(more: Boolean = false) {
+        if (commandEntryBlocked() || state.value.safetyInventory.loading) return
+        val cursor = if (more) state.value.safetyInventory.nextCursor ?: return else 0
+        if (more && state.value.safetyInventory.items.size >= 1000) {
+            mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = "한 번에 1,000개까지 표시합니다. 일부 항목을 정리한 뒤 새로고침해 주세요.")) }
+            return
+        }
+        mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(loading = true, error = "")) }
+        viewModelScope.launch {
+            try {
+                val page = repository.listSafetyInventory(cursor)
+                check(page.nextCursor == null || page.nextCursor > cursor) { "보관 목록의 다음 위치를 확인하지 못했습니다." }
+                mutableState.update { it.copy(safetyInventory = it.safetyInventory.accept(page, more)) }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) {
+                mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = error.userMessage())) }
+            } finally {
+                mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(loading = false)) }
+            }
+        }
+    }
+
+    fun changeSafetyItem(action: String, item: SafetyInventoryItem) {
+        if (action !in setOf("export", "delete", "restore") || state.value.safetyInventory.loading) return
+        if (state.value.safetyInventory.mutationBlocked || state.value.environment.recoveryPending) {
+            mutableState.update { it.copy(error = "미완료 작업의 점검·복구를 먼저 진행해 주세요. 보호 자료는 변경하지 않았습니다.") }
+            return
+        }
+        if (action == "restore" && state.value.environment.processRunning) {
+            mutableState.update { it.copy(error = "휴지통 항목을 복원하려면 서버를 먼저 종료해 주세요.") }
+            return
+        }
+        val label = when (action) { "export" -> "안전 사본 내보내기"; "delete" -> "보관 항목 삭제"; else -> "휴지통 항목 복원" }
+        perform(operation = "safety-$action", label = label, successMessage = when (action) {
+            "export" -> "Download에 사본을 내보냈습니다. 내부 원본은 유지됩니다."
+            "delete" -> "선택한 보관 항목만 영구 삭제했습니다. 이 삭제는 되돌릴 수 없습니다."
+            else -> "휴지통 항목을 원래 위치로 복원했습니다. 같은 이름의 기존 항목은 덮어쓰지 않습니다."
+        }) {
+            val result = repository.changeSafetyItem(action, item)
+            if (result.isSuccess) {
+                try {
+                    // The mutation is already committed. Cancelling this optional list
+                    // refresh must not relabel a completed export/delete as cancelled.
+                    val page = withoutOperationCancellation { repository.listSafetyInventory() }
+                    mutableState.update { it.copy(safetyInventory = it.safetyInventory.accept(page, false),
+                        lastTrashedEntryId = if (action == "restore" && it.lastTrashedEntryId == item.trashId) "" else it.lastTrashedEntryId) }
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (_: Exception) {
+                    mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(items = emptyList(),
+                        error = "작업은 완료했습니다. 목록을 새로고침해 주세요.")) }
+                }
+            }
+            result
+        }
+    }
 
     fun loadBackups() {
         val pendingRefresh = refreshJob

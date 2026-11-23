@@ -21,6 +21,9 @@ setup() {
     if [[ "$OSTYPE" == msys* ]]; then mkdir() { if [[ "${1:-}" == -m ]]; then shift 2; fi; command mkdir "$@"; }; fi
     put "$ST_HOME/package.json" '{"version":"1.0.0"}'
     put "$ST_HOME/data/default-user/chats/selected.txt" 'preserve this original'
+    put "$ST_HOME/data/default-user/characters/card.png" 'fixture card bytes'
+    put "$ST_HOME/data/default-user/chats/card/chat.jsonl" '{"mes":"fixture"}'
+    put "$ST_HOME/data/default-user/group chats/group.jsonl" '{"mes":"fixture"}'
     put "$ST_HOME/data/default-user/secrets.json" 'excluded secret'
     put "$ST_HOME/data/default-user/extensions/example/index.js" 'extension'
     put "$ST_HOME/node_modules/ignored.js" ignored
@@ -54,6 +57,8 @@ happy() {
     unzip -tq "$archive" >/dev/null
     manifest="$(unzip -p "$archive" .st-launcher-manifest)"
     grep -Fq 'items=user_data,extensions,custom,config' <<< "$manifest" || fail 'Selection scope changed'
+    grep -Fxq 'character_files=1' <<< "$manifest" || fail 'Character file count missing'
+    grep -Fxq 'chat_files=2' <<< "$manifest" || fail 'Chat file count missing'
     [[ "$(unzip -Z1 "$archive" | sort | uniq -d | wc -l)" == 0 ]] || fail 'Duplicate archive entries'
     ! unzip -Z1 "$archive" | grep -Eq 'secrets.json|node_modules' || fail 'Excluded content included'
     [[ "$(sha256sum "$ST_HOME/data/default-user/chats/selected.txt" | cut -d ' ' -f1)" == "$SOURCE_HASH" ]] || fail 'Original changed'

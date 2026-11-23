@@ -135,6 +135,7 @@ import app.tavernbridge.launcher.BuildConfig
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupArchive
+import app.tavernbridge.launcher.model.backupRestoreWarnings
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupTransferAction
 import app.tavernbridge.launcher.model.BrowserOption
@@ -170,6 +171,7 @@ private data class Confirmation(
     val confirmLabel: String,
     val action: () -> Unit,
     val backupAction: ((Boolean) -> Unit)? = null,
+    val withoutBackupLabel: String = "백업 없이 복원",
 )
 
 internal fun formatUiText(text: String, keepWordsTogether: Boolean): String {
@@ -342,7 +344,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 Button(onClick = {
                     confirmation = null
                     pending.backupAction?.invoke(backupBefore) ?: pending.action()
-                }) { Text(if (pending.backupAction != null && !backupBefore) "백업 없이 복원" else pending.confirmLabel) }
+                }) { Text(if (pending.backupAction != null && !backupBefore) pending.withoutBackupLabel else pending.confirmLabel) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmation = null }) { Text("취소") }
@@ -539,6 +541,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onBackupReminderChange = viewModel::setBackupReminderEnabled,
                             onTransferBackup = viewModel::beginBackupTransfer,
                             onOpenBackupFolder = viewModel::openDownloadsFolder,
+                            onOpenSafetyInventory = viewModel::openSafetyInventory,
                             onImportBackup = pickBackup,
                             onPickInstallation = pickInstallation,
                             onInspectInstallation = viewModel::inspectExistingInstallation,
@@ -548,7 +551,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onRestoreBackup = { backup ->
                                 confirmation = Confirmation(
                                     title = "이 백업으로 복원할까요?",
-                                    description = backupRestorePreview(backup),
+                                    description = backupRestorePreview(backup, state.environment.sillyTavernVersion),
                                     confirmLabel = "안전하게 복원",
                                     action = { viewModel.restoreBackup(backup.fileName) },
                                     backupAction = if (state.environment.sillyTavernInstalled) ({ protect -> viewModel.restoreBackup(backup.fileName, protect) }) else null,
@@ -588,11 +591,15 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                 )
                             },
                             onResetInstallation = {
+                                val lastBackupAt = state.backupReminder.lastBackupAtMillis
+                                val backupDate = if (lastBackupAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(lastBackupAt)) else "확인된 기록 없음"
                                 confirmation = Confirmation(
                                     title = "SillyTavern을 완전히 초기화할까요?",
-                                    description = "현재 캐릭터·채팅·설정·확장 프로그램을 제거하고 같은 브랜치를 새로 설치합니다. 재설치가 실패하면 현재 설치로 자동 복구하며, 휴대폰 Download의 ZIP 백업은 삭제하지 않습니다. 서버를 먼저 종료해 주세요.",
+                                    description = "현재 캐릭터·채팅·설정·확장 프로그램을 제거하고 같은 브랜치를 새로 설치합니다. 재설치가 실패하면 현재 설치로 자동 복구하며, 휴대폰 Download의 ZIP 백업은 삭제하지 않습니다. 서버를 먼저 종료해 주세요.\n\n최근 사용자 데이터 백업 생성 기록: $backupDate\n생성 기록만으로 파일이 남아 있다고 보장하지는 않습니다.",
                                     confirmLabel = "초기화 후 재설치",
-                                    action = viewModel::resetInstallation,
+                                    action = { viewModel.resetInstallation() },
+                                    backupAction = viewModel::resetInstallation,
+                                    withoutBackupLabel = "백업 없이 초기화",
                                 )
                             },
                         )
@@ -655,6 +662,16 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 }
             }
 
+            if (state.safetyInventory.open && !state.isWorking) {
+                SafetyInventoryDialog(
+                    state = state.safetyInventory,
+                    serverRunning = state.environment.processRunning,
+                    onClose = viewModel::closeSafetyInventory,
+                    onRefresh = { viewModel.loadSafetyInventory() },
+                    onMore = { viewModel.loadSafetyInventory(more = true) },
+                    onAction = viewModel::changeSafetyItem,
+                )
+            }
             if (state.isWorking && !(state.fileBrowserOpen && state.fileBrowserMutating)) {
                 WorkingOverlay(
                     label = state.workingLabel,
@@ -1423,9 +1440,12 @@ private fun BackupStorageSetupCard(
     }
 }
 
-private fun backupRestorePreview(backup: BackupArchive): String = buildString {
+private fun backupRestorePreview(backup: BackupArchive, currentVersion: String): String = buildString {
     appendLine("생성: ${backup.createdAt.ifBlank { "알 수 없음" }}")
     if (backup.sillyTavernVersion.isNotBlank()) appendLine("SillyTavern: ${backup.sillyTavernVersion}")
+    backupRestoreWarnings(backup, currentVersion, System.currentTimeMillis()).forEach { appendLine("주의: $it") }
+    appendLine("캐릭터 파일: ${backup.characterFiles?.toString() ?: "기록 없음"} · 채팅 파일: ${backup.chatFiles?.toString() ?: "기록 없음"}")
+    appendLine("백업 당시 파일 수이며 현재 데이터와 비교한 결과는 아닙니다.")
     if (backup.branch.isNotBlank()) appendLine("브랜치: ${backup.branch}")
     appendLine("포함 항목: ${backup.categories.joinToString(" · ") { it.label }.ifBlank { "알 수 없음" }}")
     if (backup.expandedBytes > 0) {
@@ -1459,6 +1479,7 @@ private fun ManagementScreen(
     onBackupReminderChange: (Boolean) -> Unit,
     onTransferBackup: (BackupArchive, BackupTransferAction) -> Unit,
     onOpenBackupFolder: () -> Unit,
+    onOpenSafetyInventory: () -> Unit,
     onImportBackup: () -> Unit,
     onPickInstallation: () -> Unit,
     onInspectInstallation: (String) -> Unit,
@@ -1739,6 +1760,11 @@ private fun ManagementScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        if (record.result.startsWith("rolled_back") || record.result == "rollback_failed") {
+                            TextButton(onClick = { onSelectPanel(ManagementPanel.BACKUP) }) {
+                                Text("업데이트 전 ZIP 백업 확인·복원")
+                            }
+                        }
                     }
                 }
             }
@@ -1748,6 +1774,11 @@ private fun ManagementScreen(
             if (selectedPanel == ManagementPanel.BACKUP) {
         item {
             BackupReminderSetting(state.backupReminder.enabled, onBackupReminderChange)
+        }
+        item {
+            OutlinedButton(onClick = onOpenSafetyInventory, modifier = Modifier.fillMaxWidth()) {
+                Text("내부 안전 사본·휴지통 관리")
+            }
         }
         if (state.backupStorageReady == false) {
             item {

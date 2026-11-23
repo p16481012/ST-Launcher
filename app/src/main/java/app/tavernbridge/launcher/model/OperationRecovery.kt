@@ -31,11 +31,12 @@ internal fun recoveredSubstepNotice(requestedOperation: String?, completedOperat
         "switch-branch" -> "브랜치 전환"
         "restore", "import-backup" -> "복원"
         "import-install" -> "설치 가져오기"
+        "reset-installation" -> "초기화"
         else -> return null
     }
     val completedLabel = when (completedOperation) {
         "stop" -> "서버 종료"
-        "backup" -> if (requestedOperation in setOf("update", "restore", "import-backup", "import-install")) "백업" else return null
+        "backup" -> if (requestedOperation in setOf("update", "restore", "import-backup", "import-install", "reset-installation")) "백업" else return null
         else -> return null
     }
     return "현재 $completedLabel 단계 완료는 확인했습니다. 응답 지연으로 요청한 ${requestedLabel}의 전체 완료는 확인하지 못했으며 후속 단계는 자동으로 진행하지 않았습니다. 현재 상태를 확인한 뒤 원래 작업을 다시 실행해 주세요."
