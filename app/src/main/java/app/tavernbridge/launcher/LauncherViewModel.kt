@@ -95,6 +95,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val savedOperationResult = operationResultStore.load()
     private val themePreferences = ThemePreferences(application)
     private val backupReminderStore = BackupReminderStore(application)
+    private val backupMetadataStore = app.tavernbridge.launcher.data.BackupMetadataStore(application, "termux:~/storage/downloads")
     private val backupTransferController = BackupTransferController(application)
     private var backupTransferJob: Job? = null
     private var backupTransferSource: BackupTransferController.Source? = null
@@ -1367,6 +1368,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 mutableState.update {
                     it.copy(
                         backups = backups,
+                        backupAnnotations = backupMetadataStore.loadAll(backups.map { it.fileName }),
                         backupReminder = reminder,
                         backupReminderNowMillis = System.currentTimeMillis(),
                         backupFolders = folders,
@@ -1560,12 +1562,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun deleteBackups(fileNames: List<String>) {
         if (fileNames.isEmpty()) return
+        val snapshot = state.value.backups.filter { it.fileName in fileNames }
         perform(
             operation = "delete-backup",
             label = "백업 일괄 삭제 중",
             successMessage = "선택한 ZIP 백업 ${fileNames.size}개를 Download 폴더에서 삭제했습니다.",
         ) {
-            val result = repository.deleteBackups(fileNames)
+            check(snapshot.size == fileNames.distinct().size && snapshot.size in 1..200) { "목록에서 백업을 200개 이하로 다시 선택해 주세요." }
+            check(snapshot.all { backupMetadataStore.load(it.fileName).let { note -> !note.pinned && note.trusted } }) {
+                "고정된 백업은 먼저 고정을 해제해 주세요. 보호 상태가 불명확하면 삭제하지 않습니다."
+            }
+            val result = repository.deleteBackupsChecked(snapshot)
             if (result.isSuccess) refreshBackupListAfterOperation()
             result
         }
@@ -1578,6 +1585,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val backups = withoutOperationCancellation { repository.listBackups() }
             val reminder = backupReminderStore.observeArchives(backups)
             mutableState.update { it.copy(backups = backups, backupsLoaded = true,
+                backupAnnotations = backupMetadataStore.loadAll(backups.map { archive -> archive.fileName }),
                 backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -1585,6 +1593,54 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             // The preceding backup operation is already complete. A list refresh failure must
             // not relabel a successful import, restore, creation, or deletion as failed.
             mutableState.update { it.copy(backupsLoaded = false) }
+        }
+    }
+
+    fun inspectStorageUsage() = perform("storage-usage", "저장 공간 확인", "저장 공간 검사를 마쳤습니다. 일부 항목은 제한 시간이나 접근 권한 때문에 제외될 수 있습니다.") {
+        val (result, report) = repository.inspectStorageUsage()
+        mutableState.update { it.copy(storageUsage = report) }
+        result
+    }
+
+    fun saveBackupAnnotation(fileName: String, pinned: Boolean, memo: String) {
+        if (state.value.isWorking) return
+        runCatching { backupMetadataStore.save(fileName, pinned, memo) }
+            .onSuccess { annotation -> mutableState.update { it.copy(backupAnnotations = it.backupAnnotations + (fileName to annotation), backupCleanupPreview = null) } }
+            .onFailure { showMessage(it.userMessage()) }
+    }
+
+    fun previewBackupCleanup(keepLatest: Int, olderThanDays: Int) {
+        if (commandEntryBlocked() || state.value.backupCleanupLoading) return
+        mutableState.update { it.copy(backupCleanupLoading = true) }
+        viewModelScope.launch {
+            try {
+                val backups = repository.listBackups()
+                val annotations = backupMetadataStore.loadAll(backups.map { it.fileName })
+                val preview = app.tavernbridge.launcher.model.BackupRetentionPolicy.preview(backups, annotations,
+                    app.tavernbridge.launcher.model.BackupRetentionOptions(keepLatest, olderThanDays))
+                mutableState.update { it.copy(backups = backups, backupAnnotations = annotations, backupCleanupPreview = preview) }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) { showMessage(error.userMessage()) }
+            finally { mutableState.update { it.copy(backupCleanupLoading = false) } }
+        }
+    }
+
+    fun closeBackupCleanup() { mutableState.update { it.copy(backupCleanupPreview = null) } }
+
+    fun deleteCleanupSelection(names: Set<String>) {
+        val preview = state.value.backupCleanupPreview ?: return
+        if (names.isEmpty()) return
+        perform("delete-backup", "선택한 오래된 백업 정리", "선택한 백업 ${names.size}개를 삭제했습니다.") {
+            check(names.size <= 200) { "한 번에 200개 이하로 선택해 주세요." }
+            val backups = repository.listBackups()
+            val annotations = backupMetadataStore.loadAll(backups.map { it.fileName })
+            val selected = app.tavernbridge.launcher.model.BackupRetentionPolicy.selectedForDeletion(preview, names, backups, annotations)
+            val result = repository.deleteBackupsChecked(selected)
+            if (result.isSuccess) {
+                mutableState.update { it.copy(backupCleanupPreview = null) }
+                refreshBackupListAfterOperation()
+            }
+            result
         }
     }
 

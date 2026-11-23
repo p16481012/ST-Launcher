@@ -117,6 +117,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
@@ -273,6 +274,7 @@ fun LauncherApp(viewModel: LauncherViewModel) {
 private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewModel) {
     BackupTransferHost(state.backupTransfer, viewModel)
     val context = LocalContext.current
+    val resources = LocalResources.current
     val largeText = LocalDensity.current.fontScale >= 1.3f
     val snackbarHostState = remember { SnackbarHostState() }
     var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
@@ -320,15 +322,15 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     val requestBranchSwitch: (SillyBranch) -> Unit = { branch ->
         val modified = state.environment.modifiedFiles
         val risk = when {
-            branch == SillyBranch.RELEASE && state.environment.branch == SillyBranch.STAGING -> context.getString(R.string.ui_branch_release_warning)
-            branch == SillyBranch.STAGING -> context.getString(R.string.ui_branch_staging_warning)
+            branch == SillyBranch.RELEASE && state.environment.branch == SillyBranch.STAGING -> resources.getString(R.string.ui_branch_release_warning)
+            branch == SillyBranch.STAGING -> resources.getString(R.string.ui_branch_staging_warning)
             else -> ""
         }
         confirmation = Confirmation(
-            title = context.getString(R.string.ui_branch_change_question, branch.label),
-            description = listOf(risk, if (modified.isEmpty()) context.getString(R.string.ui_branch_keep_description)
-                else context.getString(R.string.ui_branch_modified_description, modified.joinToString("\n"))).filter(String::isNotBlank).joinToString("\n\n"),
-            confirmLabel = context.getString(R.string.ui_branch_change),
+            title = resources.getString(R.string.ui_branch_change_question, branch.label),
+            description = listOf(risk, if (modified.isEmpty()) resources.getString(R.string.ui_branch_keep_description)
+                else resources.getString(R.string.ui_branch_modified_description, modified.joinToString("\n"))).filter(String::isNotBlank).joinToString("\n\n"),
+            confirmLabel = resources.getString(R.string.ui_branch_change),
             action = ConfirmationAction.SWITCH_BRANCH,
             arguments = listOf(branch.value),
         )
@@ -364,7 +366,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 Button(onClick = {
                     confirmation = null
                     if (ConfirmationCodec.decode(ConfirmationCodec.encode(pending)) == null) {
-                        viewModel.showMessage(context.getString(R.string.ui_confirmation_expired))
+                        viewModel.showMessage(resources.getString(R.string.ui_confirmation_expired))
                     } else when (pending.action) {
                         ConfirmationAction.INSTALL -> {
                             viewModel.selectInstallBranch(SillyBranch.entries.first { it.value == pending.arguments.single() })
@@ -376,7 +378,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             val uri = Uri.parse(pending.arguments.single())
                             if (context.checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION) == PackageManager.PERMISSION_GRANTED) {
                                 viewModel.importBackup(uri, pending.allowBackup && pending.backupBefore)
-                            } else viewModel.showMessage(context.getString(R.string.ui_document_access_lost))
+                            } else viewModel.showMessage(resources.getString(R.string.ui_document_access_lost))
                         }
                         ConfirmationAction.DELETE_BACKUPS -> viewModel.deleteBackups(pending.arguments)
                         ConfirmationAction.SWITCH_BRANCH -> viewModel.switchBranch(SillyBranch.entries.first { it.value == pending.arguments.single() })
@@ -587,6 +589,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onTransferBackup = viewModel::beginBackupTransfer,
                             onOpenBackupFolder = viewModel::openDownloadsFolder,
                             onOpenSafetyInventory = viewModel::openSafetyInventory,
+                            onInspectStorage = viewModel::inspectStorageUsage,
+                            onPreviewCleanup = viewModel::previewBackupCleanup,
+                            onSaveBackupAnnotation = viewModel::saveBackupAnnotation,
                             onImportBackup = pickBackup,
                             onPickInstallation = pickInstallation,
                             onInspectInstallation = viewModel::inspectExistingInstallation,
@@ -707,6 +712,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onMore = { viewModel.loadSafetyInventory(more = true) },
                     onAction = viewModel::changeSafetyItem,
                 )
+            }
+            state.backupCleanupPreview?.takeUnless { state.isWorking }?.let { preview ->
+                BackupCleanupDialog(preview, viewModel::closeBackupCleanup, viewModel::deleteCleanupSelection)
             }
             if (state.isWorking && !(state.fileBrowserOpen && state.fileBrowserMutating)) {
                 WorkingOverlay(
@@ -1344,6 +1352,8 @@ private fun BackupArchiveCard(
     onRestore: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
+    annotation: app.tavernbridge.launcher.model.BackupAnnotation,
+    onSaveAnnotation: (Boolean, String) -> Unit,
 ) {
     var transferMenuOpen by remember(backup.fileName) { mutableStateOf(false) }
     val itemLabels = backup.categories.map { it.label }.toMutableList().apply {
@@ -1353,8 +1363,8 @@ private fun BackupArchiveCard(
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (selectionMode) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = selected, onCheckedChange = onSelectedChange)
-                    Text(if (selected) "삭제 대상으로 선택됨" else "삭제할 백업 선택")
+                    Checkbox(checked = selected, onCheckedChange = onSelectedChange, enabled = !annotation.pinned && annotation.trusted)
+                    Text(if (annotation.pinned) "고정된 백업 · 삭제 보호" else if (selected) "삭제 대상으로 선택됨" else "삭제할 백업 선택")
                 }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -1411,6 +1421,7 @@ private fun BackupArchiveCard(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+            BackupAnnotationControl(backup, annotation, onSaveAnnotation)
             OutlinedButton(
                 onClick = onRestore,
                 enabled = !serverRunning && backup.restoreSpaceReady,
@@ -1522,6 +1533,9 @@ private fun ManagementScreen(
     onTransferBackup: (BackupArchive, BackupTransferAction) -> Unit,
     onOpenBackupFolder: () -> Unit,
     onOpenSafetyInventory: () -> Unit,
+    onInspectStorage: () -> Unit,
+    onPreviewCleanup: (Int, Int) -> Unit,
+    onSaveBackupAnnotation: (String, Boolean, String) -> Unit,
     onImportBackup: () -> Unit,
     onPickInstallation: () -> Unit,
     onInspectInstallation: (String) -> Unit,
@@ -1779,6 +1793,7 @@ private fun ManagementScreen(
             }
 
             if (selectedPanel == ManagementPanel.BACKUP) {
+        item { StorageManagementCard(state, onInspectStorage, onPreviewCleanup) }
         item {
             BackupReminderSetting(state.backupReminder.enabled, onBackupReminderChange)
         }
@@ -1852,7 +1867,7 @@ private fun ManagementScreen(
                                     selectedBackupFiles = if (selectedBackupFiles.size == state.backups.size) {
                                         emptyList()
                                     } else {
-                                        state.backups.map { it.fileName }
+                                        state.backups.filter { state.backupAnnotations[it.fileName]?.let { note -> !note.pinned && note.trusted } != false }.take(200).map { it.fileName }
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
@@ -1937,7 +1952,7 @@ private fun ManagementScreen(
                 selected = backup.fileName in selectedBackupFiles,
                 onSelectedChange = { selected ->
                     selectedBackupFiles = if (selected) {
-                        (selectedBackupFiles + backup.fileName).distinct()
+                        (selectedBackupFiles + backup.fileName).distinct().take(200)
                     } else {
                         selectedBackupFiles - backup.fileName
                     }
@@ -1945,6 +1960,8 @@ private fun ManagementScreen(
                 onRestore = { onRestoreBackup(backup) },
                 onShare = { onTransferBackup(backup, BackupTransferAction.SHARE) },
                 onExport = { onTransferBackup(backup, BackupTransferAction.EXPORT) },
+                annotation = state.backupAnnotations[backup.fileName] ?: app.tavernbridge.launcher.model.BackupAnnotation(),
+                onSaveAnnotation = { pinned, memo -> onSaveBackupAnnotation(backup.fileName, pinned, memo) },
             )
         }
             }

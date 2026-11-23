@@ -335,6 +335,29 @@ class LauncherRepository(private val context: Context) {
         return BackupOutputParser.parse(result.stdout)
     }
 
+    suspend fun inspectStorageUsage(): Pair<TermuxCommandResult, app.tavernbridge.launcher.model.StorageUsageReport> {
+        val result = runManager("storage-usage", 60_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "저장 공간 응답이 잘렸습니다. 다시 확인해 주세요." }
+        val report = result.stdout.lineSequence().filter {
+            it.startsWith("storage\t") || it.substringBefore('=') in setOf("storage_usage", "elapsed_ms", "scanned_entries", "total_bytes", "complete")
+        }.joinToString("\n")
+        return result to StorageUsageParser.parse(report)
+    }
+
+    suspend fun deleteBackupsChecked(backups: List<BackupArchive>): TermuxCommandResult {
+        require(backups.size in 1..200 && backups.map { it.fileName }.distinct().size == backups.size)
+        val json = org.json.JSONArray()
+        backups.forEach {
+            require(app.tavernbridge.launcher.model.BackupRetentionPolicy.validFileName(it.fileName) && it.revision.matches(Regex("[a-f0-9]{64}"))) {
+                "백업 식별 정보를 확인할 수 없습니다. 목록을 새로고침해 주세요."
+            }
+            json.put(org.json.JSONObject().put("name", it.fileName).put("revision", it.revision))
+        }
+        val encoded = Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        return runManager("delete-backups-checked ${shellQuote(encoded)}", 2 * 60_000L)
+    }
+
     suspend fun listSafetyInventory(cursor: Int = 0): SafetyInventoryPage {
         require(cursor >= 0)
         val result = runManager("safety-list $cursor", timeoutMillis = 60_000)

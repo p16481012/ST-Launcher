@@ -870,7 +870,8 @@ begin_operation() {
     export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
-    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* ]]; then
+    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
+        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
         CANCELLATION_GUARD=0
@@ -1985,12 +1986,13 @@ list_backups() {
     compgen -G "$DOWNLOAD_DIR/SillyTavern-Launcher-*.zip" >/dev/null || return 0
     ensure_archive_tools
     local file manifest format created items custom secrets version branch launcher_version expanded_bytes entry_count integrity
-    local required_restore_bytes available_restore_bytes character_files chat_files
+    local required_restore_bytes available_restore_bytes character_files chat_files revision
     available_restore_bytes="$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
     available_restore_bytes="$(unsigned_decimal "${available_restore_bytes:-0}" || echo 0)"
     shopt -s nullglob
     for file in "$DOWNLOAD_DIR"/SillyTavern-Launcher-*.zip; do
         valid_backup_filename "${file##*/}" || continue
+        [[ -f "$file" && ! -L "$file" ]] || continue
         # Creation, import, and restore perform full integrity checks. Reading the embedded
         # manifest is enough for the list screen and avoids rescanning multi-gigabyte ZIPs.
         manifest="$(read_backup_manifest "$file")" || continue
@@ -2011,13 +2013,14 @@ list_backups() {
         expanded_bytes="$(unsigned_decimal "${expanded_bytes:-0}")" || continue
         entry_count="$(unsigned_decimal "${entry_count:-0}")" || continue
         required_restore_bytes=$((expanded_bytes * 2 + 268435456))
-        printf 'backup\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        revision="$(bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" revision "$DOWNLOAD_DIR" "${file##*/}" 2>/dev/null || true)"
+        printf 'backup\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$(printf '%s' "$(basename "$file")" | base64 -w 0)" "$(stat -c %s "$file" 2>/dev/null || wc -c < "$file")" \
             "$(printf '%s' "$created" | base64 -w 0)" "$(printf '%s' "$items" | base64 -w 0)" \
             "$(printf '%s' "$custom" | base64 -w 0)" "${secrets:-0}" "$(printf '%s' "$version" | base64 -w 0)" \
             "$(printf '%s' "$branch" | base64 -w 0)" "$(printf '%s' "$launcher_version" | base64 -w 0)" \
             "$expanded_bytes" "${entry_count:-0}" "$(printf '%s' "$integrity" | base64 -w 0)" \
-            "$required_restore_bytes" "$available_restore_bytes" "$character_files" "$chat_files"
+            "$required_restore_bytes" "$available_restore_bytes" "$character_files" "$chat_files" "$revision"
     done
 }
 
@@ -3040,6 +3043,22 @@ delete_backups() {
     done
     write_progress 100 "삭제 완료" "선택한 백업 ${#archives[@]}개를 삭제했습니다." success
     echo "deleted_count=${#archives[@]}"
+}
+
+delete_backups_checked() {
+    begin_operation "delete-backup"
+    inspect_restore_recovery
+    (( ${#RESTORE_PENDING_WORKS[@]} == 0 )) || { echo "복구 기록이 있는 동안 백업을 정리하지 않습니다." >&2; exit 25; }
+    write_progress 0 "백업 정리" "선택한 파일이 그대로인지 다시 확인한 뒤 삭제합니다."
+    run_cancellable bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" delete "$DOWNLOAD_DIR" "${1:-}"
+    write_progress 100 "정리 완료" "선택한 백업을 삭제했습니다." success
+}
+
+storage_usage() {
+    begin_operation "storage-usage"
+    write_progress 0 "저장 공간 확인" "파일 크기를 합산합니다. 최대 15초 동안 검사하며 파일을 변경하지 않습니다."
+    run_cancellable bash "$(dirname "$MANAGER_SCRIPT_PATH")/storage-usage.sh" "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$HOME"
+    write_progress 100 "용량 확인 완료" "확인 가능한 범위의 논리적 파일 크기를 계산했습니다." success
 }
 
 manifest_value() {
@@ -4422,7 +4441,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 CURRENT_OPERATION="${1:-doctor}"
 case "$CURRENT_OPERATION" in
     backup-select) CURRENT_OPERATION="backup" ;;
-    delete-backups) CURRENT_OPERATION="delete-backup" ;;
+    delete-backups|delete-backups-checked) CURRENT_OPERATION="delete-backup" ;;
     check-update) CURRENT_OPERATION="update-preflight" ;;
 esac
 trap 'command_cleanup $?' EXIT
@@ -4460,12 +4479,14 @@ case "${1:-doctor}" in
     backup-storage-status) backup_storage_status ;;
     verify-shared-read) verify_shared_read "${2:-}" "${3:-}" ;;
     node-package-info) node_package_info ;;
+    storage-usage) storage_usage ;;
     safety-list) safety_list "${2:-0}" ;;
     safety-export) safety_export "${2:-}" "${3:-}" ;;
     safety-delete) safety_delete "${2:-}" "${3:-}" ;;
     safety-restore) safety_restore "${2:-}" "${3:-}" ;;
     delete-backup) delete_backup "${2:-}" ;;
     delete-backups) delete_backups "${2:-}" ;;
+    delete-backups-checked) delete_backups_checked "${2:-}" ;;
     restore) restore_backup "${2:-}" ;;
     repair) repair_st ;;
     reset-installation) reset_installation ;;

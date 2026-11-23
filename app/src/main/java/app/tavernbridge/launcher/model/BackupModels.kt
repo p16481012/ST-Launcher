@@ -66,6 +66,7 @@ data class BackupArchive(
     // null is an older backup without these fields; never rescan it automatically.
     val characterFiles: Int? = null,
     val chatFiles: Int? = null,
+    val revision: String = "",
 ) {
     val restoreSpaceReady: Boolean
         get() = requiredRestoreBytes <= 0 || availableRestoreBytes >= requiredRestoreBytes

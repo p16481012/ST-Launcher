@@ -30,6 +30,7 @@ object BackupOutputParser {
                 availableRestoreBytes = fields.getOrNull(14)?.toLongOrNull() ?: 0,
                 characterFiles = fields.getOrNull(15)?.toIntOrNull()?.takeIf { it in 0..500_000 },
                 chatFiles = fields.getOrNull(16)?.toIntOrNull()?.takeIf { it in 0..500_000 },
+                revision = fields.getOrNull(17)?.takeIf { it.matches(Regex("[a-f0-9]{64}")) }.orEmpty(),
             )
         }.getOrNull()
     }

@@ -52,12 +52,12 @@ object SafetyInventoryParser {
         val path = decode(fields[2], 2048)
         require(validId(kind, path)) { "보관 항목 경로가 올바르지 않습니다." }
         require(revisionPattern.matches(fields[3]))
-        val label = decode(fields[4], 2048)
+        val label = decode(fields[4], 4096)
         require(label.isNotEmpty() && label.none(Char::isISOControl))
         val size = requireNotNull(fields[5].toLongOrNull())
         val modified = requireNotNull(fields[6].toLongOrNull())
         require(size >= -1 && modified >= 0)
-        val original = decode(fields[8], 2048)
+        val original = decode(fields[8], 4096)
         val restorable = boolean(fields[9])
         val completionRecorded = boolean(fields[10])
         if (kind == SafetyItemKind.TRASH) {

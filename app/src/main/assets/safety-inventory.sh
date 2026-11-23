@@ -136,7 +136,7 @@ function entry(relative, includeSize = false) {
         const metadata = boundedRead(child(container, 'metadata.json'), 8192);
         const info = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(metadata.bytes));
         if (typeof info.root !== 'string' || !path.isAbsolute(info.root) || typeof info.relative !== 'string' ||
-            info.relative.length > 2048 || info.relative.split('/').some(part => !safeName(part)) || !Number.isSafeInteger(info.deleted_at) || info.deleted_at < 0) fail('SAFETY_PATH_UNSAFE', '휴지통 복원 정보를 확인할 수 없습니다.');
+            Buffer.byteLength(info.relative, 'utf8') > 4096 || info.relative.split('/').some(part => !safeName(part)) || !Number.isSafeInteger(info.deleted_at) || info.deleted_at < 0) fail('SAFETY_PATH_UNSAFE', '휴지통 복원 정보를 확인할 수 없습니다.');
         const item = child(container, 'item'), itemStat = stat(item);
         if (itemStat.isSymbolicLink() || (!itemStat.isFile() && !itemStat.isDirectory())) fail('SAFETY_PATH_UNSAFE', '안전하지 않은 휴지통 항목입니다.');
         result.container = container; result.item = item; result.itemStat = itemStat;

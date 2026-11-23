@@ -42,6 +42,8 @@ jobs:
           bash -n app/src/main/assets/install-validation.sh
           bash -n app/src/main/assets/transaction-recovery.sh
           bash -n app/src/main/assets/safety-inventory.sh
+          bash -n app/src/main/assets/storage-usage.sh
+          bash -n app/src/main/assets/backup-catalog.sh
 
       - name: Test manager safety helpers
         run: |
@@ -54,6 +56,8 @@ jobs:
           bash scripts/test-manager-files.sh
           node scripts/test-file-preview.cjs
           bash scripts/test-node-package-info.sh
+          node scripts/test-storage-usage.cjs
+          node scripts/test-backup-catalog.cjs
           bash scripts/test-manager-progress.sh
           bash scripts/test-progress.sh
           bash scripts/test-archive-progress.sh
