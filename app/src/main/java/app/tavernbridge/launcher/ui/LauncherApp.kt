@@ -169,7 +169,6 @@ import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.components.OperationCancelControl
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import app.tavernbridge.launcher.ui.components.WorkElapsedTime
-import app.tavernbridge.launcher.ui.components.FollowLogTail
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import app.tavernbridge.launcher.ui.theme.serverStatusIndicatorColor
 import kotlinx.coroutines.delay
@@ -691,6 +690,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onOpenLauncherAppSettings = viewModel::openLauncherAppSettings,
                         preferredBrowser = viewModel.preferredBrowser(),
                         onResetBrowser = viewModel::clearPreferredBrowser,
+                        onAutoOpenBrowserChange = viewModel::setAutoOpenBrowser,
+                        onCheckUpdateInformation = viewModel::checkUpdateInformation,
                     )
                 }
             }
@@ -729,6 +730,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onCreateFile = viewModel::createSillyTavernFile,
                     onRename = viewModel::renameSillyTavernEntry,
                     onTrash = viewModel::trashSillyTavernEntry,
+                    onTrashMany = viewModel::trashSillyTavernEntries,
+                    onPreview = viewModel::previewSillyTavernFile,
+                    preview = state.filePreview,
+                    onClosePreview = viewModel::closeFilePreview,
                     onUndoTrash = viewModel::undoLastTrashedEntry,
                     onImport = {
                         runCatching { fileImportPicker.launch(arrayOf("*/*")) }
@@ -1198,8 +1203,20 @@ private fun BackupCreatorCard(
     var selectedKeys by rememberSaveable { mutableStateOf(listOf(BackupCategory.USER_DATA.key)) }
     var selectedFolders by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var includeSecrets by rememberSaveable { mutableStateOf(false) }
+    var confirmPause by rememberSaveable { mutableStateOf(false) }
     val selected = selectedKeys.mapNotNull(BackupCategory::fromKey).toSet()
     val canIncludeSecrets = BackupCategory.USER_DATA in selected || BackupCategory.FULL in selected
+
+    if (confirmPause) AlertDialog(
+        onDismissRequest = { confirmPause = false },
+        title = { Text("서버를 잠시 멈추고 백업할까요?") },
+        text = { Text("백업 중 대화할 수 없습니다. 백업 후 원래 실행 중이었던 서버만 다시 시작합니다. 작업을 중단하면 서버는 종료 상태로 남습니다.") },
+        confirmButton = { TextButton(onClick = {
+            confirmPause = false
+            onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
+        }) { Text("중지 후 백업") } },
+        dismissButton = { TextButton(onClick = { confirmPause = false }) { Text("취소") } },
+    )
 
     Card(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -1297,18 +1314,19 @@ private fun BackupCreatorCard(
             }
             Button(
                 onClick = {
-                    onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
+                    if (serverRunning) confirmPause = true
+                    else onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !serverRunning && selected.isNotEmpty() &&
+                enabled = selected.isNotEmpty() &&
                     (BackupCategory.CUSTOM !in selected || selectedFolders.isNotEmpty()),
             ) {
                 Icon(Icons.Outlined.CloudDownload, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (serverRunning) "서버 종료 후 백업" else "선택한 항목 백업")
+                Text(if (serverRunning) "서버 잠시 중지 후 백업" else "선택한 항목 백업")
             }
             Text(
-                "백업 중 파일이 바뀌지 않도록 서버를 종료한 상태에서만 만들 수 있습니다.",
+                "백업 중 파일이 바뀌지 않도록 서버를 멈춥니다. 원래 종료 상태였다면 완료 후에도 켜지지 않습니다.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -2313,14 +2331,12 @@ private fun DiagnosticsScreen(
     onCopied: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
-    val logScrollState = rememberScrollState()
     val visibleLog = when (state.diagnosticPanel) {
         DiagnosticPanel.SERVER_LOG -> state.logs
         DiagnosticPanel.PREVIOUS_SERVER_LOG -> state.previousServerLogs
         DiagnosticPanel.WORK_HISTORY -> state.operationHistory
         DiagnosticPanel.OVERVIEW -> ""
     }
-    FollowLogTail(visibleLog, logScrollState, resetKey = state.diagnosticPanel)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2400,21 +2416,7 @@ private fun DiagnosticsScreen(
                     Text("Termux에서 실시간 로그 보기")
                 }
             }
-            Surface(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(20.dp),
-            ) {
-                SelectionContainer {
-                    Text(
-                        visibleLog,
-                        modifier = Modifier.fillMaxSize().verticalScroll(logScrollState).padding(16.dp),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                    )
-                }
-            }
+            LogViewer(visibleLog, state.diagnosticPanel.name, Modifier.fillMaxWidth().weight(1f))
         }
     }
 }
@@ -2590,6 +2592,8 @@ private fun SettingsScreen(
     onOpenLauncherAppSettings: () -> Unit,
     preferredBrowser: BrowserOption?,
     onResetBrowser: () -> Unit,
+    onAutoOpenBrowserChange: (Boolean) -> Unit,
+    onCheckUpdateInformation: () -> Unit,
 ) {
     val selectedTheme = state.theme
     val background = state.backgroundStatus
@@ -2602,9 +2606,23 @@ private fun SettingsScreen(
         mutableStateOf(state.environment.whitelist.joinToString("\n"))
     }
     val parsedPort = portText.toIntOrNull()
+    var confirmConnectionSave by rememberSaveable { mutableStateOf(false) }
     val connectionChanged = parsedPort != state.configuredPort ||
         externalAccess != state.environment.externalAccessEnabled ||
         whitelistText.lineSequence().map(String::trim).filter(String::isNotBlank).toList() != state.environment.whitelist
+    if (confirmConnectionSave) AlertDialog(
+        onDismissRequest = { confirmConnectionSave = false },
+        title = { Text("서버 연결 설정을 적용할까요?") },
+        text = { Text(listOfNotNull(
+            if (state.environment.processRunning) "실행 중인 서버를 잠시 멈추고 설정을 저장한 뒤 다시 시작합니다. 작업을 중단하면 종료 상태로 남습니다." else "다음 서버 시작부터 적용됩니다.",
+            if (externalAccess) "외부 접속을 허용하면 허용 목록의 다른 기기가 서버에 접속할 수 있습니다. 신뢰하는 네트워크에서만 사용하세요." else null,
+        ).joinToString("\n\n")) },
+        confirmButton = { TextButton(onClick = {
+            confirmConnectionSave = false
+            parsedPort?.let { onSaveServerConnection(it, externalAccess, whitelistText) }
+        }, enabled = !state.isWorking) { Text("적용") } },
+        dismissButton = { TextButton(onClick = { confirmConnectionSave = false }) { Text("취소") } },
+    )
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp, 12.dp, 20.dp, 28.dp),
@@ -2735,6 +2753,7 @@ private fun SettingsScreen(
                             Text("열 앱 다시 선택")
                         }
                     }
+                    BrowserAutoOpenSetting(state.autoOpenBrowser, onAutoOpenBrowserChange)
                 }
             }
         }
@@ -2811,16 +2830,17 @@ private fun SettingsScreen(
                         },
                     )
                     Button(
-                        onClick = { parsedPort?.let { onSaveServerConnection(it, externalAccess, whitelistText) } },
+                        onClick = { confirmConnectionSave = true },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.environment.processRunning && parsedPort != null &&
+                        enabled = !state.isWorking && parsedPort != null &&
                             parsedPort in 1024..65535 && connectionChanged,
-                    ) { Text(if (state.environment.processRunning) "서버 종료 후 저장" else "서버 연결 설정 저장") }
+                    ) { Text(if (state.environment.processRunning) "서버 잠시 중지 후 설정 저장" else "서버 연결 설정 저장") }
                 }
             }
         }
         }
         if (selectedPanel == SettingsPanel.GENERAL) {
+        item { UpdateInformationCard(state, onCheckUpdateInformation) }
         item {
             Card(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

@@ -138,6 +138,7 @@ manager_error_code() {
         update:33) echo "UPDATE_SERVER_FAILED" ;;
         update:34) echo "UPDATE_HISTORY_DIVERGED" ;;
         reset-installation:30) echo "RESET_NO_SPACE" ;;
+        preview-st-file:40) echo "FILE_PREVIEW_LIMIT" ;;
         *:2) echo "UNSUPPORTED_BRANCH" ;;
         *:3) echo "INSTALL_PATH_EXISTS" ;;
         *:4) echo "INSTALLATION_NOT_FOUND" ;;
@@ -2392,6 +2393,10 @@ read_st_file() {
     st_file_action read "${1:-}"
 }
 
+preview_st_file() {
+    st_file_action preview "${1:-}"
+}
+
 begin_st_file_mutation() {
     begin_operation "$1"
     # Check after acquiring the shared lock so another launcher operation cannot
@@ -2429,7 +2434,7 @@ rename_st() {
 
 delete_st() {
     begin_st_file_mutation delete-st
-    st_file_action trash "${1:-}"
+    st_file_action trash "${1:-}" "${2:-}"
     write_progress 100 "휴지통으로 이동" "원본을 Termux의 런처 휴지통에 보관했습니다. 삭제 취소로 되돌릴 수 있습니다." success
 }
 
@@ -2462,10 +2467,12 @@ st_file_action() {
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 const { TextDecoder } = require('util');
 const [rootArgument, launcherArgument, downloadArgument, homeArgument, sharedArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
 const MAX_TEXT_BYTES = 65536;
+const MAX_PREVIEW_BYTES = 24576;
 const fail = (code, message) => { const error = new Error(message); error.fileCode = code; throw error; };
 const exists = filename => { try { fs.lstatSync(filename); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -2524,6 +2531,104 @@ function readText(target) {
         const bytes = buffer.subarray(0, length);
         if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(utf8(bytes))) fail(41, '바이너리 파일은 텍스트로 편집할 수 없습니다.');
         return { bytes, stat, sha256: hash(bytes) };
+    } finally { fs.closeSync(fd); }
+}
+function fileRevision(stat) {
+    return hash(Buffer.from(['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'].map(key => String(stat[key])).join(':')));
+}
+function previewFile(target, relative) {
+    const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    try {
+        const before = fs.fstatSync(fd, { bigint: true });
+        if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) fail(41, '일반 파일만 미리 볼 수 있습니다.');
+        const size = Number(before.size);
+        function readAt(position, length) {
+            if (length < 0 || length > 131072 || position < 0 || position + length > size) fail(41, '미리보기 파일 구조가 올바르지 않습니다.');
+            const bytes = Buffer.alloc(length); let done = 0;
+            while (done < length) {
+                const count = fs.readSync(fd, bytes, done, length - done, position + done);
+                if (!count) fail(42, '미리보기를 읽는 동안 파일이 변경되었습니다.');
+                done += count;
+            }
+            return bytes;
+        }
+        function emit(fields) {
+            if (fileRevision(before) !== fileRevision(fs.fstatSync(fd, { bigint: true })) ||
+                fileRevision(before) !== fileRevision(fs.lstatSync(resolve(relative), { bigint: true }))) fail(42, '미리보기를 읽는 동안 파일이 변경되었습니다.');
+            console.log(`source_bytes=${size}\n${fields}`);
+        }
+        if (!/\.png$/i.test(relative)) {
+            const bytes = readAt(0, Math.min(size, MAX_PREVIEW_BYTES));
+            let text;
+            try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes, { stream: size > bytes.length }); }
+            catch (_) { fail(41, 'UTF-8 텍스트만 미리 볼 수 있습니다. 다른 앱으로 파일을 열어 주세요.'); }
+            if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text)) fail(41, '바이너리 파일은 텍스트로 표시하지 않습니다.');
+            const content = Buffer.from(text, 'utf8');
+            emit(`preview_kind=text\ncontent_b64=${content.toString('base64')}\ntruncated=${size > content.length ? 1 : 0}`);
+            return;
+        }
+        if (size < 33 || size > 8 * 1024 * 1024) fail(40, 'PNG 미리보기는 8 MiB 이하 파일을 지원합니다. 외부 앱에서 원본을 확인해 주세요.');
+        const header = readAt(0, 33);
+        if (!header.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || header.readUInt32BE(8) !== 13 || header.toString('ascii', 12, 16) !== 'IHDR') fail(41, '정상적인 PNG 헤더가 아닙니다.');
+        const width = header.readUInt32BE(16), height = header.readUInt32BE(20);
+        if (!width || !height) fail(41, 'PNG 크기 정보가 올바르지 않습니다.');
+        if (size <= MAX_PREVIEW_BYTES && width <= 512 && height <= 512) {
+            emit(`preview_kind=png\ncontent_b64=${readAt(0, size).toString('base64')}`);
+            return;
+        }
+        // Large cards are metadata-only. Never decode PNG pixels, load their full
+        // contents or send character definitions/system prompts into UI logs.
+        let position = 8, chunks = 0, metadataAttempts = 0, metadataBytes = 0, ended = false, name = '', description = '';
+        function shortText(value, limit) {
+            if (typeof value !== 'string') return '';
+            let result = '', bytes = 0;
+            for (const char of value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '')) {
+                const count = Buffer.byteLength(char);
+                if (bytes + count > limit) break;
+                result += char; bytes += count;
+            }
+            return result;
+        }
+        while (position + 12 <= size && chunks++ < 2048) {
+            const chunk = readAt(position, 8), length = chunk.readUInt32BE(0), type = chunk.toString('ascii', 4, 8);
+            if (length > size - position - 12) fail(41, 'PNG 항목의 크기가 올바르지 않습니다.');
+            if (type === 'IEND') { ended = length === 0; break; }
+            if (['tEXt', 'zTXt', 'iTXt'].includes(type) && length <= 131072 && metadataAttempts < 8 && metadataBytes + length <= 524288) {
+                metadataBytes += length;
+                try {
+                    const data = readAt(position + 8, length), zero = data.indexOf(0);
+                    const keyword = zero > 0 && zero <= 79 ? data.toString('ascii', 0, zero) : '';
+                    if (keyword === 'chara' || keyword === 'ccv3') {
+                        metadataAttempts++;
+                        let content = data.subarray(zero + 1);
+                        if (type === 'zTXt') {
+                            if (content[0] !== 0) throw new Error('unsupported compression');
+                            content = zlib.inflateSync(content.subarray(1), { maxOutputLength: 131072 });
+                        } else if (type === 'iTXt') {
+                            const compressed = content[0], method = content[1];
+                            const languageEnd = content.indexOf(0, 2), translatedEnd = languageEnd < 0 ? -1 : content.indexOf(0, languageEnd + 1);
+                            if (![0, 1].includes(compressed) || method !== 0 || translatedEnd < 0) throw new Error('invalid text chunk');
+                            content = content.subarray(translatedEnd + 1);
+                            if (compressed) content = zlib.inflateSync(content, { maxOutputLength: 131072 });
+                        }
+                        const encodedCard = content.toString('ascii').trim();
+                        if (encodedCard.length > 87384 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encodedCard)) throw new Error('invalid card');
+                        const decodedCard = Buffer.from(encodedCard, 'base64');
+                        if (decodedCard.length > 65536) throw new Error('card too large');
+                        const card = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decodedCard));
+                        const info = card && typeof card.data === 'object' && card.data !== null ? card.data : card;
+                        name = shortText(info?.name, 1024); description = shortText(info?.description, 8192);
+                    }
+                } catch (error) {
+                    if (error.fileCode) throw error;
+                    // Unrecognized/oversized card metadata is not evidence of an
+                    // invalid image. Show metadata-unavailable and external-open.
+                }
+            }
+            position += length + 12;
+        }
+        if (!ended) fail(40, 'PNG 항목이 너무 많거나 끝을 확인할 수 없습니다. 외부 앱에서 원본을 확인해 주세요.');
+        emit(`preview_kind=card\nname_b64=${b64(name)}\ndescription_b64=${b64(description)}`);
     } finally { fs.closeSync(fd); }
 }
 function moveNoReplace(source, destination) {
@@ -2619,13 +2724,13 @@ try {
                 if (/[\\\x00-\x1f\x7f]/.test(name)) { cursor++; continue; }
                 const item = path.join(target, name);
                 let stat;
-                try { stat = fs.lstatSync(item); } catch (error) { if (error.code === 'ENOENT') { cursor++; continue; } throw error; }
+                try { stat = fs.lstatSync(item, { bigint: true }); } catch (error) { if (error.code === 'ENOENT') { cursor++; continue; } throw error; }
                 if (!stat.isDirectory() && !stat.isFile()) { cursor++; continue; }
                 const itemRelative = relative ? `${relative}/${name}` : name;
                 const two = number => String(number).padStart(2, '0');
                 const modified = `${stat.mtime.getFullYear()}-${two(stat.mtime.getMonth() + 1)}-${two(stat.mtime.getDate())} ${two(stat.mtime.getHours())}:${two(stat.mtime.getMinutes())}`;
                 const sensitive = /^(secrets\.json|config\.yaml|\.env(?:\..*)?|.*\.(?:pem|key))$/i.test(name) ? 1 : 0;
-                const row = ['entry', stat.isDirectory() ? 'D' : 'F', b64(itemRelative), b64(name), stat.isDirectory() ? 0 : stat.size, modified, sensitive].join('\t') + '\n';
+                const row = ['entry', stat.isDirectory() ? 'D' : 'F', b64(itemRelative), b64(name), stat.isDirectory() ? 0 : stat.size, modified, sensitive, fileRevision(stat)].join('\t') + '\n';
                 const rowBytes = Buffer.byteLength(row, 'utf8');
                 if (rowBytes > rowLimit) fail(64, '경로가 너무 길어 폴더 목록을 안전하게 표시할 수 없습니다.');
                 if (pageBytes + rowBytes + metadataReserve > pageLimit) break;
@@ -2635,6 +2740,8 @@ try {
             }
             if (directoryIdentity(fs.lstatSync(resolve(relative), { bigint: true })) !== directoryIdentity(before)) fail(42, '폴더 목록을 읽는 동안 내용이 바뀌었습니다. 다시 열어 주세요.');
             process.stdout.write(rows.join('') + `next_cursor=${cursor < names.length ? cursor : ''}\nlisting_revision=${listingRevision}\n`);
+        } else if (action === 'preview') {
+            previewFile(target, relative);
         } else if (action === 'read') {
             const snapshot = readText(target);
             console.log(`content_b64=${snapshot.bytes.toString('base64')}\nsha256=${snapshot.sha256}\nsize=${snapshot.bytes.length}`);
@@ -2770,6 +2877,7 @@ try {
             console.log(`renamed_b64=${b64(destinationRelative)}`);
         } else if (action === 'trash') {
             writable(relative);
+            if (value && (!/^[a-f0-9]{64}$/.test(value) || value !== fileRevision(fs.lstatSync(target, { bigint: true })))) fail(42, '선택한 항목이 변경되었습니다. 목록을 새로 열어 주세요.');
             const id = `${Date.now()}-${crypto.randomUUID()}`;
             const container = path.join(trashRoot(), id);
             fs.mkdirSync(container, { mode: 0o700 });
@@ -2784,6 +2892,14 @@ try {
     process.exitCode = code;
 }
 ST_LAUNCHER_FILES_JS
+}
+
+node_package_info() {
+    local installed candidate
+    installed="$(dpkg-query -W -f='${db:Status-Status}\t${Version}\n' nodejs-lts 2>/dev/null | awk -F '\t' '$1 == "installed" { print $2; exit }' || true)"
+    candidate="$(LC_ALL=C apt-cache policy nodejs-lts 2>/dev/null | awk '$1 == "Candidate:" && $2 != "(none)" { print $2; exit }' || true)"
+    printf 'package_name=nodejs-lts\npackage_cache_only=1\ninstalled_version_b64=%s\ncandidate_version_b64=%s\n' \
+        "$(printf '%s' "$installed" | base64 -w 0)" "$(printf '%s' "$candidate" | base64 -w 0)"
 }
 
 shared_storage_root() {
@@ -4332,16 +4448,18 @@ case "${1:-doctor}" in
     list-user-folders) list_user_folders ;;
     list-st-files) list_st_files "${2:-}" "${3:-0}" ;;
     read-st-file) read_st_file "${2:-}" ;;
+    preview-st-file) preview_st_file "${2:-}" ;;
     write-st-file) write_st_file "${2:-}" "${3:-}" "${4:-}" ;;
     create-st-file) create_st_file "${2:-}" ;;
     import-st-file) import_st_file "${2:-}" "${3:-}" ;;
     import-st-folder) import_st_folder "${2:-}" "${3:-}" ;;
     mkdir-st) mkdir_st "${2:-}" ;;
     rename-st) rename_st "${2:-}" "${3:-}" ;;
-    delete-st) delete_st "${2:-}" ;;
+    delete-st) delete_st "${2:-}" "${3:-}" ;;
     restore-st-trash) restore_st_trash "${2:-}" ;;
     backup-storage-status) backup_storage_status ;;
     verify-shared-read) verify_shared_read "${2:-}" "${3:-}" ;;
+    node-package-info) node_package_info ;;
     safety-list) safety_list "${2:-0}" ;;
     safety-export) safety_export "${2:-}" "${3:-}" ;;
     safety-delete) safety_delete "${2:-}" "${3:-}" ;;

@@ -32,6 +32,8 @@ internal fun recoveredSubstepNotice(requestedOperation: String?, completedOperat
         "restore", "import-backup" -> "복원"
         "import-install" -> "설치 가져오기"
         "reset-installation" -> "초기화"
+        "backup" -> "백업"
+        "save-server-connection" -> "서버 연결 설정 저장"
         else -> return null
     }
     val completedLabel = when (completedOperation) {

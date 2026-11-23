@@ -6,12 +6,16 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.tavernbridge.launcher.data.LauncherRepository
+import app.tavernbridge.launcher.data.LauncherReleaseClient
 import app.tavernbridge.launcher.data.OperationResultStore
 import app.tavernbridge.launcher.data.ThemePreferences
 import app.tavernbridge.launcher.data.BackupReminderStore
 import app.tavernbridge.launcher.data.BackupTransferController
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.SafetyInventoryItem
+import app.tavernbridge.launcher.model.TavernFileEntry
+import app.tavernbridge.launcher.model.withPausedServer
+import app.tavernbridge.launcher.model.ServerResumeStatus
 import app.tavernbridge.launcher.model.BackupTransferAction
 import app.tavernbridge.launcher.model.BackupTransferPhase
 import app.tavernbridge.launcher.model.BackupTransferState
@@ -95,6 +99,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var backupTransferJob: Job? = null
     private var backupTransferSource: BackupTransferController.Source? = null
     private var backupShareIntent: Intent? = null
+    private var partialFileActionNotice = ""
     private val mutableState = MutableStateFlow(
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
@@ -103,6 +108,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             previousInstallationKnown = (repository.hasKnownInstallation() || savedOperationResult.indicatesExistingInstallation())
                 .also { if (it) repository.rememberKnownInstallation() },
             autoBackupBeforeUpdate = repository.autoBackupBeforeUpdate(),
+            autoOpenBrowser = repository.autoOpenBrowser(),
             backupReminder = backupReminderStore.load(),
             backupReminderNowMillis = System.currentTimeMillis(),
             backgroundStatus = repository.backgroundStatus(),
@@ -353,10 +359,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             mutableState.update { it.copy(error = "포트는 1024부터 65535 사이로 입력해 주세요.") }
             return
         }
-        if (state.value.environment.processRunning) {
-            mutableState.update { it.copy(error = "서버 연결 설정을 바꾸려면 먼저 SillyTavern 서버를 종료해 주세요.") }
-            return
-        }
         val whitelist = whitelistText.lineSequence()
             .flatMap { it.split(',').asSequence() }
             .map(String::trim)
@@ -367,41 +369,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 if ("127.0.0.1" !in this) add(0, "127.0.0.1")
                 if ("::1" !in this) add(0, "::1")
             }
-        viewModelScope.launch {
-            val started = System.currentTimeMillis()
-            progressLogHistory.clear()
-            mutableState.update { it.copy(isWorking = true, workingLabel = "서버 연결 설정 저장 중",
-                workingStartedAtMillis = started, workProgress = null) }
-            val journal = LocalProgressJournal("save-server-connection", ::publishProgress)
-            journal.phase("서버 연결 설정 저장", "포트·외부 접속·접근 허용 설정을 Termux에 전달하고 있습니다.")
-            val progressJob = pollOperationProgress("save-server-connection", started)
-            try {
-                val result = cancellableOperation("save-server-connection", started) {
-                    repository.saveServerConnectionSettings(port, externalAccessEnabled, whitelist)
+        perform("save-server-connection", "서버 연결 설정 저장 중", "서버 연결 설정을 저장했습니다.",
+            successMessageForResult = { maintenanceMessage("서버 연결 설정을 저장했습니다.", it) }) {
+            maintainServer {
+                repository.saveServerConnectionSettings(port, externalAccessEnabled, whitelist).also { result ->
+                    result.requireSuccess()
+                    mutableState.update { it.copy(configuredPort = port) }
                 }
-                if (!result.isSuccess) throw IllegalStateException(result.readableError())
-                progressJob.cancel()
-                journal.completedItem("서버 연결 설정 저장")
-                val environment = repository.inspect(::publishProgress, "save-server-connection")
-                mutableState.update {
-                    it.copy(
-                        configuredPort = port,
-                        environment = environment,
-                        isWorking = false,
-                        workingLabel = "",
-                        message = "서버 연결 설정을 저장했습니다. 다음 서버 시작부터 적용됩니다.",
-                    )
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                if (reconnectTimedOutOperation(errorCodeFrom(error.userMessage()), "save-server-connection", started)) return@launch
-                mutableState.update {
-                    it.copy(isWorking = false, workingLabel = "", error = error.userMessage())
-                }
-            } finally {
-                progressJob.cancel()
-                mutableState.update { if (it.isWorking) it else it.copy(workProgress = null) }
             }
         }
     }
@@ -899,13 +873,84 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         return result
     }
 
+    fun setAutoOpenBrowser(enabled: Boolean) {
+        repository.saveAutoOpenBrowser(enabled)
+        mutableState.update { it.copy(autoOpenBrowser = enabled) }
+    }
+
+    fun checkUpdateInformation() {
+        if (state.value.isWorking || state.value.updateInfoLoading) return
+        mutableState.update { it.copy(updateInfoLoading = true, updateInfoError = "") }
+        viewModelScope.launch {
+            val issues = mutableListOf<String>()
+            try {
+                try {
+                    val info = LauncherReleaseClient().check()
+                    mutableState.update { it.copy(launcherUpdateInfo = info) }
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (error: Exception) { issues += error.userMessage() }
+                if (state.value.environment.managerConnected && !state.value.isWorking) {
+                    try {
+                        val info = repository.nodePackageInfo()
+                        mutableState.update { it.copy(nodePackageInfo = info) }
+                    } catch (cancelled: CancellationException) { throw cancelled
+                    } catch (error: Exception) { issues += error.userMessage() }
+                }
+            } finally {
+                mutableState.update { it.copy(updateInfoLoading = false, updateInfoError = issues.joinToString("\n")) }
+            }
+        }
+    }
+
+    private suspend fun maintainServer(work: suspend () -> TermuxCommandResult): TermuxCommandResult {
+        val control = currentCoroutineContext()[OperationCancellationControl]
+        val outcome = withPausedServer(
+            wasRunning = state.value.environment.processRunning,
+            stop = {
+                repository.stop().requireSuccess()
+                if (repository.wakeLockEnabled()) repository.setTermuxWakeLock(false).requireSuccess()
+            },
+            canResume = {
+                val current = repository.inspect()
+                current.sillyTavernInstalled && !current.operationActive && !current.recoveryPending && !current.processRunning
+            },
+            start = {
+                try { startServerWithWakeLock().requireSuccess() }
+                catch (cancelled: UserOperationCancelled) {
+                    withoutOperationCancellation {
+                        if (control != null) repository.cancelOperation("", control.requestId).requireSuccess()
+                        repository.stop().requireSuccess()
+                    }
+                    throw cancelled
+                }
+            },
+            cancellationRequested = { control?.cancellationRequested == true },
+            work = { work().also { it.requireSuccess() } },
+        )
+        return outcome.value.copy(stdout = outcome.value.stdout + "\nserver_resume=${outcome.resumeStatus.name}\n")
+    }
+
+    private fun maintenanceMessage(base: String, result: TermuxCommandResult): String {
+        val resume = result.stdout.lineSequence().firstOrNull { it.startsWith("server_resume=") }?.substringAfter('=')
+        return base + when (resume) {
+            ServerResumeStatus.STARTED.name -> " 실행 중이던 서버를 다시 시작했습니다."
+            ServerResumeStatus.LEFT_STOPPED.name -> " 중단 요청 또는 실행 상태 확인이 필요해 서버를 다시 시작하지 않았습니다."
+            ServerResumeStatus.FAILED.name -> " 작업은 완료했지만 서버 재시작 상태를 확인하지 못했습니다. 홈에서 상태를 확인해 주세요."
+            else -> ""
+        }
+    }
+
     fun start() = perform(
         operation = "start",
         label = "SillyTavern 시작 중",
         successMessage = "SillyTavern을 시작했습니다.",
         retryAction = RetryAction.START,
     ) {
-        startServerWithWakeLock()
+        startServerWithWakeLock().also { result ->
+            if (result.isSuccess && appInForeground && repository.autoOpenBrowser() && !operationCancellationRequested) {
+                runCatching { repository.openBrowser(repository.configuredPort()) }
+            }
+        }
     }
 
     fun stop() = perform(
@@ -1014,7 +1059,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val environment = if (!control.hasDispatched) state.value.environment else try { repository.inspect() }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { state.value.environment }
-            val detail = "요청에 따라 작업을 중단했습니다. 이미 완료된 변경은 유지됩니다."
+            val detail = "요청에 따라 작업을 중단했습니다. 이미 완료된 변경은 유지됩니다." +
+                if (operation == "delete-st" && partialFileActionNotice.isNotEmpty()) "\n$partialFileActionNotice" else ""
             val summary = operationSummary(operation, operationLabel(operation), detail, false, started,
                 errorCode = "OPERATION_CANCELLED", backupRequest = backupRequest)
             mutableState.update { it.copy(environment = environment, isWorking = false,
@@ -1462,10 +1508,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             mutableState.update { it.copy(error = "직접 항목 선택에서 백업할 폴더를 하나 이상 선택해 주세요.") }
             return
         }
-        if (state.value.environment.processRunning) {
-            mutableState.update { it.copy(error = "일관된 백업을 위해 먼저 SillyTavern 서버를 종료해 주세요.") }
-            return
-        }
         val request = BackupRequest(UUID.randomUUID().toString(), normalized,
             includeSecrets && (BackupCategory.FULL in normalized || BackupCategory.USER_DATA in normalized),
             if (BackupCategory.CUSTOM in normalized) customFolders else emptySet())
@@ -1473,15 +1515,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             operation = "backup",
             label = "선택 백업 생성 중",
             successMessage = "검증된 ZIP 백업을 휴대폰 Download 폴더에 저장했습니다.",
+            successMessageForResult = { maintenanceMessage("검증된 ZIP 백업을 휴대폰 Download 폴더에 저장했습니다.", it) },
             retryAction = RetryAction.BACKUP,
             backupRequest = request,
         ) {
-            val result = repository.createBackup(request)
-            if (result.isSuccess) {
-                rememberSuccessfulBackup(request)
-                refreshBackupListAfterOperation()
+            maintainServer {
+                repository.createBackup(request).also { result ->
+                    result.requireSuccess()
+                    rememberSuccessfulBackup(request)
+                    refreshBackupListAfterOperation()
+                }
             }
-            result
         }
     }
 
@@ -1769,7 +1813,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (state.value.fileBrowserMutating) return
         fileBrowserJob?.cancel()
         mutableState.update { it.copy(fileBrowserOpen = false, fileBrowserEntries = emptyList(),
-            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null) }
+            fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null, filePreview = null) }
     }
 
     fun openSillyTavernDirectory() {
@@ -1851,6 +1895,49 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun trashSillyTavernEntries(entries: List<TavernFileEntry>) {
+        val selected = entries.distinctBy { it.relativePath }
+        val parent = state.value.fileBrowserPath
+        if (selected.isEmpty() || selected.size > app.tavernbridge.launcher.model.MAX_FILE_SELECTION || selected.any {
+                it.relativePath.substringBeforeLast('/', "") != parent || !it.revision.matches(Regex("[a-f0-9]{64}"))
+            }) {
+            mutableState.update { it.copy(fileBrowserError = "현재 폴더의 항목을 ${app.tavernbridge.launcher.model.MAX_FILE_SELECTION}개 이하로 다시 선택해 주세요.") }
+            return
+        }
+        mutateTavernFiles("delete-st", "선택 항목을 휴지통으로 이동", "선택한 ${selected.size}개 항목을 휴지통으로 이동했습니다.") {
+            var completed = 0
+            var last: TermuxCommandResult? = null
+            for (entry in selected) {
+                operationCheckpoint()
+                try {
+                    last = repository.trashSillyTavernEntry(entry.relativePath, entry.revision).also { it.requireSuccess() }
+                    completed++
+                    partialFileActionNotice = "휴지통 이동이 확인된 항목: $completed/${selected.size}개. 안전 사본·휴지통 관리에서 복원할 수 있습니다."
+                    mutableState.update { it.copy(lastTrashedEntryId = repository.lastTrashedEntryId(), fileBrowserNotice = partialFileActionNotice) }
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (error: Exception) {
+                    throw IllegalStateException("${error.userMessage()}\n휴지통 이동이 확인된 항목: $completed/${selected.size}개. 나머지 상태는 목록을 새로고침해 확인해 주세요.", error)
+                }
+            }
+            requireNotNull(last)
+        }
+    }
+
+    fun previewSillyTavernFile(path: String) {
+        if (commandEntryBlocked(allowWhileWorking = true) || state.value.fileBrowserLoading) return
+        mutableState.update { it.copy(fileBrowserLoading = true, fileBrowserError = "", filePreview = null) }
+        viewModelScope.launch {
+            try {
+                val preview = repository.previewSillyTavernFile(path)
+                mutableState.update { if (it.fileBrowserOpen) it.copy(filePreview = preview) else it }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) { mutableState.update { it.copy(fileBrowserError = error.userMessage()) } }
+            finally { mutableState.update { it.copy(fileBrowserLoading = false) } }
+        }
+    }
+
+    fun closeFilePreview() { mutableState.update { it.copy(filePreview = null) } }
+
     fun importSillyTavernFile(uri: Uri) {
         val parent = state.value.fileBrowserPath
         mutateTavernFiles("import-st-file", "파일 가져오기", "파일을 가져왔습니다. 같은 이름의 기존 파일은 덮어쓰지 않습니다.") {
@@ -1878,6 +1965,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return
         }
         val started = System.currentTimeMillis()
+        partialFileActionNotice = ""
         progressLogHistory.clear()
         mutableState.update { it.copy(fileBrowserMutating = true, isWorking = true, workingLabel = label,
             workingStartedAtMillis = started, fileBrowserError = "", fileBrowserNotice = "", workProgress = null) }
@@ -2178,7 +2266,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 // Refresh read-only state without replacing the actual error.
                 val recoveryEnvironment = if (state.value.environment.recoveryPending ||
                     errorCode == "RESTORE_ROLLBACK_REQUIRED" ||
-                    operation in setOf("restore", "import-backup", "import-install", "repair")) {
+                    operation in setOf("restore", "import-backup", "import-install", "repair", "backup", "save-server-connection", "safety-restore")) {
                     progressJob.cancel()
                     try { repository.inspect() }
                     catch (cancelled: CancellationException) { throw cancelled }

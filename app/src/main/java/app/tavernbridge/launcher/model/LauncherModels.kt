@@ -141,6 +141,11 @@ data class LauncherUiState(
     val backupStorageReady: Boolean? = null,
     val safetyInventory: SafetyInventoryUiState = SafetyInventoryUiState(),
     val autoBackupBeforeUpdate: Boolean = true,
+    val autoOpenBrowser: Boolean = false,
+    val launcherUpdateInfo: LauncherUpdateInfo? = null,
+    val nodePackageInfo: NodePackageInfo? = null,
+    val updateInfoLoading: Boolean = false,
+    val updateInfoError: String = "",
     val updatePreflight: UpdatePreflight? = null,
     val lastUpdateRecord: UpdateRecord? = null,
     val backgroundStatus: BackgroundStatus = BackgroundStatus(),
@@ -153,5 +158,6 @@ data class LauncherUiState(
     val fileBrowserNotice: String = "",
     val lastTrashedEntryId: String = "",
     val editingFile: TavernTextFile? = null,
+    val filePreview: TavernFilePreview? = null,
     val pendingInstallation: ExistingInstallation? = null,
 )

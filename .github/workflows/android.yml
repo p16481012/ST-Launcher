@@ -52,6 +52,8 @@ jobs:
           node scripts/test-safety-inventory.cjs
           node scripts/test-safety-completion.cjs
           bash scripts/test-manager-files.sh
+          node scripts/test-file-preview.cjs
+          bash scripts/test-node-package-info.sh
           bash scripts/test-manager-progress.sh
           bash scripts/test-progress.sh
           bash scripts/test-archive-progress.sh

@@ -20,6 +20,7 @@ import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.SafetyInventoryItem
 import app.tavernbridge.launcher.model.SafetyInventoryPage
+import app.tavernbridge.launcher.model.NodePackageInfo
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupRequest
 import app.tavernbridge.launcher.model.BackupRequestCodec
@@ -39,6 +40,7 @@ import app.tavernbridge.launcher.model.LocalProgressJournal
 import app.tavernbridge.launcher.model.UpdatePreflight
 import app.tavernbridge.launcher.model.UpdateRecord
 import app.tavernbridge.launcher.model.TavernFileEntry
+import app.tavernbridge.launcher.model.TavernFilePreview
 import app.tavernbridge.launcher.model.ExistingInstallation
 import app.tavernbridge.launcher.model.InstallationImportMode
 import app.tavernbridge.launcher.model.TavernTextFile
@@ -90,6 +92,8 @@ class LauncherRepository(private val context: Context) {
     }
 
     fun autoBackupBeforeUpdate(): Boolean = preferences.getBoolean("auto_backup_before_update", true)
+    fun autoOpenBrowser(): Boolean = preferences.getBoolean("auto_open_browser", false)
+    fun saveAutoOpenBrowser(enabled: Boolean) { preferences.edit().putBoolean("auto_open_browser", enabled).apply() }
 
     fun saveAutoBackupBeforeUpdate(enabled: Boolean) {
         preferences.edit().putBoolean("auto_backup_before_update", enabled).apply()
@@ -257,6 +261,22 @@ class LauncherRepository(private val context: Context) {
         return UpdateRecordParser.parse(result.stdout)
     }
 
+    suspend fun nodePackageInfo(): NodePackageInfo {
+        val result = runManager("node-package-info", timeoutMillis = 30_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "Node.js 패키지 정보가 잘렸습니다." }
+        val fields = result.stdout.lineSequence().filter { '=' in it }.groupBy({ it.substringBefore('=') }, { it.substringAfter('=') })
+        check(fields["package_name"] == listOf("nodejs-lts")) { "Node.js 패키지를 확인하지 못했습니다." }
+        fun read(key: String): String {
+            val encoded = fields[key]?.singleOrNull() ?: error("Node.js 패키지 정보가 올바르지 않습니다.")
+            check(encoded.length <= 512)
+            return String(java.util.Base64.getDecoder().decode(encoded), Charsets.UTF_8).also { value ->
+                check(value.length <= 128 && value.none(Char::isISOControl))
+            }
+        }
+        return NodePackageInfo(read("installed_version_b64"), read("candidate_version_b64"))
+    }
+
     suspend fun switchBranch(branch: SillyBranch, allowModifiedFiles: Boolean = false): TermuxCommandResult =
         runManager(
             "switch-branch ${shellQuote(branch.value)} ${if (allowModifiedFiles) 1 else 0}",
@@ -361,7 +381,7 @@ class LauncherRepository(private val context: Context) {
             revision = pageRevision
             for (line in lines.filter { it.startsWith("entry\t") }) {
                 val fields = line.split('\t')
-                check(fields.size == 7) { "폴더 목록 응답이 올바르지 않습니다." }
+                check(fields.size == 8 && fields[7].matches(Regex("[a-f0-9]{64}"))) { "폴더 목록 응답이 올바르지 않습니다." }
                 entries += TavernFileEntry(
                     relativePath = String(Base64.decode(fields[2], Base64.DEFAULT), Charsets.UTF_8),
                     name = String(Base64.decode(fields[3], Base64.DEFAULT), Charsets.UTF_8),
@@ -369,6 +389,7 @@ class LauncherRepository(private val context: Context) {
                     sizeBytes = fields[4].toLong(),
                     modifiedAt = fields[5],
                     sensitive = fields[6] == "1",
+                    revision = fields[7],
                 )
             }
             val next = lines.firstOrNull { it.startsWith("next_cursor=") }?.substringAfter('=')
@@ -441,8 +462,9 @@ class LauncherRepository(private val context: Context) {
 
     fun lastTrashedEntryId(): String = preferences.getString("last_trashed_entry", "").orEmpty()
 
-    suspend fun trashSillyTavernEntry(relativePath: String): TermuxCommandResult {
-        val result = runManager("delete-st ${shellQuote(encodeFileArgument(relativePath))}", 30_000)
+    suspend fun trashSillyTavernEntry(relativePath: String, revision: String = ""): TermuxCommandResult {
+        require(revision.isEmpty() || revision.matches(Regex("[a-f0-9]{64}")))
+        val result = runManager("delete-st ${shellQuote(encodeFileArgument(relativePath))} ${shellQuote(revision)}", 30_000)
         if (result.isSuccess) {
             val id = result.stdout.lineSequence().firstOrNull { it.startsWith("trash_id=") }?.substringAfter('=')
             if (id != null && id.matches(Regex("[0-9]+-[a-f0-9-]{36}"))) {
@@ -458,6 +480,13 @@ class LauncherRepository(private val context: Context) {
             preferences.edit().remove("last_trashed_entry").commit()
         }
         return result
+    }
+
+    suspend fun previewSillyTavernFile(relativePath: String): TavernFilePreview {
+        val result = runManager("preview-st-file ${shellQuote(encodeFileArgument(relativePath))}", 30_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "미리보기 응답이 잘렸습니다. 파일은 변경하지 않았습니다." }
+        return FilePreviewParser.parse(relativePath, result.stdout)
     }
 
     suspend fun importSillyTavernFile(parent: String, uri: Uri): TermuxCommandResult {

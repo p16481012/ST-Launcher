@@ -7,4 +7,5 @@ data class TavernFileEntry(
     val sizeBytes: Long,
     val modifiedAt: String,
     val sensitive: Boolean,
+    val revision: String = "",
 )
