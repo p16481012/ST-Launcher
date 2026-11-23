@@ -62,6 +62,7 @@ import app.tavernbridge.launcher.model.WorkProgress
 import app.tavernbridge.launcher.model.LocalProgressJournal
 import app.tavernbridge.launcher.model.ProgressLogHistory
 import app.tavernbridge.launcher.model.belongsToStartedOperation
+import app.tavernbridge.launcher.model.closeOperationDialogsForResult
 import app.tavernbridge.launcher.model.RecoveredOperationStatus
 import app.tavernbridge.launcher.model.recoveredOperationStatus
 import app.tavernbridge.launcher.model.recoveredSubstepNotice
@@ -1332,11 +1333,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun changeSafetyItem(action: String, item: SafetyInventoryItem) {
         if (action !in setOf("export", "delete", "restore") || state.value.safetyInventory.loading) return
         if (state.value.safetyInventory.mutationBlocked || state.value.environment.recoveryPending) {
-            mutableState.update { it.copy(error = "미완료 작업의 점검·복구를 먼저 진행해 주세요. 보호 자료는 변경하지 않았습니다.") }
+            mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = "미완료 작업의 점검·복구를 먼저 진행해 주세요. 보호 자료는 변경하지 않았습니다.")) }
             return
         }
         if (action == "restore" && state.value.environment.processRunning) {
-            mutableState.update { it.copy(error = "휴지통 항목을 복원하려면 서버를 먼저 종료해 주세요.") }
+            mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = "휴지통 항목을 복원하려면 서버를 먼저 종료해 주세요.")) }
             return
         }
         val label = when (action) { "export" -> "안전 사본 내보내기"; "delete" -> "보관 항목 삭제"; else -> "휴지통 항목 복원" }
@@ -2341,6 +2342,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         decryptedBackupFile = null; encryptedBackupSource = null
         perform("import-backup", "암호화 백업 복원", "암호화 백업의 복원을 완료했습니다. 원본 암호화 파일은 유지했습니다.",
             onFinished = { encryptedBackupFiles.remove(file) }) {
+            mutableState.update { it.copy(section = MainSection.HOME) }
             try {
                 val result = protectBeforeReplacement(backupBefore, { backupBeforeReplacement("import-backup") }) {
                     repository.importBackup(encryptedBackupFiles.uri(file))
@@ -2510,8 +2512,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()
             progressLogHistory.clear()
+            selectionListGeneration++
+            versionListGeneration++
+            extensionListGeneration++
             mutableState.update {
-                it.copy(isWorking = true, workingLabel = label,
+                it.closeOperationDialogsForResult().copy(isWorking = true, workingLabel = label,
                     workingStartedAtMillis = operationStartedAt, workProgress = null)
             }
             LocalProgressJournal(operation, ::publishProgress).phase(

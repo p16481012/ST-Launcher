@@ -33,6 +33,10 @@ internal class EncryptedBackupFiles(context: Context) {
     }.getOrNull()
     fun uri(file: File): Uri = FileProvider.getUriForFile(context, "${context.packageName}.private-backup", file)
 
+    private fun preflight(condition: Boolean, message: String) {
+        if (!condition) throw BackupTransferPreflightException(message)
+    }
+
     private fun size(uri: Uri, signal: CancellationSignal): Long = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null, signal)?.use {
         if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
     } ?: -1L
@@ -46,12 +50,12 @@ internal class EncryptedBackupFiles(context: Context) {
             try { awaitCancellation() } finally { signal.cancel(); runCatching { reading.get()?.close() }; runCatching { writing.get()?.close() } }
         }
         try {
-            require(source.scheme == "content" && target.scheme == "content" && source != target && DocumentsContract.isDocumentUri(context, target)) { "새 저장 파일을 선택해 주세요." }
-            require(!(source.authority == target.authority && runCatching { DocumentsContract.getDocumentId(source) == DocumentsContract.getDocumentId(target) }.getOrDefault(false))) { "원본에는 덮어쓰지 않습니다." }
+            preflight(source.scheme == "content" && target.scheme == "content" && source != target && DocumentsContract.isDocumentUri(context, target), "새 저장 파일을 선택해 주세요.")
+            preflight(!(source.authority == target.authority && runCatching { DocumentsContract.getDocumentId(source) == DocumentsContract.getDocumentId(target) }.getOrDefault(false)), "원본에는 덮어쓰지 않습니다. 다른 새 파일을 선택해 주세요.")
             val bytes = size(source, signal)
-            require(bytes in 4..EncryptedBackupCodec.MAX_PLAINTEXT_BYTES) { "원본 ZIP 크기를 확인할 수 없습니다. 기기에 저장된 ZIP을 선택해 주세요." }
+            preflight(bytes >= 4, "원본 ZIP 크기를 확인할 수 없습니다. 기기에 저장된 ZIP을 선택해 주세요.")
             BackupTransferLimits.checkEncryptedSize(bytes)
-            require(size(target, signal) == 0L) { "비어 있는 새 파일만 저장 위치로 사용할 수 있습니다." }
+            preflight(size(target, signal) == 0L, "비어 있는 새 파일만 저장 위치로 사용할 수 있습니다.")
             owned = true
             val coroutine = currentCoroutineContext()
             resolver.openAssetFileDescriptor(source, "r", signal)?.use { descriptor ->
@@ -60,7 +64,10 @@ internal class EncryptedBackupFiles(context: Context) {
                     val signature = ByteArray(4)
                     var offset = 0
                     while (offset < 4) { val n = input.read(signature, offset, 4 - offset); require(n > 0) { "ZIP을 읽지 못했습니다." }; offset += n }
-                    require(signature[0] == 80.toByte() && signature[1] == 75.toByte() && signature[2] in byteArrayOf(3,5,7)) { "ZIP 백업을 선택해 주세요." }
+                    preflight(signature[0] == 80.toByte() && signature[1] == 75.toByte() &&
+                        ((signature[2] == 3.toByte() && signature[3] == 4.toByte()) ||
+                         (signature[2] == 5.toByte() && signature[3] == 6.toByte()) ||
+                         (signature[2] == 7.toByte() && signature[3] == 8.toByte())), "ZIP 백업을 선택해 주세요.")
                     input.unread(signature)
                     resolver.openAssetFileDescriptor(target, "w", signal)?.use { destination ->
                         destination.createOutputStream().use { output ->
