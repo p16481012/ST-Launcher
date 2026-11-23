@@ -64,6 +64,7 @@ jobs:
             bash scripts/test-safety-storage.sh
             bash scripts/test-safety-manager.sh
             bash scripts/test-transaction-recovery.sh
+            bash scripts/test-transaction-termux-parent.sh
             bash scripts/test-backup-surface.sh
             bash scripts/test-progress-hardlinks.sh
             bash scripts/test-restore-recovery.sh

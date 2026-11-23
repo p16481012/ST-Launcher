@@ -62,9 +62,36 @@ run_transaction_command() {
     return "$code"
 }
 
+transaction_termux_ancestors() {
+    local own_uid="$1" pid="$$" parent started name app_pid="${TERMUX_APP__PID:-${TERMUX_APP_PID:-}}" depth=0
+    # A restarted non-dumpable Java process is newer than an old journal, but
+    # cannot be an npm/Git descendant: it is an ancestor of this new manager.
+    # Release Termux may also restrict cmdline; its official app-PID variable is
+    # only a candidate, never sufficient without this actual ancestry check.
+    while (( depth++ < 64 )); do
+        read -r parent started < <(awk '{sub(/^.*\) /, ""); print $2, $20}' "/proc/$pid/stat" 2>/dev/null) || break
+        [[ "$parent" =~ ^[0-9]+$ && "$started" =~ ^[1-9][0-9]{0,17}$ ]] || break
+        [[ "$(stat -c %u "/proc/$pid" 2>/dev/null)" == "$own_uid" ]] || break
+        if [[ "$pid" != "$$" ]]; then
+            name=""
+            if IFS= read -r -d '' name < "/proc/$pid/cmdline" 2>/dev/null; then
+                [[ "$name" == com.termux ]] || name="rejected"
+            elif [[ "$pid" == "$app_pid" && "$app_pid" =~ ^[1-9][0-9]{0,9}$ ]]; then
+                name=com.termux
+            fi
+            if [[ "$name" == com.termux && "$(process_start_ticks "$pid")" == "$started" ]]; then
+                printf '%s:%s\n' "$pid" "$started"
+            fi
+        fi
+        (( parent > 1 && parent != pid )) || break
+        [[ "$(process_start_ticks "$pid")" == "$started" ]] || break
+        pid="$parent"
+    done
+}
+
 transaction_writers_quiet() {
     local work="$1" marker token cutoff earliest="" started proc owner environment own_uid done pid gate
-    local -A tokens=()
+    local -A tokens=() termux_ancestors=()
     for marker in "$work"/writer-*.env; do
         [[ -e "$marker" || -L "$marker" ]] || continue
         [[ -f "$marker" && ! -L "$marker" && "$(stat -c %s "$marker")" -le 256 ]] || return 1
@@ -97,6 +124,9 @@ transaction_writers_quiet() {
     done
     (( ${#tokens[@]} )) || return 0
     own_uid="$(id -u)" || return 1
+    while IFS= read -r proc; do
+        [[ "$proc" =~ ^[1-9][0-9]*:[1-9][0-9]*$ ]] && termux_ancestors["$proc"]=1
+    done < <(transaction_termux_ancestors "$own_uid")
     for proc in /proc/[0-9]*; do
         [[ -d "$proc" && "$proc" != "/proc/$$" ]] || continue
         owner="$(stat -c %u "$proc" 2>/dev/null)" || continue
@@ -109,6 +139,7 @@ transaction_writers_quiet() {
         (( 10#$started < 10#$earliest )) && continue
         if ! environment="$(tr '\0' '\n' < "$proc/environ" 2>/dev/null | sed -n '/^ST_LAUNCHER_WRITER_TOKEN=/p')"; then
             [[ ! -d "$proc" || "$(awk '{sub(/^.*\) /, ""); print $1}' "$proc/stat" 2>/dev/null)" == Z ]] && continue
+            [[ -n "${termux_ancestors[${proc##*/}:$started]:-}" && "$(process_start_ticks "${proc##*/}")" == "$started" ]] && continue
             echo "이전 작업의 하위 프로세스 종료를 확인하지 못했습니다. Termux 작업이 끝난 뒤 다시 시도해 주세요." >&2
             return 1
         fi

@@ -99,7 +99,7 @@ result=0
     remove_verified_install_source() { touch "$FIXTURE/UNSAFE_ACTION"; return 99; }
     case "$ROUTE" in
         import-backup) import_backup "$FILE_NAME" ;;
-        import-install) import_install ignored ;;
+        import-install) import_install ignored move replace ;;
         restore) restore_backup "$FILE_NAME" ;;
     esac
 ) > "$FIXTURE/request.log" 2>&1 || result=$?
