@@ -19,6 +19,7 @@ const state = { progress_mode: 'indeterminate', completed_bytes: 0, total_bytes:
 let lastWrite = 0, lastLog = 0, lastFingerprint = '', lastSpace = 0;
 let currentDetail = '';
 let child, output, work, workIdentity, parentIdentity, parent, root, archive, timer;
+let archiveFd = null, archiveIdentity;
 let committed = false, interrupted = false, timerError = null, reserve = 33554432;
 const entries = [];
 function failure(message, code = 36) { return Object.assign(new Error(message), { exitCode: code }); }
@@ -77,6 +78,39 @@ function same(a, b) { return ['dev', 'ino', 'mode', 'size', 'mtimeMs', 'ctimeMs'
 function sameDirectory(target, identity) {
     const current = fs.lstatSync(target);
     return current.isDirectory() && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
+}
+function sameArchive(stat) {
+    return stat.isFile() && !stat.isSymbolicLink() && archiveIdentity &&
+        stat.dev === archiveIdentity.dev && stat.ino === archiveIdentity.ino;
+}
+function syncDirectory(target) {
+    // Android/Linux require directory durability; Windows is only a test host.
+    if (process.platform === 'win32') return;
+    const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | (fs.constants.O_NOFOLLOW || 0));
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+function prepareStorage() {
+    // Reserve the actual output atomically, rather than checking exists then
+    // replacing it. This rejects existing files AND dangling symbolic links.
+    // The manager supplies a fresh private directory tracked until success.
+    try {
+        archiveFd = fs.openSync(archive, 'wx', 0o600);
+        archiveIdentity = fs.fstatSync(archiveFd);
+        // Test real writes and durability before scanning/compressing gigabytes.
+        // A positional write does not advance the stream's starting offset.
+        fs.writeSync(archiveFd, Buffer.from([0]), 0, 1, 0);
+        fs.ftruncateSync(archiveFd, 0);
+        fs.fsyncSync(archiveFd);
+        syncDirectory(parent);
+        syncDirectory(path.dirname(parent));
+        const workParent = process.env.ST_SAFETY_WORK_PARENT || parent;
+        work = fs.mkdtempSync(path.join(workParent, '.st-safety-'));
+        workIdentity = fs.lstatSync(work); fs.chmodSync(work, 0o700);
+    } catch (error) {
+        error.message = `안전 백업 저장 위치 사전 검사에 실패했습니다. 원본은 변경하지 않았습니다. ${clean(error.message)}`;
+        throw error;
+    }
+    log('저장 위치 사전 검사 완료 · 파일 생성·쓰기·디스크 기록 확인');
 }
 function checkSpace(required = reserve, force = false) {
     if (!force && Date.now() - lastSpace < 500) return;
@@ -201,13 +235,14 @@ async function main() {
     root = fs.realpathSync(rootArgument); archive = path.resolve(archiveArgument); parent = fs.realpathSync(path.dirname(archive));
     archive = path.join(parent, path.basename(archive));
     if (archive === root || archive.startsWith(root + path.sep)) throw failure('안전 백업은 원본 폴더 밖에 저장해야 합니다.');
-    if (fs.existsSync(archive)) throw failure('같은 이름의 안전 백업이 이미 있어 덮어쓰지 않았습니다.');
     if (!fs.lstatSync(root).isDirectory()) throw failure('안전 백업 원본 폴더를 찾을 수 없습니다.');
     parentIdentity = fs.lstatSync(parent);
     const reserveText = process.env.ST_SAFETY_RESERVE_BYTES || String(reserve);
     if (!/^\d+$/.test(reserveText) || !Number.isSafeInteger(Number(reserveText))) throw failure('안전 백업 여유 공간 설정이 올바르지 않습니다.');
     reserve = Number(reserveText);
-    publish(true);
+    publish(true, '압축 전에 실제 저장 위치의 파일 생성·쓰기·디스크 기록을 확인하고 있습니다.');
+    prepareStorage();
+    currentDetail = '';
     await plan();
     checkAbort();
     const hardLinks = new Set();
@@ -223,12 +258,13 @@ async function main() {
     const required = Math.ceil((state.total_bytes + metadata) * 1.02) + reserve;
     checkSpace(required, true);
     log(`대상 확인 완료 · 원본 ${bytes(state.total_bytes)} · 파일 ${state.total_files}개 · 안전 여유 포함 필요 공간 ${bytes(required)}`);
-    const workParent = process.env.ST_SAFETY_WORK_PARENT || parent;
-    work = fs.mkdtempSync(path.join(workParent, '.st-safety-')); fs.chmodSync(work, 0o700); workIdentity = fs.lstatSync(work);
-    const list = path.join(work, 'paths'), temporary = path.join(work, 'archive.tar.gz');
+    const list = path.join(work, 'paths');
     const prefix = layout === 'directory' ? path.basename(root) : '.';
     fs.writeFileSync(list, Buffer.from(entries.map(entry => `${prefix}${entry.relative ? `/${entry.relative}` : ''}\0`).join('')), { mode: 0o600 });
-    output = fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
+    // Write once through the exclusively reserved descriptor. No hard links,
+    // second large copy, or rename-overwrite window is needed at completion.
+    output = fs.createWriteStream(archive, { fd: archiveFd, autoClose: true });
+    archiveFd = null; // The stream now owns and closes this descriptor.
     state.progress_mode = state.total_bytes > 0 ? 'bytes' : 'files'; publish(true);
     child = spawn('tar', ['--format=pax', '--no-recursion', '--null', '--verbatim-files-from', '-cf', '-', '-C', layout === 'directory' ? path.dirname(root) : root, '-T', list],
         { env: { ...process.env, LC_ALL: 'C', TAR_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -251,16 +287,20 @@ async function main() {
     checkAbort();
     checkSpace(reserve, true);
     if (!sameDirectory(parent, parentIdentity) || !sameDirectory(work, workIdentity)) throw failure('안전 백업 저장 위치가 변경되었습니다.');
-    const fd = fs.openSync(temporary, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    // Hard-link publication is atomic and exclusive: never replace another snapshot.
-    fs.linkSync(temporary, archive);
-    // Persist the published directory entry before allowing destructive Git
-    // cleanup. Windows is only a development test host; Android/Linux must
-    // support and successfully complete directory fsync.
-    if (process.platform !== 'win32') {
-        const directory = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | (fs.constants.O_NOFOLLOW || 0));
-        try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+    if (!sameArchive(fs.lstatSync(archive))) throw failure('안전 백업 저장 파일이 변경되어 원본을 유지합니다.');
+    const fd = fs.openSync(archive, fs.constants.O_RDWR | (fs.constants.O_NOFOLLOW || 0));
+    try {
+        if (!sameArchive(fs.fstatSync(fd))) throw failure('안전 백업 저장 파일이 변경되어 원본을 유지합니다.');
+        fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
+    syncDirectory(parent);
+    syncDirectory(path.dirname(parent));
+    checkAbort();
+    if (!sameDirectory(parent, parentIdentity) || !sameArchive(fs.lstatSync(archive))) {
+        throw failure('안전 백업 저장 위치 또는 파일이 변경되어 원본을 유지합니다.');
     }
+    // Only a successful, durable result permits the manager to retain the
+    // private snapshot directory and subsequently clean the Git worktree.
     committed = true;
     state.progress_mode = state.total_bytes > 0 ? 'bytes' : 'files'; activity(); publish(true, '안전 백업 저장과 원본 변경 검사를 완료했습니다.');
     log(`안전 백업 저장 및 원본 변경 검사 완료 · 압축 파일 ${bytes(fs.statSync(archive).size)}`);
@@ -280,8 +320,27 @@ main().catch(error => {
     const code = error.code === 'ENOSPC' ? 35 : (interrupted ? 130 : (error.exitCode || 36));
     try { log(`실패 · ${clean(error.message)} · 미완성 압축은 정리하며 원본은 유지합니다.`); } catch (_) {}
     console.error(clean(error.message)); process.exitCode = code;
-}).finally(() => {
+}).finally(async () => {
     clearInterval(timer);
+    // A log/spawn failure can occur after descriptor handoff but before the
+    // pipeline starts. Close the stream before unlinking its partial file.
+    if (output && !output.closed) {
+        await new Promise(resolve => {
+            output.once('close', resolve);
+            output.once('error', () => {});
+            output.destroy();
+        });
+    }
+    if (archiveFd !== null) {
+        try { fs.closeSync(archiveFd); } catch (_) {}
+    }
+    if (!committed && archiveIdentity) {
+        try {
+            if (sameDirectory(parent, parentIdentity) && sameArchive(fs.lstatSync(archive))) fs.unlinkSync(archive);
+        } catch (error) {
+            if (error.code !== 'ENOENT') console.error(clean(error.message));
+        }
+    }
     if (work) {
         try {
             if (sameDirectory(parent, parentIdentity) && sameDirectory(work, workIdentity)) fs.rmSync(work, { recursive: true });

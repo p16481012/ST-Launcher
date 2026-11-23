@@ -41,6 +41,7 @@ CURRENT_WORK_DIR=""
 CURRENT_IMPORT_ARCHIVE=""
 CURRENT_BACKUP_OUTPUT_DIR=""
 CURRENT_SAFETY_WORK_DIR=""
+SAFETY_BACKUP_PATH=""
 TEMP_APT_SOURCES=""
 OPERATION_LOCK_START=""
 CANCELLATION_GUARD=0
@@ -345,18 +346,33 @@ measured_archive() {
 
 safety_backup() {
     local archive="$1" layout="${2:-contents}" reserve="${3:-33554432}" code=0
-    CURRENT_SAFETY_WORK_DIR="$(mktemp -d "$BACKUP_DIR/safety-work-$$.XXXXXXXX")" || return 36
+    SAFETY_BACKUP_PATH=""
+    # Reserve a private destination before compression. The worker writes its
+    # archive exclusively here without hard links or a second full-size copy.
+    # Until success this whole directory belongs to cancellation cleanup; after
+    # success it is the permanent snapshot and must survive later Git failures.
+    CURRENT_SAFETY_WORK_DIR="$(mktemp -d "$BACKUP_DIR/safety-snapshot-$$.XXXXXXXX")" || return 36
+    archive="$CURRENT_SAFETY_WORK_DIR/$(basename -- "$archive")"
     ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" ST_PROGRESS_HISTORY="$HISTORY_LOG" \
         ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_PROGRESS_PHASE="${SAFETY_PHASE:-안전 백업}" \
         ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" ST_SAFETY_RESERVE_BYTES="$reserve" ST_SAFETY_WORK_PARENT="$CURRENT_SAFETY_WORK_DIR" \
         run_cancellable bash "$SAFETY_BACKUP_HELPER" "$ST_HOME" "$archive" "$layout" >> "$LOG_FILE" 2>&1 || code=$?
+    if (( code == 0 )) && [[ -f "$archive" && ! -L "$archive" ]]; then
+        SAFETY_BACKUP_PATH="$archive"
+        CURRENT_SAFETY_WORK_DIR=""
+        return 0
+    fi
+    if (( code == 0 )); then
+        echo "안전 백업 완료 응답을 받았지만 저장된 압축 파일을 확인하지 못했습니다." >> "$LOG_FILE"
+        code=36
+    fi
+    # Include the underlying filesystem failure in the Termux callback too.
+    tail -n 40 "$LOG_FILE" >&2 || true
     # Preserve the worker's actual failure even if scratch cleanup also fails;
     # the operation cleanup retries while the tracked path is still available.
     if rm -rf -- "$CURRENT_SAFETY_WORK_DIR"; then CURRENT_SAFETY_WORK_DIR=""; fi
-    if (( code != 0 )); then
-        case "$code" in 35|36|37|130) ;; *) code=36 ;; esac
-        return "$code"
-    fi
+    case "$code" in 35|36|37|130) ;; *) code=36 ;; esac
+    return "$code"
 }
 
 reset_server_log() {
@@ -404,7 +420,7 @@ track_current_work_dir() {
 
 cleanup_current_work_dir() {
     if [[ -n "$CURRENT_SAFETY_WORK_DIR" ]]; then
-        case "$CURRENT_SAFETY_WORK_DIR" in "$BACKUP_DIR/safety-work-$$."*) rm -rf -- "$CURRENT_SAFETY_WORK_DIR" ;; esac
+        case "$CURRENT_SAFETY_WORK_DIR" in "$BACKUP_DIR/safety-snapshot-$$."*) rm -rf -- "$CURRENT_SAFETY_WORK_DIR" ;; esac
         CURRENT_SAFETY_WORK_DIR=""
     fi
     if [[ -n "$CURRENT_BACKUP_OUTPUT_DIR" ]]; then
@@ -3740,6 +3756,7 @@ update_st() {
         local modified_backup="$BACKUP_DIR/before-forced-update-$timestamp.tar.gz"
         write_progress 8 "수정 파일 보호" "사용자 데이터를 포함한 현재 설치를 별도 안전 파일로 압축하고 있습니다."
         SAFETY_PHASE="수정 파일 보호" safety_backup "$modified_backup" contents "$required_bytes" || exit $?
+        modified_backup="$SAFETY_BACKUP_PATH"
         enter_cancellation_guard
         record_processing "수정 파일 안전 보관 완료 · Git 작업 트리 정리 시작"
         write_progress 0 "Git 작업 트리 정리" "안전 백업을 저장했습니다. Git 수정 파일 정리 명령의 완료를 기다립니다."
@@ -3836,6 +3853,7 @@ switch_branch() {
     write_progress 10 "안전 백업" "브랜치 변경 전 현재 설정을 백업하고 있습니다."
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
     SAFETY_PHASE="브랜치 변경 안전 백업" safety_backup "$safety_backup" directory || exit $?
+    safety_backup="$SAFETY_BACKUP_PATH"
     enter_cancellation_guard
     record_processing "브랜치 변경 전 안전 백업 생성 완료"
     if [[ -n "$dirty_files" ]]; then
