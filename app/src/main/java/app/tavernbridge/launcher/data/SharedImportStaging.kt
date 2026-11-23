@@ -80,7 +80,7 @@ internal class SharedImportStaging(private val context: Context) {
             if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
         } ?: -1L
         onProgress(CopyProgress(0, declaredSize, sourceName))
-        val maxBytes = 8L * 1024 * 1024 * 1024
+        val maxBytes = BackupTransferLimits.MAX_BYTES
         require(declaredSize <= maxBytes) { "가져올 파일은 8 GiB 이하여야 합니다." }
         fun available() = StatFs(Environment.getExternalStorageDirectory().path).availableBytes
         val reserve = 32L * 1024 * 1024

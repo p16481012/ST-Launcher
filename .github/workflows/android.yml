@@ -44,6 +44,23 @@ jobs:
           bash -n app/src/main/assets/safety-inventory.sh
           bash -n app/src/main/assets/storage-usage.sh
           bash -n app/src/main/assets/backup-catalog.sh
+          bash -n app/src/main/assets/extensions-helper.sh
+          bash -n app/src/main/assets/extension-manager.sh
+          bash -n app/src/main/assets/lan-security.sh
+          bash -n app/src/main/assets/selective-restore.sh
+          bash -n app/src/main/assets/selective-restore-data.sh
+          bash -n app/src/main/assets/version-state.sh
+          bash -n app/src/main/assets/version-manager.sh
+
+      - name: Test LAN configuration and isolated extension changes
+        run: |
+          npm install --prefix "$RUNNER_TEMP/st-lan-yaml" --ignore-scripts --no-package-lock --no-audit --no-fund yaml@2.9.1
+          ST_TEST_YAML_ROOT="$RUNNER_TEMP/st-lan-yaml" node scripts/test-lan-security.cjs
+          node scripts/test-extensions.cjs
+          node scripts/test-selective-restore.cjs
+          bash scripts/test-selective-restore-journal.sh
+          node scripts/test-version-state.cjs
+          bash scripts/test-version-flow.sh
 
       - name: Test manager safety helpers
         run: |

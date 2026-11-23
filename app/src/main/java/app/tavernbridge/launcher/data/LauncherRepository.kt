@@ -335,6 +335,62 @@ class LauncherRepository(private val context: Context) {
         return BackupOutputParser.parse(result.stdout)
     }
 
+    suspend fun listExtensions(cursor: Int = 0): app.tavernbridge.launcher.model.ExtensionInventory {
+        require(cursor in 0..2000)
+        val result = runManager("extensions-list $cursor", 60_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "확장 목록 응답이 잘렸습니다. 다시 확인해 주세요." }
+        return ExtensionOutputParser.parse(result.stdout)
+    }
+
+    suspend fun previousVersions(): app.tavernbridge.launcher.model.PreviousVersionPage {
+        val result = runManager("previous-versions", 60_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "버전 목록 응답이 잘렸습니다." }
+        return PreviousVersionParser.versions(result.stdout.lineSequence().filter {
+            it.startsWith("version\t") || it.substringBefore('=') in setOf("version_inventory", "current_commit", "installation_revision", "branch")
+        }.joinToString("\n"))
+    }
+
+    suspend fun versionSnapshots(): app.tavernbridge.launcher.model.VersionSnapshotPage {
+        val result = runManager("version-snapshots", 60_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "버전 백업 목록 응답이 잘렸습니다." }
+        return PreviousVersionParser.snapshots(result.stdout.lineSequence().filter {
+            it.startsWith("snapshot\t") || it.substringBefore('=') in setOf("version_snapshots", "snapshots_truncated")
+        }.joinToString("\n"))
+    }
+
+    suspend fun changeVersion(
+        target: app.tavernbridge.launcher.model.PreviousVersion,
+        page: app.tavernbridge.launcher.model.PreviousVersionPage,
+        snapshot: app.tavernbridge.launcher.model.VersionSnapshot?,
+    ): TermuxCommandResult {
+        require(target in page.versions && target.commit.matches(Regex("[a-f0-9]{40}")))
+        require(page.currentCommit.matches(Regex("[a-f0-9]{40}")) && page.installationRevision.matches(Regex("[a-f0-9]{64}")))
+        require(snapshot == null || (snapshot.commit == target.commit && snapshot.revision.matches(Regex("[a-f0-9]{64}"))))
+        val mode = if (snapshot == null) "keep-current" else "snapshot"
+        return runManager("change-version ${shellQuote(target.commit)} ${shellQuote(page.currentCommit)} ${shellQuote(page.installationRevision)} $mode ${shellQuote(snapshot?.filename.orEmpty())} ${shellQuote(snapshot?.revision.orEmpty())}", 45 * 60_000L)
+    }
+
+    suspend fun changeExtension(item: app.tavernbridge.launcher.model.ManagedExtension, action: app.tavernbridge.launcher.model.ExtensionAction): TermuxCommandResult {
+        require(item.id.length <= 8192 && item.revision.matches(Regex("[a-f0-9]{64}")))
+        return runManager("extension-${action.argument} ${shellQuote(item.id)} ${shellQuote(item.revision)}", 15 * 60_000L)
+    }
+
+    suspend fun recoverExtension(): TermuxCommandResult = runManager("extension-recover", 60_000)
+
+    suspend fun saveLanSecurity(change: app.tavernbridge.launcher.model.LanSecurityChange): TermuxCommandResult = withContext(Dispatchers.IO) {
+        try {
+            requireManagerAccess("save-lan-security")
+            ensureManagerDeployed()
+            val payload = LanSecurityPayload.encode(change)
+            OneShotSecretInput.start(payload).use { secret ->
+                runManager("save-lan-security ${secret.port} ${secret.token}", 60_000)
+            }
+        } finally { change.close() }
+    }
+
     suspend fun inspectStorageUsage(): Pair<TermuxCommandResult, app.tavernbridge.launcher.model.StorageUsageReport> {
         val result = runManager("storage-usage", 60_000)
         check(result.isSuccess) { result.readableError() }
@@ -573,16 +629,26 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
-    suspend fun deleteBackup(fileName: String): TermuxCommandResult =
-        runManager("delete-backup ${shellQuote(fileName)}", timeoutMillis = 60_000)
-
-    suspend fun deleteBackups(fileNames: List<String>): TermuxCommandResult {
-        val encoded = Base64.encodeToString(fileNames.joinToString("\n").toByteArray(), Base64.NO_WRAP)
-        return runManager("delete-backups ${shellQuote(encoded)}", timeoutMillis = 2 * 60_000L)
-    }
-
     suspend fun restoreBackup(fileName: String): TermuxCommandResult =
         runManager("restore ${shellQuote(fileName)}", timeoutMillis = 45 * 60_000L)
+
+    suspend fun selectiveRestoreItems(fileName: String, cursor: Int = 0): app.tavernbridge.launcher.model.SelectiveRestorePage {
+        require(app.tavernbridge.launcher.model.BackupRetentionPolicy.validFileName(fileName) && cursor in 0..100000)
+        val result = runManager("restore-selection-list ${shellQuote(fileName)} $cursor", 2 * 60_000L)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "선택 복원 목록이 잘렸습니다. 다시 확인해 주세요." }
+        return SelectiveRestoreParser.parse(result.stdout.lineSequence().filter {
+            it.startsWith("restore_item\t") || it.substringBefore('=') in setOf("selection_format", "archive_revision", "installation_revision", "next_cursor", "candidate_count")
+        }.joinToString("\n"))
+    }
+
+    suspend fun restoreSelected(fileName: String, page: app.tavernbridge.launcher.model.SelectiveRestorePage,
+        choices: List<app.tavernbridge.launcher.model.SelectiveRestoreChoice>): TermuxCommandResult {
+        require(app.tavernbridge.launcher.model.BackupRetentionPolicy.validFileName(fileName))
+        require(page.archiveRevision.matches(Regex("[a-f0-9]{64}")) && page.installationRevision.matches(Regex("[a-f0-9]{64}")))
+        val encoded = SelectiveRestoreParser.encodeChoices(choices)
+        return runManager("restore-selected ${shellQuote(fileName)} ${page.archiveRevision} ${page.installationRevision} ${shellQuote(encoded)}", 45 * 60_000L)
+    }
 
     suspend fun importBackup(uri: Uri): TermuxCommandResult {
         val transfer = stageTransfer(uri, backup = true)

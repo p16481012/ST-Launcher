@@ -273,6 +273,8 @@ fun LauncherApp(viewModel: LauncherViewModel) {
 @Composable
 private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewModel) {
     BackupTransferHost(state.backupTransfer, viewModel)
+    EncryptedBackupHost(state, viewModel)
+    EntryRequestDialog(state.pendingEntry, viewModel.entryActionGate(), viewModel::confirmEntryAction, viewModel::dismissEntryAction)
     val context = LocalContext.current
     val resources = LocalResources.current
     val largeText = LocalDensity.current.fontScale >= 1.3f
@@ -592,6 +594,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onInspectStorage = viewModel::inspectStorageUsage,
                             onPreviewCleanup = viewModel::previewBackupCleanup,
                             onSaveBackupAnnotation = viewModel::saveBackupAnnotation,
+                            onEncryptedBackup = viewModel::beginEncryptedBackup,
+                            onSelectiveRestore = viewModel::openSelectiveRestore,
+                            onPreviousVersions = viewModel::openPreviousVersions,
                             onImportBackup = pickBackup,
                             onPickInstallation = pickInstallation,
                             onInspectInstallation = viewModel::inspectExistingInstallation,
@@ -697,6 +702,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onResetBrowser = viewModel::clearPreferredBrowser,
                         onAutoOpenBrowserChange = viewModel::setAutoOpenBrowser,
                         onCheckUpdateInformation = viewModel::checkUpdateInformation,
+                        onOpenExtensions = viewModel::openExtensions,
+                        onRefreshLan = viewModel::refreshLanAddresses,
+                        onSaveLanSecurity = viewModel::saveLanSecurity,
                     )
                 }
             }
@@ -715,6 +723,26 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             state.backupCleanupPreview?.takeUnless { state.isWorking }?.let { preview ->
                 BackupCleanupDialog(preview, viewModel::closeBackupCleanup, viewModel::deleteCleanupSelection)
+            }
+            if (state.extensionManagerOpen && !state.isWorking) ExtensionManagerDialog(
+                inventory = state.extensionInventory, loading = state.extensionLoading, busy = state.isWorking,
+                canModify = !state.environment.processRunning && !state.environment.recoveryPending,
+                error = state.extensionError, onRefresh = { viewModel.loadExtensions() },
+                onMore = { viewModel.loadExtensions(true) }, onRecover = viewModel::recoverExtension,
+                onAction = viewModel::changeExtension, onClose = viewModel::closeExtensions,
+            )
+            state.selectiveRestore?.takeUnless { state.isWorking }?.let { selection ->
+                SelectiveRestoreDialog(selection,
+                    canRestore = !state.environment.processRunning && !state.environment.recoveryPending && state.environment.extensionRecovery == "none",
+                    onMore = { viewModel.loadSelectiveRestore(true) },
+                    onRefresh = { viewModel.loadSelectiveRestore() },
+                    onRestore = viewModel::restoreSelection, onClose = viewModel::closeSelectiveRestore)
+            }
+            state.previousVersions?.takeUnless { state.isWorking }?.let { versions ->
+                PreviousVersionDialog(versions,
+                    canChange = !state.environment.processRunning && !state.environment.recoveryPending && state.environment.extensionRecovery == "none",
+                    onRefresh = viewModel::loadPreviousVersions,
+                    onChange = viewModel::changeVersion, onClose = viewModel::closePreviousVersions)
             }
             if (state.isWorking && !(state.fileBrowserOpen && state.fileBrowserMutating)) {
                 WorkingOverlay(
@@ -1350,6 +1378,7 @@ private fun BackupArchiveCard(
     selected: Boolean,
     onSelectedChange: (Boolean) -> Unit,
     onRestore: () -> Unit,
+    onSelectiveRestore: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
     annotation: app.tavernbridge.launcher.model.BackupAnnotation,
@@ -1376,6 +1405,8 @@ private fun BackupArchiveCard(
                         Icon(Icons.Outlined.MoreHoriz, contentDescription = "백업 공유·저장 메뉴")
                     }
                     DropdownMenu(expanded = transferMenuOpen, onDismissRequest = { transferMenuOpen = false }) {
+                        DropdownMenuItem(text = { Text("캐릭터·채팅 선택 복원") }, enabled = !serverRunning,
+                            onClick = { transferMenuOpen = false; onSelectiveRestore() })
                         DropdownMenuItem(text = { Text("공유") }, leadingIcon = { Icon(Icons.Outlined.Share, null) },
                             onClick = { transferMenuOpen = false; onShare() })
                         DropdownMenuItem(text = { Text("다른 위치에 저장") }, leadingIcon = { Icon(Icons.Outlined.Download, null) },
@@ -1536,6 +1567,9 @@ private fun ManagementScreen(
     onInspectStorage: () -> Unit,
     onPreviewCleanup: (Int, Int) -> Unit,
     onSaveBackupAnnotation: (String, Boolean, String) -> Unit,
+    onEncryptedBackup: (app.tavernbridge.launcher.model.EncryptedBackupMode) -> Unit,
+    onSelectiveRestore: (BackupArchive) -> Unit,
+    onPreviousVersions: () -> Unit,
     onImportBackup: () -> Unit,
     onPickInstallation: () -> Unit,
     onInspectInstallation: (String) -> Unit,
@@ -1756,6 +1790,9 @@ private fun ManagementScreen(
                             },
                         )
                     }
+                    TextButton(onClick = onPreviousVersions, enabled = !environment.processRunning) {
+                        Text("이전 버전 선택·복귀")
+                    }
                     state.lastUpdateRecord?.let { record ->
                         HorizontalDivider()
                         Text("최근 업데이트 기록", style = MaterialTheme.typography.titleSmall)
@@ -1794,6 +1831,7 @@ private fun ManagementScreen(
 
             if (selectedPanel == ManagementPanel.BACKUP) {
         item { StorageManagementCard(state, onInspectStorage, onPreviewCleanup) }
+        item { EncryptedBackupCard(!state.isWorking, onEncryptedBackup) }
         item {
             BackupReminderSetting(state.backupReminder.enabled, onBackupReminderChange)
         }
@@ -1958,6 +1996,7 @@ private fun ManagementScreen(
                     }
                 },
                 onRestore = { onRestoreBackup(backup) },
+                onSelectiveRestore = { onSelectiveRestore(backup) },
                 onShare = { onTransferBackup(backup, BackupTransferAction.SHARE) },
                 onExport = { onTransferBackup(backup, BackupTransferAction.EXPORT) },
                 annotation = state.backupAnnotations[backup.fileName] ?: app.tavernbridge.launcher.model.BackupAnnotation(),
@@ -2611,22 +2650,27 @@ private fun SettingsScreen(
     onResetBrowser: () -> Unit,
     onAutoOpenBrowserChange: (Boolean) -> Unit,
     onCheckUpdateInformation: () -> Unit,
+    onOpenExtensions: () -> Unit,
+    onRefreshLan: () -> Unit,
+    onSaveLanSecurity: (app.tavernbridge.launcher.model.LanSecurityChange) -> Unit,
 ) {
     val selectedTheme = state.theme
     val background = state.backgroundStatus
     val selectedPanel = state.settingsPanel
     var portText by rememberSaveable(state.configuredPort) { mutableStateOf(state.configuredPort.toString()) }
-    var externalAccess by rememberSaveable(state.environment.externalAccessEnabled) {
-        mutableStateOf(state.environment.externalAccessEnabled)
-    }
-    var whitelistText by rememberSaveable(state.environment.whitelist) {
-        mutableStateOf(state.environment.whitelist.joinToString("\n"))
-    }
+    val externalAccess = state.environment.externalAccessEnabled
+    val whitelistText = state.environment.whitelist.joinToString("\n")
+    var lanSettingsOpen by rememberSaveable { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
     val parsedPort = portText.toIntOrNull()
     var confirmConnectionSave by rememberSaveable { mutableStateOf(false) }
-    val connectionChanged = parsedPort != state.configuredPort ||
-        externalAccess != state.environment.externalAccessEnabled ||
-        whitelistText.lineSequence().map(String::trim).filter(String::isNotBlank).toList() != state.environment.whitelist
+    val connectionChanged = parsedPort != state.configuredPort
+    if (lanSettingsOpen) LANSecuritySettingsDialog(
+        current = app.tavernbridge.launcher.model.LanSecuritySnapshot(externalAccess, state.environment.whitelist,
+            state.environment.basicAuthEnabled, state.environment.perUserBasicAuth),
+        busy = state.isWorking, onDismiss = { lanSettingsOpen = false },
+        onConfirm = { change -> lanSettingsOpen = false; onSaveLanSecurity(change) },
+    )
     if (confirmConnectionSave) AlertDialog(
         onDismissRequest = { confirmConnectionSave = false },
         title = { Text("서버 연결 설정을 적용할까요?") },
@@ -2801,63 +2845,26 @@ private fun SettingsScreen(
                         isError = parsedPort != null && parsedPort !in 1024..65535,
                         supportingText = { Text("사용 가능 범위: 1024–65535") },
                     )
+                    Button(onClick = { confirmConnectionSave = true }, modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.isWorking && parsedPort != null && parsedPort in 1024..65535 && connectionChanged) {
+                        Text(if (state.environment.processRunning) "서버 잠시 중지 후 포트 저장" else "포트 저장")
+                    }
                 }
             }
         }
         item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("외부 접속 허용", style = MaterialTheme.typography.titleLarge)
-                            Text(
-                                "같은 Wi-Fi의 허용된 기기에서 접속할 수 있게 합니다.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Switch(checked = externalAccess, onCheckedChange = { externalAccess = it })
-                    }
-                    if (externalAccess) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            shape = RoundedCornerShape(14.dp),
-                        ) {
-                            Text(
-                                "인터넷 공유기 포트 개방에는 사용하지 마세요. 아래 화이트리스트에 적은 주소만 허용되며, 서버 재시작 후 적용됩니다.",
-                                modifier = Modifier.padding(14.dp),
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = whitelistText,
-                        onValueChange = { whitelistText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("화이트리스트 · 한 줄에 하나") },
-                        placeholder = { Text("192.168.0.5\n192.168.0.0/24") },
-                        minLines = 4,
-                        supportingText = {
-                            Text("개별 IP, CIDR, 와일드카드를 사용할 수 있습니다. localhost 주소는 저장할 때 자동 유지됩니다.")
-                        },
-                    )
-                    Button(
-                        onClick = { confirmConnectionSave = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.isWorking && parsedPort != null &&
-                            parsedPort in 1024..65535 && connectionChanged,
-                    ) { Text(if (state.environment.processRunning) "서버 잠시 중지 후 설정 저장" else "서버 연결 설정 저장") }
-                }
-            }
+            LanConnectionCard(externalAccess, state.lanEndpoints, onRefreshLan, { lanSettingsOpen = true },
+                { clipboard.setText(AnnotatedString(it)) })
         }
         }
         if (selectedPanel == SettingsPanel.GENERAL) {
         item { UpdateInformationCard(state, onCheckUpdateInformation) }
+        item { LauncherEntrySettingsCard() }
+        item {
+            OutlinedButton(onClick = onOpenExtensions, enabled = state.environment.sillyTavernInstalled && !state.isWorking, modifier = Modifier.fillMaxWidth()) {
+                Text(if (state.environment.extensionRecovery != "none") "중단된 확장 교체 확인·복구" else "확장 프로그램 관리")
+            }
+        }
         item {
             Card(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

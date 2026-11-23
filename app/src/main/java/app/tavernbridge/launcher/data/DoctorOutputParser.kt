@@ -61,6 +61,9 @@ object DoctorOutputParser {
             port = values["port"]?.toIntOrNull() ?: 8000,
             configPort = values["config_port"]?.toIntOrNull()?.takeIf { it in 1..65535 },
             externalAccessEnabled = values["external_access"] == "1",
+            basicAuthEnabled = values["basic_auth"] == "1",
+            perUserBasicAuth = values["per_user_basic_auth"] == "1",
+            extensionRecovery = values["extension_recovery"]?.takeIf { it in setOf("none", "pending", "blocked") } ?: "none",
             whitelist = runCatching {
                 String(Base64.getDecoder().decode(values["whitelist_b64"].orEmpty()))
             }.getOrDefault("").lineSequence().filter(String::isNotBlank).toList()

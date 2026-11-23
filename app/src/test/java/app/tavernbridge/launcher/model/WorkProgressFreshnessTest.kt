@@ -5,6 +5,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkProgressFreshnessTest {
+    @Test fun compoundMaintenanceAndSelectiveRestoreKeepTheirSubstepProgress() {
+        listOf("restore-selected", "reset-installation", "change-version").forEach { parent ->
+            assertTrue(progress("backup", 100_000L).belongsToStartedOperation(parent, 100_000L))
+            assertFalse(progress("backup", 90_000L).belongsToStartedOperation(parent, 100_000L))
+        }
+        listOf("backup", "save-server-connection", "save-lan-security").forEach { parent ->
+            listOf("stop", "start").forEach { substep ->
+                assertTrue(progress(substep, 100_000L).belongsToStartedOperation(parent, 100_000L))
+            }
+        }
+    }
     private fun progress(operation: String, phaseStartedAt: Long) = WorkProgress(
         0, "복사", "", operation = operation, phaseStartedAtMillis = phaseStartedAt,
     )

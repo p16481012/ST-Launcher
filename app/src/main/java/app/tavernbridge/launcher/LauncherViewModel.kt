@@ -14,6 +14,9 @@ import app.tavernbridge.launcher.data.BackupTransferController
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.SafetyInventoryItem
 import app.tavernbridge.launcher.model.TavernFileEntry
+import app.tavernbridge.launcher.model.EncryptedBackupMode
+import app.tavernbridge.launcher.model.EncryptedBackupPhase
+import app.tavernbridge.launcher.model.EncryptedBackupState
 import app.tavernbridge.launcher.model.withPausedServer
 import app.tavernbridge.launcher.model.ServerResumeStatus
 import app.tavernbridge.launcher.model.BackupTransferAction
@@ -101,6 +104,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var backupTransferSource: BackupTransferController.Source? = null
     private var backupShareIntent: Intent? = null
     private var partialFileActionNotice = ""
+    private val encryptedBackupFiles by lazy { app.tavernbridge.launcher.data.EncryptedBackupFiles(application) }
+    private var encryptedBackupJob: Job? = null
+    private var encryptedBackupSource: Uri? = null
+    private var encryptedBackupPassword: CharArray? = null
+    private var decryptedBackupFile: java.io.File? = null
+    private var selectionListGeneration = 0L
+    private var versionListGeneration = 0L
+    private var extensionListGeneration = 0L
     private val mutableState = MutableStateFlow(
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
@@ -133,6 +144,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     val setupCommand: String get() = repository.setupCommand()
     val storageSetupCommand: String get() = repository.storageSetupCommand()
+
+    init {
+        // Clean only orphaned plaintext staging owned by this feature after process death.
+        // No Termux command, shared-storage scan, or network request is performed here.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { encryptedBackupFiles } }
+    }
 
     fun onAppForegrounded() {
         appInForeground = true
@@ -205,7 +222,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun beginBackupTransfer(archive: BackupArchive, action: BackupTransferAction) {
-        if (state.value.isWorking || state.value.backupTransfer != null) return
+        if (state.value.isWorking || state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         backupTransferSource = null
         backupShareIntent = null
         mutableState.update { it.copy(backupTransfer = BackupTransferState(archive, action)) }
@@ -390,7 +407,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun refreshEnvironment(firstConnectionButton: Boolean) {
-        if (state.value.backupTransfer != null) return
+        if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         if (refreshJob?.isActive == true) return
         if (!environmentRefreshGate.tryStart(
                 appInForeground = appInForeground,
@@ -588,7 +605,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshSilently() {
-        if (state.value.backupTransfer != null) return
+        if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true) return
         // Setup/reconnection needs the same recovery path as a cold start, not a
         // swallowed background exception or an unverified manager bootstrap.
@@ -650,7 +667,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshAfterResume() {
-        if (state.value.backupTransfer != null) return
+        if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         // A delayed resume callback may arrive after a quick button check has
         // already succeeded. Don't send a second doctor while still onboarding.
         if (!state.value.hasInstallationHistory) {
@@ -913,7 +930,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             },
             canResume = {
                 val current = repository.inspect()
-                current.sillyTavernInstalled && !current.operationActive && !current.recoveryPending && !current.processRunning
+                current.sillyTavernInstalled && !current.operationActive && !current.recoveryPending && current.extensionRecovery == "none" && !current.processRunning
             },
             start = {
                 try { startServerWithWakeLock().requireSuccess() }
@@ -1550,16 +1567,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun deleteBackup(fileName: String) = perform(
-        operation = "delete-backup",
-        label = "백업 삭제 중",
-        successMessage = "선택한 ZIP 백업을 Download 폴더에서 삭제했습니다.",
-    ) {
-        val result = repository.deleteBackup(fileName)
-        if (result.isSuccess) refreshBackupListAfterOperation()
-        result
-    }
-
     fun deleteBackups(fileNames: List<String>) {
         if (fileNames.isEmpty()) return
         val snapshot = state.value.backups.filter { it.fileName in fileNames }
@@ -1600,6 +1607,160 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val (result, report) = repository.inspectStorageUsage()
         mutableState.update { it.copy(storageUsage = report) }
         result
+    }
+
+    fun openExtensions() {
+        if (commandEntryBlocked()) return
+        mutableState.update { it.copy(extensionManagerOpen = true) }
+        loadExtensions()
+    }
+
+    fun openSelectiveRestore(archive: BackupArchive) {
+        if (commandEntryBlocked()) return
+        if (!state.value.environment.sillyTavernInstalled) { showMessage("개별 복원은 기존 설치가 필요합니다. 먼저 SillyTavern을 설치하거나 전체 백업을 복원해 주세요."); return }
+        if (state.value.environment.processRunning) { showMessage("캐릭터·채팅 복원 전에 서버를 종료해 주세요."); return }
+        mutableState.update { it.copy(selectiveRestore = app.tavernbridge.launcher.model.SelectiveRestoreUiState(archive.fileName)) }
+        loadSelectiveRestore()
+    }
+
+    fun closeSelectiveRestore() {
+        if (!state.value.isWorking) { selectionListGeneration++; mutableState.update { it.copy(selectiveRestore = null) } }
+    }
+
+    fun openPreviousVersions() {
+        if (commandEntryBlocked()) return
+        mutableState.update { it.copy(previousVersions = app.tavernbridge.launcher.model.PreviousVersionUiState()) }
+        loadPreviousVersions()
+    }
+
+    fun closePreviousVersions() {
+        if (!state.value.isWorking) { versionListGeneration++; mutableState.update { it.copy(previousVersions = null) } }
+    }
+
+    fun loadPreviousVersions() {
+        if (commandEntryBlocked() || state.value.previousVersions?.loading != false) return
+        val generation = ++versionListGeneration
+        mutableState.update { it.copy(previousVersions = app.tavernbridge.launcher.model.PreviousVersionUiState(loading = true)) }
+        viewModelScope.launch {
+            try {
+                val versions = repository.previousVersions()
+                val snapshots = repository.versionSnapshots()
+                mutableState.update { if (generation == versionListGeneration && it.previousVersions != null) it.copy(previousVersions = app.tavernbridge.launcher.model.PreviousVersionUiState(versions = versions, snapshots = snapshots)) else it }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) {
+                mutableState.update { if (generation == versionListGeneration && it.previousVersions != null) it.copy(previousVersions = app.tavernbridge.launcher.model.PreviousVersionUiState(error = error.userMessage())) else it }
+            }
+        }
+    }
+
+    fun changeVersion(target: app.tavernbridge.launcher.model.PreviousVersion, snapshot: app.tavernbridge.launcher.model.VersionSnapshot?) {
+        val current = state.value.previousVersions ?: return
+        val page = current.versions ?: return
+        if (state.value.environment.processRunning) { showMessage("버전을 변경하기 전에 서버를 종료해 주세요."); return }
+        perform("change-version", "이전 버전으로 변경", "선택한 버전으로 변경하고 실행 검사를 마쳤습니다. 변경 전 전체 ZIP은 Download에 보관했습니다.") {
+            check(target in page.versions && (snapshot == null || snapshot in current.snapshots?.snapshots.orEmpty())) { "표시된 버전과 백업에서 다시 선택해 주세요." }
+            repository.changeVersion(target, page, snapshot).also { result ->
+                if (result.isSuccess) { mutableState.update { it.copy(previousVersions = null) }; refreshBackupListAfterOperation() }
+            }
+        }
+    }
+
+    fun loadSelectiveRestore(more: Boolean = false) {
+        val current = state.value.selectiveRestore ?: return
+        if (commandEntryBlocked() || current.loading) return
+        val cursor = if (more) current.page?.nextCursor ?: return else 0
+        if (more && current.page?.items.orEmpty().size >= 1000) { showMessage("한 번에 1,000개까지만 표시합니다. 선택 복원을 나누어 진행해 주세요."); return }
+        val generation = ++selectionListGeneration
+        mutableState.update { it.copy(selectiveRestore = current.copy(loading = true, error = "")) }
+        viewModelScope.launch {
+            try {
+                val page = repository.selectiveRestoreItems(current.fileName, cursor)
+                check(page.nextCursor == null || page.nextCursor > cursor)
+                if (more) check(current.page?.archiveRevision == page.archiveRevision && current.page.installationRevision == page.installationRevision) {
+                    "백업이나 설치 상태가 변경되었습니다. 창을 닫고 다시 확인해 주세요."
+                }
+                val combined = page.copy(items = ((if (more) current.page?.items.orEmpty() else emptyList()) + page.items).distinctBy { it.relativePath }.take(1000))
+                mutableState.update { if (generation == selectionListGeneration && it.selectiveRestore?.fileName == current.fileName) it.copy(selectiveRestore = current.copy(page = combined)) else it }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) { mutableState.update { if (generation == selectionListGeneration && it.selectiveRestore?.fileName == current.fileName) it.copy(selectiveRestore = current.copy(error = error.userMessage())) else it } }
+        }
+    }
+
+    fun restoreSelection(choices: List<app.tavernbridge.launcher.model.SelectiveRestoreChoice>, backupBefore: Boolean) {
+        val current = state.value.selectiveRestore ?: return
+        val page = current.page ?: return
+        if (state.value.environment.processRunning) { showMessage("복원 전에 서버를 종료해 주세요."); return }
+        perform("restore-selected", "선택한 캐릭터·채팅 복원", "선택한 항목의 복원을 완료했습니다. 같은 이름을 건너뛰도록 선택한 항목은 유지했습니다.") {
+            check(choices.isNotEmpty() && choices.size <= 100 && choices.all { it.item in page.items }) { "표시된 목록에서 100개 이하를 선택해 주세요." }
+            val result = protectBeforeReplacement(backupBefore, { backupBeforeReplacement("restore-selected") }) {
+                repository.restoreSelected(current.fileName, page, choices)
+            }
+            if (result.isSuccess) mutableState.update { it.copy(selectiveRestore = null) }
+            result
+        }
+    }
+
+    fun closeExtensions() {
+        if (!state.value.isWorking) { extensionListGeneration++; mutableState.update { it.copy(extensionManagerOpen = false, extensionLoading = false) } }
+    }
+
+    fun loadExtensions(more: Boolean = false) {
+        if (commandEntryBlocked() || state.value.extensionLoading) return
+        val previous = state.value.extensionInventory
+        val cursor = if (more) previous?.nextCursor ?: return else 0
+        if (more && previous?.items.orEmpty().size >= 1000) { showMessage("목록은 1,000개까지만 표시합니다."); return }
+        val generation = ++extensionListGeneration
+        mutableState.update { it.copy(extensionLoading = true, extensionError = "") }
+        viewModelScope.launch {
+            try {
+                val page = repository.listExtensions(cursor)
+                check(page.nextCursor == null || page.nextCursor > cursor) { "확장 목록의 다음 위치가 올바르지 않습니다." }
+                val items = ((if (more) previous?.items.orEmpty() else emptyList()) + page.items).distinctBy { it.id }.take(1000)
+                mutableState.update { if (generation == extensionListGeneration) it.copy(extensionInventory = page.copy(items = items, skipped = page.skipped + if (more) previous?.skipped ?: 0 else 0)) else it }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (error: Exception) { mutableState.update { if (generation == extensionListGeneration) it.copy(extensionError = error.userMessage()) else it } }
+            finally { mutableState.update { if (generation == extensionListGeneration) it.copy(extensionLoading = false) else it } }
+        }
+    }
+
+    fun changeExtension(item: app.tavernbridge.launcher.model.ManagedExtension, action: app.tavernbridge.launcher.model.ExtensionAction) {
+        if (state.value.environment.processRunning) { showMessage("확장을 변경하려면 서버를 먼저 종료해 주세요."); return }
+        perform("extension-${action.argument}", "확장 ${action.label}", "확장 ${action.label} 작업을 완료했습니다.") {
+            repository.changeExtension(item, action).also { result ->
+                if (result.isSuccess) runCatching { withoutOperationCancellation { repository.listExtensions() } }.onSuccess { inventory ->
+                    mutableState.update { it.copy(extensionInventory = inventory) }
+                }
+            }
+        }
+    }
+
+    fun recoverExtension() {
+        if (state.value.environment.processRunning) { showMessage("서버를 종료한 뒤 확장을 복구해 주세요."); return }
+        perform("extension-recover", "중단된 확장 교체 복구", "확장 교체 상태를 확인하고 안전하게 복구했습니다.") {
+            repository.recoverExtension().also { if (it.isSuccess) mutableState.update { state -> state.copy(extensionInventory = null) } }
+        }
+    }
+
+    fun refreshLanAddresses() {
+        if (state.value.lanLoading) return
+        mutableState.update { it.copy(lanLoading = true) }
+        viewModelScope.launch {
+            try {
+                val endpoints = withContext(kotlinx.coroutines.Dispatchers.IO) { app.tavernbridge.launcher.data.LanAddressInspector().inspect(state.value.configuredPort) }
+                mutableState.update { it.copy(lanEndpoints = endpoints) }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { showMessage("LAN 주소를 확인하지 못했습니다. Wi-Fi 연결을 확인해 주세요.") }
+            finally { mutableState.update { it.copy(lanLoading = false) } }
+        }
+    }
+
+    fun saveLanSecurity(change: app.tavernbridge.launcher.model.LanSecurityChange) {
+        if (commandEntryBlocked()) { change.close(); return }
+        perform("save-lan-security", "외부 접속 설정 저장", "외부 접속 설정을 저장했습니다.",
+            onFinished = change::close,
+            successMessageForResult = { maintenanceMessage("외부 접속 설정을 저장했습니다.", it) }) {
+            try { maintainServer { repository.saveLanSecurity(change) } } finally { change.close() }
+        }
     }
 
     fun saveBackupAnnotation(fileName: String, pinned: Boolean, memo: String) {
@@ -2086,6 +2247,148 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         mutableState.update { it.copy(message = message) }
     }
 
+    fun beginEncryptedBackup(mode: EncryptedBackupMode) {
+        if (state.value.isWorking || state.value.backupTransfer != null || state.value.encryptedBackup != null) return
+        mutableState.update { it.copy(encryptedBackup = EncryptedBackupState(UUID.randomUUID().toString(), mode)) }
+    }
+
+    fun encryptedPickerOpened(id: String, source: Boolean): Boolean {
+        val transfer = state.value.encryptedBackup?.takeIf { it.id == id } ?: return false
+        if (transfer.phase != if (source) EncryptedBackupPhase.PICK_SOURCE else EncryptedBackupPhase.PICK_DESTINATION) return false
+        mutableState.update { it.copy(encryptedBackup = transfer.copy(phase = if (source) EncryptedBackupPhase.SOURCE_OPEN else EncryptedBackupPhase.DESTINATION_OPEN)) }
+        return true
+    }
+
+    fun selectEncryptedBackupSource(id: String?, uri: Uri?) {
+        val transfer = state.value.encryptedBackup?.takeIf { it.id == id && it.phase == EncryptedBackupPhase.SOURCE_OPEN } ?: return
+        if (uri == null) { cancelEncryptedBackup(); return }
+        encryptedBackupSource = uri
+        mutableState.update { it.copy(encryptedBackup = transfer.copy(phase = EncryptedBackupPhase.PASSWORD)) }
+    }
+
+    fun submitEncryptedBackupPassword(password: CharArray) {
+        val transfer = state.value.encryptedBackup?.takeIf { it.phase == EncryptedBackupPhase.PASSWORD }
+        if (transfer == null) { password.fill('\u0000'); return }
+        encryptedBackupPassword?.fill('\u0000')
+        encryptedBackupPassword = password
+        if (transfer.mode == EncryptedBackupMode.EXPORT) mutableState.update { it.copy(encryptedBackup = transfer.copy(phase = EncryptedBackupPhase.PICK_DESTINATION)) }
+        else runEncryptedBackup(null)
+    }
+
+    fun selectEncryptedBackupDestination(id: String?, uri: Uri?) {
+        if (state.value.encryptedBackup?.let { it.id == id && it.phase == EncryptedBackupPhase.DESTINATION_OPEN } != true) return
+        if (uri == null) { cancelEncryptedBackup(); return }
+        runEncryptedBackup(uri)
+    }
+
+    private fun runEncryptedBackup(destination: Uri?) {
+        val transfer = state.value.encryptedBackup ?: return
+        val source = encryptedBackupSource ?: return
+        val password = encryptedBackupPassword ?: return
+        encryptedBackupPassword = null
+        val started = System.currentTimeMillis()
+        val operation = if (transfer.mode == EncryptedBackupMode.EXPORT) "encrypt-backup" else "decrypt-backup"
+        mutableState.update { it.copy(encryptedBackup = transfer.copy(phase = EncryptedBackupPhase.RUNNING),
+            lastOperationResult = operationSummary(operation, "암호화 백업 처리", "완료 여부를 확인하지 못했습니다. 설치 데이터와 원본은 변경하지 않았습니다. 저장 위치의 미완성 파일을 확인해 주세요.", false, started, "OPERATION_INTERRUPTED")) }
+        encryptedBackupJob = viewModelScope.launch {
+            var lastProgress = 0L
+            val progress: (Long, Long) -> Unit = { bytes, total ->
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (bytes == 0L || bytes == total || now - lastProgress >= 250) {
+                    lastProgress = now
+                    mutableState.update { current -> if (current.encryptedBackup?.id == transfer.id) current.copy(encryptedBackup = current.encryptedBackup.copy(bytes = bytes, total = total)) else current }
+                }
+            }
+            try {
+                if (transfer.mode == EncryptedBackupMode.EXPORT) {
+                    encryptedBackupFiles.encrypt(source, requireNotNull(destination), password, progress)
+                    mutableState.update { it.copy(encryptedBackup = null, message = "암호화 백업을 저장했습니다. 원본 ZIP은 그대로 남아 있습니다.",
+                        lastOperationResult = operationSummary(operation, "암호화 백업 저장", "암호화 백업을 저장했습니다. 원본 ZIP은 유지했습니다.", true, started)) }
+                    encryptedBackupSource = null
+                } else {
+                    decryptedBackupFile = encryptedBackupFiles.decrypt(source, password, progress)
+                    mutableState.update { it.copy(encryptedBackup = transfer.copy(phase = EncryptedBackupPhase.RESTORE_CONFIRM),
+                        lastOperationResult = operationSummary(operation, "암호화 백업 인증", "암호화 백업 인증을 마쳤습니다. 아직 설치 데이터는 복원하지 않았습니다.", true, started)) }
+                }
+            } catch (cancelled: CancellationException) {
+                mutableState.update { it.copy(encryptedBackup = null, message = "암호화 백업 처리를 중단했습니다. 원본은 유지됩니다. 저장 위치의 미완성 파일을 확인해 주세요.",
+                    lastOperationResult = operationSummary(operation, "암호화 백업 처리", "작업을 중단했습니다. 원본과 설치 데이터는 유지했습니다.", false, started, "OPERATION_CANCELLED")) }
+                encryptedBackupSource = null
+                throw cancelled
+            } catch (error: Exception) {
+                val detail = error.message ?: "암호화 백업 처리에 실패했습니다. 원본과 설치 데이터는 유지했습니다."
+                mutableState.update { it.copy(encryptedBackup = transfer.copy(phase = EncryptedBackupPhase.ERROR, error = detail),
+                    lastOperationResult = operationSummary(operation, "암호화 백업 처리", detail, false, started, "ENCRYPTED_BACKUP_FAILED")) }
+            } finally { password.fill('\u0000') }
+        }
+        encryptedBackupJob?.invokeOnCompletion { password.fill('\u0000') }
+    }
+
+    fun cancelEncryptedBackup() {
+        if (state.value.encryptedBackup?.phase == EncryptedBackupPhase.RUNNING) { encryptedBackupJob?.cancel(); return }
+        encryptedBackupPassword?.fill('\u0000'); encryptedBackupPassword = null
+        encryptedBackupSource = null
+        encryptedBackupFiles.remove(decryptedBackupFile); decryptedBackupFile = null
+        mutableState.update { it.copy(encryptedBackup = null) }
+    }
+
+    fun restoreDecryptedBackup(backupBefore: Boolean) {
+        val file = decryptedBackupFile ?: return
+        if (state.value.encryptedBackup?.phase != EncryptedBackupPhase.RESTORE_CONFIRM || state.value.isWorking) return
+        if (state.value.environment.processRunning) { showMessage("복원하기 전에 서버를 종료해 주세요."); return }
+        mutableState.update { it.copy(encryptedBackup = null) }
+        if (commandEntryBlocked()) { encryptedBackupFiles.remove(file); decryptedBackupFile = null; return }
+        decryptedBackupFile = null; encryptedBackupSource = null
+        perform("import-backup", "암호화 백업 복원", "암호화 백업의 복원을 완료했습니다. 원본 암호화 파일은 유지했습니다.",
+            onFinished = { encryptedBackupFiles.remove(file) }) {
+            try {
+                val result = protectBeforeReplacement(backupBefore, { backupBeforeReplacement("import-backup") }) {
+                    repository.importBackup(encryptedBackupFiles.uri(file))
+                }
+                if (result.isSuccess) refreshBackupListAfterOperation()
+                result
+            } finally { encryptedBackupFiles.remove(file) }
+        }
+    }
+
+    override fun onCleared() {
+        encryptedBackupPassword?.fill('\u0000'); encryptedBackupPassword = null
+        encryptedBackupFiles.remove(decryptedBackupFile); decryptedBackupFile = null
+        super.onCleared()
+    }
+
+    private val consumedEntryIds = ArrayDeque<String>()
+    fun requestEntryAction(request: app.tavernbridge.launcher.entry.LauncherEntryRequest) {
+        if (request.id in consumedEntryIds) return
+        consumedEntryIds.addLast(request.id)
+        while (consumedEntryIds.size > 32) consumedEntryIds.removeFirst()
+        if (request.action == app.tavernbridge.launcher.entry.LauncherEntryAction.OPEN) {
+            mutableState.update { it.copy(section = MainSection.HOME) }
+        } else mutableState.update { it.copy(pendingEntry = request) }
+    }
+
+    fun entryActionGate(): app.tavernbridge.launcher.entry.LauncherEntryGate? {
+        val current = state.value
+        val request = current.pendingEntry ?: return null
+        return app.tavernbridge.launcher.entry.LauncherEntryPolicy.evaluate(request.action, appInForeground,
+            current.termuxSetup.verified && current.environment.commandPermissionGranted && current.environment.managerConnected && current.environment.sillyTavernInstalled,
+            current.isWorking || current.environment.operationActive || current.backupTransfer != null || current.encryptedBackup != null,
+            current.environment.recoveryPending || current.environment.extensionRecovery != "none", current.environment.processRunning)
+    }
+
+    fun dismissEntryAction() { mutableState.update { it.copy(pendingEntry = null) } }
+
+    fun confirmEntryAction() {
+        val gate = entryActionGate() ?: return
+        dismissEntryAction()
+        when (gate) {
+            app.tavernbridge.launcher.entry.LauncherEntryGate.CONFIRM_START -> start()
+            app.tavernbridge.launcher.entry.LauncherEntryGate.CONFIRM_STOP -> stop()
+            app.tavernbridge.launcher.entry.LauncherEntryGate.CONFIRM_OPEN -> Unit
+            else -> showMessage("현재 상태에서는 실행할 수 없습니다. 런처 화면에서 상태를 확인해 주세요.")
+        }
+    }
+
     fun retryLastOperation() {
         if (state.value.isWorking) return
         when (state.value.lastOperationResult?.retryAction ?: RetryAction.NONE) {
@@ -2134,7 +2437,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun commandEntryBlocked(requireManager: Boolean = true, allowWhileWorking: Boolean = false): Boolean {
-        if (state.value.backupTransfer != null) return true
+        if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return true
         if ((state.value.isWorking && !allowWhileWorking) || refreshJob?.isActive == true) return true
         val current = state.value
         if (!current.termuxSetup.verified || !current.environment.termuxInstalled ||
@@ -2199,9 +2502,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         successMessageForResult: (TermuxCommandResult) -> String = { successMessage },
         retryAction: RetryAction = RetryAction.NONE,
         backupRequest: BackupRequest? = null,
+        onFinished: () -> Unit = {},
         block: suspend () -> TermuxCommandResult,
     ) {
-        if (commandEntryBlocked(requireManager = operation != "connect-manager")) return
+        if (commandEntryBlocked(requireManager = operation != "connect-manager")) { onFinished(); return }
         operationCancellationRequested = false
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()
@@ -2322,7 +2626,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 // Refresh read-only state without replacing the actual error.
                 val recoveryEnvironment = if (state.value.environment.recoveryPending ||
                     errorCode == "RESTORE_ROLLBACK_REQUIRED" ||
-                    operation in setOf("restore", "import-backup", "import-install", "repair", "backup", "save-server-connection", "safety-restore")) {
+                    operation in setOf("restore", "restore-selected", "change-version", "import-backup", "import-install", "repair", "backup", "save-server-connection", "save-lan-security", "safety-restore")) {
                     progressJob.cancel()
                     try { repository.inspect() }
                     catch (cancelled: CancellationException) { throw cancelled }
@@ -2360,7 +2664,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
                 progressJob.cancel()
             }
-        }
+        }.invokeOnCompletion { onFinished() }
     }
 
     private fun operationSummary(
@@ -2408,6 +2712,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "import-st-folder" -> "폴더 가져오기"
         "restore-st-trash" -> "휴지통 항목 복구"
         "restore" -> "백업 복원"
+        "restore-selected" -> "선택한 캐릭터·채팅 복원"
+        "change-version" -> "이전 버전으로 변경"
+        "save-lan-security" -> "외부 접속 설정 저장"
+        "extension-update" -> "확장 업데이트"
+        "extension-enable", "extension-disable" -> "확장 사용 설정 변경"
+        "extension-trash" -> "확장 휴지통 이동"
+        "extension-recover" -> "확장 교체 복구"
         "delete-backup" -> "백업 삭제"
         "repair" -> "설치 점검·복구"
         "reset-installation" -> "SillyTavern 초기화"

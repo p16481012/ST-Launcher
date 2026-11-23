@@ -64,7 +64,7 @@ class BackupRequestTest {
 
     @Test fun serializedParentRecoversOnlyForTheSameBackup() {
         val progress = WorkProgress(100, "백업 완료", "", status = "success", operation = "backup", backupRequestId = id)
-        listOf("update", "restore", "import-backup", "import-install", "reset-installation").forEach { parent ->
+        listOf("update", "restore", "restore-selected", "change-version", "import-backup", "import-install", "reset-installation").forEach { parent ->
             val original = request().copy(parentOperation = parent)
             val saved = BackupRequestCodec.decode(BackupRequestCodec.encode(original))
             assertEquals(original, saved)

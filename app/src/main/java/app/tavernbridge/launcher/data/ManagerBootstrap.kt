@@ -7,7 +7,8 @@ import java.security.MessageDigest
 
 // Keep production deployment and payload-size regression tests on the same asset list.
 internal val managerAssetNames = listOf(
-    "progress.sh", "archive-progress.sh", "safe-backup.sh", "install-validation.sh", "transaction-recovery.sh", "safety-inventory.sh", "storage-usage.sh", "backup-catalog.sh", "manager.sh",
+    "progress.sh", "archive-progress.sh", "safe-backup.sh", "install-validation.sh", "transaction-recovery.sh", "safety-inventory.sh", "storage-usage.sh", "backup-catalog.sh",
+    "selective-restore.sh", "selective-restore-data.sh", "version-state.sh", "version-manager.sh", "extension-manager.sh", "extensions-helper.sh", "lan-security.sh", "manager.sh",
 )
 
 internal fun encodeManagerScript(script: String): String {

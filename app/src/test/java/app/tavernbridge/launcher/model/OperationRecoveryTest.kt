@@ -9,6 +9,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OperationRecoveryTest {
+    @Test fun newCompoundOperationsDoNotMistakeAnIntermediateBackupForCompletion() {
+        listOf("restore-selected", "change-version").forEach {
+            assertTrue(recoveredSubstepNotice(it, "backup", "success").orEmpty().contains("전체 완료는 확인하지 못했으며"))
+        }
+        assertTrue(recoveredSubstepNotice("save-lan-security", "stop", "success").orEmpty().contains("외부 접속 설정 저장"))
+    }
     @Test
     fun onlyExplicitSuccessRestoresACompletedOperation() {
         assertEquals(RecoveredOperationStatus.SUCCESS, recoveredOperationStatus("success"))
@@ -39,6 +45,7 @@ class OperationRecoveryTest {
     fun failedRollbackMustNotLaunchAnUnsafeInstallation() {
         assertFalse(shouldRestoreUpdateServer(true, EnvironmentStatus(), rollbackFailed = true))
         assertFalse(shouldRestoreUpdateServer(true, EnvironmentStatus(recoveryPending = true), rollbackFailed = false))
+        assertFalse(shouldRestoreUpdateServer(true, EnvironmentStatus(extensionRecovery = "pending"), rollbackFailed = false))
     }
 
     @Test

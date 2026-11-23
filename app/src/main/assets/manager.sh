@@ -42,6 +42,10 @@ CURRENT_WORK_DIR=""
 CURRENT_IMPORT_ARCHIVE=""
 CURRENT_BACKUP_OUTPUT_DIR=""
 CURRENT_SAFETY_WORK_DIR=""
+BACKUP_PARENT_OPERATION=""
+BACKUP_CREATED_PATH=""
+VERSION_SOURCE_PLAN=""
+RESTORE_VALIDATE_SERVER=0
 SAFETY_BACKUP_PATH=""
 TEMP_APT_SOURCES=""
 OPERATION_LOCK_START=""
@@ -60,6 +64,7 @@ RESTORE_FULL_ORIGINAL_MOVED=0
 RESTORE_FULL_DATA_RECOVERED=0
 RESTORE_JOURNAL_STATE="applying"
 RESTORE_JOURNAL_PUBLISHED=0
+RESTORE_SELECTION_GUARD=0
 RESTORE_ORIGINAL_ID="none"
 RESTORE_INSTALLATION_ID="none"
 RESTORE_RECOVERY_GUARD_FAILED=0
@@ -110,6 +115,7 @@ write_progress() {
 manager_error_code() {
     local operation="$1"
     local exit_code="$2"
+    if [[ "${EXTENSION_RECOVERY_GUARD_FAILED:-0}" == 1 ]]; then echo "EXTENSION_RECOVERY_PENDING"; return; fi
     case "$operation:$exit_code" in
         restore:20) echo "RESTORE_ZIP_DAMAGED" ;;
         restore:21) echo "RESTORE_ZIP_UNSAFE_PATH" ;;
@@ -139,6 +145,32 @@ manager_error_code() {
         update:34) echo "UPDATE_HISTORY_DIVERGED" ;;
         reset-installation:30) echo "RESET_NO_SPACE" ;;
         preview-st-file:40) echo "FILE_PREVIEW_LIMIT" ;;
+        restore-selected:72|restore-selection-list:72) echo "SELECTIVE_RESTORE_SOURCE_CHANGED" ;;
+        restore-selected:73|restore-selection-list:73) echo "SELECTIVE_RESTORE_TARGET_CHANGED" ;;
+        restore-selected:74|restore-selection-list:74) echo "SELECTIVE_RESTORE_CHARACTER_MISSING" ;;
+        restore-selected:75|restore-selection-list:75) echo "SELECTIVE_RESTORE_INVALID" ;;
+        restore-selected:76|restore-selection-list:76) echo "SELECTIVE_RESTORE_PROFILE_MISSING" ;;
+        restore-selected:29) echo "RESTORE_NO_SPACE" ;;
+        extension-*:72|extensions-list:72) echo "EXTENSION_PATH_UNSAFE" ;;
+        extension-*:73|extensions-list:73) echo "EXTENSION_CHANGED" ;;
+        extension-*:74|extensions-list:74) echo "EXTENSION_UNSUPPORTED" ;;
+        extension-*:75|extensions-list:75) echo "EXTENSION_UPDATE_FAILED" ;;
+        extension-*:77|extensions-list:77) echo "EXTENSION_NO_SPACE" ;;
+        extension-*:78|extensions-list:78) echo "EXTENSION_OPERATION_FAILED" ;;
+        extension-*:79|extensions-list:79) echo "EXTENSION_LIST_FAILED" ;;
+        *:76) echo "EXTENSION_RECOVERY_PENDING" ;;
+        *:81) echo "VERSION_INSTALLATION_CHANGED" ;;
+        *:82) echo "VERSION_TARGET_INVALID" ;;
+        *:83) echo "VERSION_SNAPSHOT_INVALID" ;;
+        change-version:29) echo "RESTORE_NO_SPACE" ;;
+        save-lan-security:90) echo "LAN_SETTINGS_INPUT_INVALID" ;;
+        save-lan-security:91) echo "LAN_SETTINGS_PATH_UNSAFE" ;;
+        save-lan-security:92) echo "LAN_SETTINGS_CHANGED" ;;
+        save-lan-security:93) echo "LAN_SETTINGS_TRANSFER_FAILED" ;;
+        save-lan-security:94) echo "LAN_SETTINGS_CONFIG_INVALID" ;;
+        save-lan-security:95) echo "LAN_SETTINGS_PER_USER_AUTH" ;;
+        save-lan-security:96) echo "LAN_SETTINGS_CREDENTIALS_REQUIRED" ;;
+        save-lan-security:97) echo "LAN_SETTINGS_SAVE_FAILED" ;;
         *:2) echo "UNSUPPORTED_BRANCH" ;;
         *:3) echo "INSTALL_PATH_EXISTS" ;;
         *:4) echo "INSTALLATION_NOT_FOUND" ;;
@@ -755,6 +787,7 @@ operation_cleanup() {
     if (( RESTORE_TRANSACTION_ACTIVE )); then
         restore_interrupted=1
         (( code == 0 )) && code=25
+        if [[ "$RESTORE_VALIDATE_SERVER" == 1 ]]; then terminate_server_process; fi
         if ! rollback_restore_transaction; then
             RESTORE_RECOVERY_RETAINED=1
             code=25
@@ -870,8 +903,9 @@ begin_operation() {
     export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
+    guard_extension_recovery || exit $?
     if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
-        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list ]]; then
+        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
         CANCELLATION_GUARD=0
@@ -1241,13 +1275,20 @@ finish_persistent_start() {
 }
 
 wait_for_server_strict() {
-    local attempt
+    local attempt started elapsed
+    started="$(date +%s)"
     for attempt in $(seq 1 150); do
-        is_running || return 1
+        if ! is_running; then
+            record_processing "서버 검증 종료 · 프로세스 종료됨 · 실측 $(( $(date +%s) - started ))초"
+            return 1
+        fi
         if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
             record_processing "업데이트 서버 HTTP 응답 확인 · 프로세스 유지 여부 재검사"
             sleep 1
-            is_running && return 0
+            if is_running; then
+                record_processing "서버 검증 완료 · 실측 $(( $(date +%s) - started ))초 · HTTP 검사 ${attempt}회"
+                return 0
+            fi
         fi
         write_progress 0 "업데이트 서버 검사" "새 서버 프로세스 실행 중 · 로컬 HTTP 응답을 ${attempt}회 확인했으며 아직 대기 중입니다."
         if (( attempt == 1 || attempt % 3 == 0 )); then
@@ -1255,6 +1296,7 @@ wait_for_server_strict() {
         fi
         sleep 2
     done
+    record_processing "서버 검증 대기 한도 도달 · 실측 $(( $(date +%s) - started ))초 · HTTP 검사 150회"
     return 1
 }
 
@@ -1450,6 +1492,8 @@ server_connection_settings() {
     if [[ ! -f "$config" || ! -d "$ST_HOME/node_modules/yaml" ]]; then
         echo "config_port="
         echo "external_access=0"
+        echo "basic_auth=0"
+        echo "per_user_basic_auth=0"
         echo "whitelist_b64=$(printf '%s' $'::1\n127.0.0.1' | base64 -w 0)"
         return 0
     fi
@@ -1462,6 +1506,8 @@ const whitelist = Array.isArray(config.whitelist) ? config.whitelist.map(String)
 const port = config.port;
 console.log(`config_port=${Number.isInteger(port) && port >= 1 && port <= 65535 ? port : ''}`);
 console.log(`external_access=${config.listen === true ? 1 : 0}`);
+console.log(`basic_auth=${config.basicAuthMode === true ? 1 : 0}`);
+console.log(`per_user_basic_auth=${config.perUserBasicAuth === true ? 1 : 0}`);
 console.log(`whitelist_b64=${Buffer.from(whitelist.join('\n')).toString('base64')}`);
 NODE
     ) 2>/dev/null || {
@@ -1469,6 +1515,8 @@ NODE
         # This is read-only: never rewrite config.yaml to match the launcher's port.
         echo "config_port="
         echo "external_access=0"
+        echo "basic_auth=0"
+        echo "per_user_basic_auth=0"
         echo "whitelist_b64=$(printf '%s' $'::1\n127.0.0.1' | base64 -w 0)"
     }
 }
@@ -1508,6 +1556,8 @@ NODE
 }
 
 doctor() {
+    inspect_extension_recovery
+    printf '%s\n' "$EXTENSION_RECOVERY_OUTPUT"
     inspect_restore_recovery
     printf 'recovery_pending=%s\n' "$(( ${#RESTORE_PENDING_WORKS[@]} > 0 ? 1 : 0 ))"
     printf 'recovery_error_b64=%s\n' "$(printf '%s' "$RESTORE_PENDING_DETAIL" | base64 -w 0)"
@@ -1555,6 +1605,8 @@ doctor() {
         echo "working_tree_clean=1"
         echo "modified_files_b64="
         echo "external_access=0"
+        echo "basic_auth=0"
+        echo "per_user_basic_auth=0"
         echo "whitelist_b64=$(printf '%s' $'::1\n127.0.0.1' | base64 -w 0)"
     fi
     if is_running; then
@@ -1856,7 +1908,8 @@ backup_selected() {
         exit 64
     fi
 
-    begin_operation "backup"
+    if [[ "$BACKUP_PARENT_OPERATION" != change-version ]]; then begin_operation "backup"; fi
+    BACKUP_CREATED_PATH=""
     ensure_archive_tools
     ensure_import_runtime
     write_progress 12 "백업 항목 확인" "선택한 파일과 폴더를 확인하고 있습니다."
@@ -1867,7 +1920,8 @@ backup_selected() {
     local output="$DOWNLOAD_DIR/SillyTavern-Launcher-$(date +%Y%m%d-%H%M%S).zip"
     local manifest="$work/.st-launcher-manifest"
     local error_log="$work/create-error.log" code=0 archive
-    local created_at
+    local created_at backup_commit=""
+    if [[ ",$kinds," == *,full,* ]]; then backup_commit="$(git -C "$ST_HOME" rev-parse HEAD 2>/dev/null || true)"; fi
     created_at="$(date '+%Y-%m-%d %H:%M:%S')"
     while [[ -e "$output" ]]; do
         sleep 1
@@ -1976,8 +2030,22 @@ backup_selected() {
     [[ ! -e "$archive" ]] || backup_failure 59 "백업 파일 이름이 충돌하여 기존 파일을 보호했습니다."
     rmdir "$CURRENT_BACKUP_OUTPUT_DIR"
     CURRENT_BACKUP_OUTPUT_DIR=""
-    rm -rf "$work"
-    write_progress 100 "백업 완료" "검증된 ZIP을 휴대폰 Download 폴더에 저장했습니다." success
+    if [[ "$BACKUP_PARENT_OPERATION" != change-version ]]; then
+        rm -rf "$work"
+        CURRENT_WORK_DIR=""
+    fi
+    BACKUP_CREATED_PATH="$output"
+    if [[ "$kinds" == full && "$include_secrets" == 1 && "$backup_commit" =~ ^[a-f0-9]{40}$ ]]; then
+        if ! bash "$(dirname "$MANAGER_SCRIPT_PATH")/version-state.sh" record "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "${output##*/}" "$backup_commit" >> "$LOG_FILE" 2>&1; then
+            record_processing "전체 ZIP 백업은 완료됐지만 버전 연결 기록은 만들지 못했습니다. 이 ZIP은 일반 전체 복원에서 사용할 수 있습니다."
+        fi
+    fi
+    if [[ "$BACKUP_PARENT_OPERATION" == change-version ]]; then
+        write_progress 0 "현재 전체 백업 완료" "현재 설치와 비밀 설정을 포함한 전체 ZIP을 Download에 보존했습니다. 선택 버전을 준비합니다."
+        leave_cancellation_guard
+    else
+        write_progress 100 "백업 완료" "검증된 ZIP을 휴대폰 Download 폴더에 저장했습니다." success
+    fi
     echo "backup=$output"
     echo "size=$size"
 }
@@ -3350,6 +3418,7 @@ prepare_restore_transaction() {
     RESTORE_JOURNAL_STATE="applying"
     RESTORE_ORIGINAL_ID="none"
     RESTORE_INSTALLATION_ID="none"
+    RESTORE_SELECTION_GUARD=0
     RESTORE_AFFECTED_PATHS=()
     RESTORE_ORIGINAL_PATHS=()
     RESTORE_RECOVERED_PATHS=()
@@ -3371,11 +3440,18 @@ normalize_restore_paths() {
 }
 
 restore_destination_safe() {
-    local relative="$1" resolved expected
+    local relative="$1" resolved expected parent
     [[ -n "$relative" && "$relative" != /* && "$relative" != *'..'* && "$relative" != *'\'* ]] || return 1
     resolved="$(realpath -m "$ST_HOME/$relative")" || return 1
     expected="$(realpath -m "$ST_HOME")" || return 1
-    [[ "$resolved" == "$expected/"* ]]
+    [[ "$resolved" == "$expected/"* ]] || return 1
+    # An alias to a different folder INSIDE the installation is also unsafe:
+    # applying or rolling back through it could overwrite unselected files.
+    parent="$(dirname "$ST_HOME/$relative")"
+    while [[ "$parent" != "$ST_HOME" ]]; do
+        [[ "$parent" == "$ST_HOME/"* && ! -L "$parent" && ( ! -e "$parent" || -d "$parent" ) ]] || return 1
+        parent="$(dirname "$parent")"
+    done
 }
 
 restore_file_identity() {
@@ -3420,6 +3496,7 @@ write_restore_journal() {
         printf 'format=st-launcher-restore-recovery-v2\nmode=%s\nstate=%s\ninstallation_b64=%s\nhad_installation=%s\ndependency_saved=%s\noriginal_identity=%s\ninstallation_identity=%s\n' \
             "$RESTORE_TRANSACTION_KIND" "$RESTORE_JOURNAL_STATE" "$(printf '%s' "$ST_HOME" | base64 -w 0)" \
             "$RESTORE_HAD_INSTALLATION" "$RESTORE_DEPENDENCY_SAVED" "$RESTORE_ORIGINAL_ID" "$RESTORE_INSTALLATION_ID" || return 1
+        if [[ "$RESTORE_SELECTION_GUARD" == 1 ]]; then printf 'selection_guard=1\n' || return 1; fi
         index=0
         for path in "${RESTORE_AFFECTED_PATHS[@]}"; do
             printf 'path=%s|%s\n' "$(printf '%s' "$path" | base64 -w 0)" "${RESTORE_PATH_IDENTITIES[$index]}" || return 1
@@ -3481,12 +3558,16 @@ load_restore_journal() {
             dependency_saved) [[ "$value" == 0 || "$value" == 1 ]] || return 1; RESTORE_DEPENDENCY_SAVED="$value" ;;
             original_identity) [[ "$value" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1; RESTORE_ORIGINAL_ID="$value" ;;
             installation_identity) [[ "$value" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1; RESTORE_INSTALLATION_ID="$value" ;;
+            selection_guard) [[ "$value" == 1 ]] || return 1; RESTORE_SELECTION_GUARD=1 ;;
             path)
                 [[ "$value" == *'|'* && ${#RESTORE_AFFECTED_PATHS[@]} -lt 1024 ]] || return 1
                 path="$(decode_restore_journal_path "${value%%|*}")" || return 1
                 identity="${value#*|}"
                 [[ "$identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] || return 1
-                case "$path" in data|config.yaml|public/scripts/extensions/third-party|data/*/extensions|data/default-user/*) ;; *) return 1 ;; esac
+                case "$path" in
+                    data|config.yaml|public/scripts/extensions/third-party|data/*/extensions|data/default-user/*) ;;
+                    *) selective_restore_journal_path_safe "$path" || return 1 ;;
+                esac
                 restore_destination_safe "$path" || return 1
                 array_contains "$path" "${RESTORE_AFFECTED_PATHS[@]}" && return 1
                 RESTORE_AFFECTED_PATHS+=("$path")
@@ -3501,6 +3582,10 @@ load_restore_journal() {
     done
     [[ "$installation" == "$ST_HOME" && ! -L "$ST_HOME" && "$(realpath -m "$ST_HOME")" != / ]] || return 1
     [[ "$RESTORE_JOURNAL_STATE" != applying || -d "$work/rollback" ]] || return 1
+    if [[ "$RESTORE_SELECTION_GUARD" == 1 ]]; then
+        [[ "$RESTORE_TRANSACTION_KIND" == partial ]] || return 1
+        if [[ "$RESTORE_JOURNAL_STATE" == applying ]]; then verify_selection_recovery_guard || return 1; fi
+    fi
     if [[ "$RESTORE_TRANSACTION_KIND" == full ]]; then
         [[ ${#RESTORE_AFFECTED_PATHS[@]} == 0 && ( "$RESTORE_HAD_INSTALLATION" == 0 || "$RESTORE_ORIGINAL_ID" != none ) ]] || return 1
     else
@@ -3576,6 +3661,7 @@ recover_pending_restore() {
 }
 
 recover_restore_before_dispatch() {
+    guard_extension_recovery || exit $?
     case "$CURRENT_OPERATION" in
         install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
         *) return 0 ;;
@@ -3600,6 +3686,7 @@ rollback_restore_transaction() {
         RESTORE_TRANSACTION_ACTIVE=0
         return 0
     fi
+    if [[ "$RESTORE_SELECTION_GUARD" == 1 ]]; then verify_selection_recovery_guard || return 1; fi
     [[ ! -L "$ST_HOME" && ! -L "$DEPENDENCY_HASH_FILE" ]] || return 1
     if (( RESTORE_DEPENDENCY_SAVED )); then
         [[ -f "$RESTORE_ROLLBACK_DIR/dependency-lock.sha256" && ! -L "$RESTORE_ROLLBACK_DIR/dependency-lock.sha256" ]] || return 1
@@ -3763,6 +3850,12 @@ restore_extracted_tree() {
     incoming_bytes="$(unsigned_decimal "$incoming_bytes")" || exit 29
     current_bytes="$(unsigned_decimal "$current_bytes")" || exit 29
     required_bytes=$((incoming_bytes + current_bytes + 268435456))
+    if [[ ",$kinds," == *,full,* ]]; then
+        [[ -d "$extracted" && ! -L "$extracted" && "$(stat -c %d "$extracted")" == "$(stat -c %d "$(dirname "$ST_HOME")")" ]] || exit 25
+        # The extracted inode becomes the replacement; reserve package space,
+        # not a second complete copy of the user's data.
+        required_bytes=536870912
+    fi
     (( free_bytes >= required_bytes )) || { echo "기존 데이터 보호와 복원 적용에 필요한 저장 공간이 부족합니다." >&2; exit 29; }
     record_processing "복원 공간 검사 완료 · 필요 ${required_bytes}바이트 · 사용 가능 ${free_bytes}바이트"
 
@@ -3777,22 +3870,28 @@ restore_extracted_tree() {
             cp -a "$DEPENDENCY_HASH_FILE" "$rollback/dependency-lock.sha256" || exit 25
             RESTORE_DEPENDENCY_SAVED=1
         fi
-        # Plan the replacement inode before changing the live path. A kill
-        # between mkdir and journal publication must not leave an unknown root.
-        local replacement="$work/replacement-install"
-        mkdir "$replacement" || exit 25
+        # The validated extracted root is already complete on this filesystem.
+        # Journal THAT inode durably before moving either installation. A kill
+        # on either side of either rename is then unambiguous to the v2 reader.
+        local replacement="$extracted"
         RESTORE_INSTALLATION_ID="$(restore_file_identity "$replacement")" || exit 25
         [[ "$(stat -c %d "$replacement")" == "$(stat -c %d "$(dirname "$ST_HOME")")" ]] || exit 25
         write_restore_journal || exit 25
         RESTORE_TRANSACTION_ACTIVE=1
         enter_cancellation_guard
+        if [[ -n "$VERSION_SOURCE_PLAN" ]]; then
+            if ! measured_archive "현재 데이터 변경 재확인" "전체 ZIP 생성 이후 현재 데이터·설정이 바뀌지 않았는지 다시 확인합니다." backup-source-check "$VERSION_SOURCE_PLAN" >> "$LOG_FILE" 2>&1; then
+                echo "전체 백업 이후 현재 설치가 변경되어 버전 변경을 중단했습니다. 현재 설치와 완료한 ZIP은 유지합니다." >&2
+                exit 81
+            fi
+        fi
         if (( RESTORE_HAD_INSTALLATION )); then
             mv "$ST_HOME" "$rollback/full-install" || exit 25
             RESTORE_FULL_ORIGINAL_MOVED=1
         fi
         mv "$replacement" "$ST_HOME" || exit 25
+        [[ "$(restore_file_identity "$ST_HOME")" == "$RESTORE_INSTALLATION_ID" ]] || exit 25
         local full_apply_failed=0
-        COPY_PHASE="전체 설치 적용" measured_copy "$extracted" "$ST_HOME" || full_apply_failed=1
         if [[ "$include_secrets" != "1" ]]; then
             while IFS= read -r secret; do
                 local rel="${secret#"$rollback/full-install/"}"
@@ -3882,6 +3981,13 @@ restore_extracted_tree() {
     if [[ ! -f "$ST_HOME/package.json" || ! -d "$ST_HOME/data" ]]; then
         echo "복원 결과 검증에 실패하여 기존 상태 복구를 시작합니다." >&2
         exit 27
+    fi
+    if [[ "$RESTORE_VALIDATE_SERVER" == 1 ]]; then
+        write_progress 0 "선택 버전 실행 검사" "이전 버전을 임시 실행해 응답을 확인합니다. 실패하면 코드와 데이터를 함께 되돌립니다."
+        local server_ok=0
+        launch_server_process && wait_for_server_strict && server_ok=1
+        terminate_server_process
+        (( server_ok == 1 )) || exit 33
     fi
     # All writers have returned. A pending cancellation can now roll back the
     # transaction without racing a still-running copy or package process.
@@ -4305,6 +4411,8 @@ diagnose() {
     previous_operation="$(last_result_value operation)"
     previous_error_code="$(last_result_value error_code)"
     begin_operation "diagnose"
+    inspect_extension_recovery
+    printf '%s\n' "$EXTENSION_RECOVERY_OUTPUT"
 
     write_progress 0 "미완료 복원 기록 확인" "이전 복원의 보호 사본과 복구 필요 여부를 확인하고 있습니다."
     inspect_restore_recovery
@@ -4436,6 +4544,9 @@ diagnose() {
 
 # Keep transaction implementation separate without changing the restore format.
 source "$(dirname "$MANAGER_SCRIPT_PATH")/transaction-recovery.sh"
+source "$(dirname "$MANAGER_SCRIPT_PATH")/selective-restore.sh"
+source "$(dirname "$MANAGER_SCRIPT_PATH")/extension-manager.sh"
+source "$(dirname "$MANAGER_SCRIPT_PATH")/version-manager.sh"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 CURRENT_OPERATION="${1:-doctor}"
@@ -4488,6 +4599,13 @@ case "${1:-doctor}" in
     delete-backups) delete_backups "${2:-}" ;;
     delete-backups-checked) delete_backups_checked "${2:-}" ;;
     restore) restore_backup "${2:-}" ;;
+    restore-selection-list) restore_selection_list "${2:-}" "${3:-0}" ;;
+    restore-selected) restore_selected "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+    previous-versions) previous_versions ;;
+    version-snapshots) version_snapshots ;;
+    change-version) change_version "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
+    extensions-list) extensions_list "${2:-0}" ;;
+    extension-update|extension-disable|extension-enable|extension-trash|extension-recover) extension_mutate "${1#extension-}" "${2:-}" "${3:-}" ;;
     repair) repair_st ;;
     reset-installation) reset_installation ;;
     update) update_st "${2:-0}" "${3:-0}" ;;
@@ -4498,6 +4616,7 @@ case "${1:-doctor}" in
     history) history_log "${2:-300}" ;;
     diagnose) diagnose ;;
     save-server-connection) save_server_connection_settings "${2:-0}" "${3:-}" ;;
+    save-lan-security) save_lan_security "${2:-}" "${3:-}" ;;
     progress) show_progress ;;
     check-update|update-preflight) update_preflight ;;
     *) echo "알 수 없는 명령입니다: ${1:-}" >&2; exit 64 ;;

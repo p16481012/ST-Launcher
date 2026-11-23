@@ -150,18 +150,15 @@ restore_flow() {
     ensure_restore_target_stopped() { return 0; }
     install_dependencies() { return 0; }
     measured_copy() {
-        if [[ "$point" == copy ]]; then
-            printf incomplete > "$ST_HOME/incomplete.txt"
-            kill -KILL "$BASHPID"
-        fi
-        cp -a "$1/." "$2/"
+        fail "full restore unexpectedly copied the entire extracted installation"
     }
     mv() {
         command mv "$@" || return $?
         case "$point" in
             journal) [[ "${*: -1}" == "$WORK/recovery.env" ]] && kill -KILL "$BASHPID" ;;
             original-move) [[ "${1:-}" == "$ST_HOME" && "${2:-}" == "$WORK/rollback/full-install" ]] && kill -KILL "$BASHPID" ;;
-            replacement-move|first-install) [[ "${1:-}" == "$WORK/replacement-install" && "${2:-}" == "$ST_HOME" ]] && kill -KILL "$BASHPID" ;;
+            replacement-move|first-install) [[ "${1:-}" == "$extracted" && "${2:-}" == "$ST_HOME" ]] && kill -KILL "$BASHPID" ;;
+            copy) if [[ "${1:-}" == "$extracted" && "${2:-}" == "$ST_HOME" ]]; then printf incomplete > "$ST_HOME/incomplete.txt"; kill -KILL "$BASHPID"; fi ;;
             committed) [[ "${*: -1}" == "$WORK/recovery.env" && "$RESTORE_JOURNAL_STATE" == committed ]] && kill -KILL "$BASHPID" ;;
         esac
         return 0
