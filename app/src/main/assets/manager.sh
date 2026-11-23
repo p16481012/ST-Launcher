@@ -1335,6 +1335,35 @@ required_node_major() {
     printf '%s\n' "$1" | grep -oE '[0-9]+' | head -n 1 || true
 }
 
+update_changelog() {
+    local current="$1" target="$2" count="$3" encoded
+    # Only inspect the already fetched target. Commit messages are untrusted text:
+    # disable signatures/colors, cap both entries and subjects, and keep them out
+    # of the line-oriented protocol until they have been base64 encoded.
+    if encoded="$(git -c log.showSignature=false -c color.ui=false -C "$ST_HOME" log \
+        --no-show-signature --no-decorate --no-color --no-notes --max-count=20 \
+        --format='%H%x09%<(240,trunc)%s' "$current..$target" -- 2>/dev/null |
+        LC_ALL=C awk '{
+            separator=index($0, "\t");
+            if (separator > 0) {
+                subject=substr($0, separator+1, 960);
+                gsub(/[[:cntrl:]]/, " ", subject);
+                sub(/ +$/, "", subject);
+                print substr($0, 1, separator-1) "\t" subject;
+            }
+        }' | base64 -w 0)"; then
+        echo "changelog_status=ready"
+        echo "changelog_b64=$encoded"
+        echo "changelog_truncated=$([[ "$count" =~ ^[0-9]+$ && "$count" -gt 20 ]] && echo 1 || echo 0)"
+    else
+        # A preview is optional. Do not relabel a successful safety inspection as
+        # failed, or present a stale/partial changelog after a read failure.
+        echo "changelog_status=unavailable"
+        echo "changelog_b64="
+        echo "changelog_truncated=0"
+    fi
+}
+
 update_preflight() {
     local branch dirty_files dirty_count current_commit remote_commit package_json target_version node_required commits_behind
     local node_major required_major free_bytes modules_bytes required_bytes node_compatible space_ready
@@ -1400,6 +1429,7 @@ update_preflight() {
     echo "dirty_count=$dirty_count"
     echo "dirty_files_b64=$(printf '%s' "$dirty_files" | base64 -w 0)"
     echo "backup_storage_ready=$([[ -d "$DOWNLOAD_DIR" && -w "$DOWNLOAD_DIR" ]] && echo 1 || echo 0)"
+    update_changelog "$current_commit" "$remote_commit" "${commits_behind:-0}"
 }
 
 version_from_file() {

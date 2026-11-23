@@ -16,7 +16,12 @@ data class UpdatePreflight(
     val spaceReady: Boolean,
     val modifiedFiles: List<String>,
     val backupStorageReady: Boolean,
+    val changes: List<UpdateCommit> = emptyList(),
+    val changesAvailable: Boolean = false,
+    val changesTruncated: Boolean = false,
 )
+
+data class UpdateCommit(val commit: String, val subject: String)
 
 data class UpdateRecord(
     val createdAt: String,

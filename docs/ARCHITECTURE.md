@@ -73,6 +73,12 @@ The manager exposes a process-identity `operation_id` and cancellation state wit
 
 ## Build verification
 
+Backup sharing and export are separate from restoration. `BackupTransferController` reuses only user-granted read URIs and validates the selected filename, size and ZIP header. Sharing forwards a read-only content URI without staging the archive. Export streams to a newly-created, empty SAF document with byte progress and cancellation; it never opens the original for writing. A process kill can leave partial output, which is reported by the persisted operation result rather than automatically deleting an unverified document. Cloud-provider behavior and final remote synchronization remain provider-specific.
+
+`BackupReminderState` is local history only, not a filesystem availability assertion. Successful full/user-data backup requests and already-loaded native backup metadata supply its dates. Recovered requests must match the backend UUID and use its actual finish time. No scheduled worker, extra startup Termux call or system notification is introduced.
+
+Update preflight returns a bounded, base64-encoded list of current-to-target commit subjects from the existing fetch. Preview failure is distinct from an empty range; truncated callbacks are rejected. The preview does not run another fetch or change the checkout.
+
 CI runs the manager shell tests, JVM unit tests, Android lint, and both debug and unsigned release builds.
 Import normalization, ambiguous native archives, source/runtime validation, and interrupted-restore recovery each have isolated regression suites. Windows runs adapt unsupported OS resource limits only in the test harness; Linux CI keeps real limits and Unix filesystem semantics.
 Cancellation simulations run twice alongside the existing backup/import/recovery regressions, including real worker processes and isolated temporary data. Android unit tests cover cancellation targeting, cooperative checkpoints, and progress/result handling. These checks do not replace Android/Termux device testing of OS scheduling and document-provider behavior.

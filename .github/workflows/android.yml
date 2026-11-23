@@ -51,6 +51,7 @@ jobs:
           bash scripts/test-archive-progress.sh
           bash scripts/test-progress-checks.sh
           bash scripts/test-safe-backup.sh
+          bash scripts/test-update-changelog.sh
 
       - name: Repeat isolated backup, import, recovery and cancellation simulations
         run: |

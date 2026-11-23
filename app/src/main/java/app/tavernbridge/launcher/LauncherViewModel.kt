@@ -1,12 +1,19 @@
 package app.tavernbridge.launcher
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.tavernbridge.launcher.data.LauncherRepository
 import app.tavernbridge.launcher.data.OperationResultStore
 import app.tavernbridge.launcher.data.ThemePreferences
+import app.tavernbridge.launcher.data.BackupReminderStore
+import app.tavernbridge.launcher.data.BackupTransferController
+import app.tavernbridge.launcher.model.BackupArchive
+import app.tavernbridge.launcher.model.BackupTransferAction
+import app.tavernbridge.launcher.model.BackupTransferPhase
+import app.tavernbridge.launcher.model.BackupTransferState
 import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupRequest
@@ -82,6 +89,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val operationResultStore = OperationResultStore(application)
     private val savedOperationResult = operationResultStore.load()
     private val themePreferences = ThemePreferences(application)
+    private val backupReminderStore = BackupReminderStore(application)
+    private val backupTransferController = BackupTransferController(application)
+    private var backupTransferJob: Job? = null
+    private var backupTransferSource: BackupTransferController.Source? = null
+    private var backupShareIntent: Intent? = null
     private val mutableState = MutableStateFlow(
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
@@ -90,6 +102,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             previousInstallationKnown = (repository.hasKnownInstallation() || savedOperationResult.indicatesExistingInstallation())
                 .also { if (it) repository.rememberKnownInstallation() },
             autoBackupBeforeUpdate = repository.autoBackupBeforeUpdate(),
+            backupReminder = backupReminderStore.load(),
+            backupReminderNowMillis = System.currentTimeMillis(),
             backgroundStatus = repository.backgroundStatus(),
             lastOperationResult = savedOperationResult,
             lastTrashedEntryId = repository.lastTrashedEntryId(),
@@ -115,7 +129,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun onAppForegrounded() {
         appInForeground = true
         mutableState.update {
-            it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRunning))
+            it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRunning),
+                backupReminderNowMillis = System.currentTimeMillis())
         }
     }
 
@@ -165,6 +180,145 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun setAutoBackupBeforeUpdate(enabled: Boolean) {
         repository.saveAutoBackupBeforeUpdate(enabled)
         mutableState.update { it.copy(autoBackupBeforeUpdate = enabled) }
+    }
+
+    fun setBackupReminderEnabled(enabled: Boolean) {
+        val reminder = backupReminderStore.setEnabled(enabled)
+        mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
+    }
+
+    fun snoozeBackupReminder() {
+        val reminder = backupReminderStore.snooze()
+        mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
+    }
+
+    fun openBackups() {
+        mutableState.update { it.copy(section = MainSection.SETUP, managementPanel = ManagementPanel.BACKUP) }
+    }
+
+    fun beginBackupTransfer(archive: BackupArchive, action: BackupTransferAction) {
+        if (state.value.isWorking || state.value.backupTransfer != null) return
+        backupTransferSource = null
+        backupShareIntent = null
+        mutableState.update { it.copy(backupTransfer = BackupTransferState(archive, action)) }
+    }
+
+    fun confirmBackupTransfer() {
+        val transfer = state.value.backupTransfer ?: return
+        if (transfer.phase != BackupTransferPhase.CONFIRM) return
+        mutableState.update { it.copy(backupTransfer = transfer.copy(phase = BackupTransferPhase.CHECKING)) }
+        backupTransferJob = viewModelScope.launch {
+            try {
+                val source = backupTransferController.findReadable(transfer.archive)
+                if (source == null) mutableState.update {
+                    it.copy(backupTransfer = transfer.copy(phase = BackupTransferPhase.PICK_SOURCE))
+                } else prepareBackupTransfer(source, transfer)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { finishBackupTransferNotice(error.userMessage()) }
+        }
+    }
+
+    fun backupTransferPickerOpened(source: Boolean): Boolean {
+        val transfer = state.value.backupTransfer ?: return false
+        val expected = if (source) BackupTransferPhase.PICK_SOURCE else BackupTransferPhase.PICK_DESTINATION
+        if (transfer.phase != expected) return false
+        mutableState.update { it.copy(backupTransfer = transfer.copy(phase =
+            if (source) BackupTransferPhase.SOURCE_OPEN else BackupTransferPhase.DESTINATION_OPEN)) }
+        return true
+    }
+
+    fun selectBackupTransferSource(uri: Uri?) {
+        val transfer = state.value.backupTransfer ?: return
+        if (transfer.phase != BackupTransferPhase.SOURCE_OPEN) return
+        if (uri == null) { cancelBackupTransfer(); return }
+        mutableState.update { it.copy(backupTransfer = transfer.copy(phase = BackupTransferPhase.CHECKING)) }
+        backupTransferJob = viewModelScope.launch {
+            try { prepareBackupTransfer(backupTransferController.selectSource(uri, transfer.archive), transfer) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { finishBackupTransferNotice(error.userMessage()) }
+        }
+    }
+
+    private suspend fun prepareBackupTransfer(source: BackupTransferController.Source, transfer: BackupTransferState) {
+        backupTransferSource = source
+        if (transfer.action == BackupTransferAction.SHARE) {
+            backupShareIntent = backupTransferController.shareIntent(source, transfer.archive)
+            mutableState.update { it.copy(backupTransfer = transfer.copy(phase = BackupTransferPhase.SHARE_READY)) }
+        } else mutableState.update { it.copy(backupTransfer = transfer.copy(phase = BackupTransferPhase.PICK_DESTINATION)) }
+    }
+
+    fun takeBackupShareIntent(): Intent? {
+        if (state.value.backupTransfer?.phase != BackupTransferPhase.SHARE_READY) return null
+        val intent = backupShareIntent
+        backupShareIntent = null
+        backupTransferSource = null
+        mutableState.update { it.copy(backupTransfer = null) }
+        return intent
+    }
+
+    fun exportBackupTo(uri: Uri?) {
+        val transfer = state.value.backupTransfer ?: return
+        if (transfer.phase != BackupTransferPhase.DESTINATION_OPEN) return
+        if (uri == null) { cancelBackupTransfer(); return }
+        val source = backupTransferSource ?: run { cancelBackupTransfer(); return }
+        val started = System.currentTimeMillis()
+        val interrupted = operationSummary("export-backup", "백업 내보내기",
+            "내보내기 완료 여부를 확인하지 못했습니다. 저장 위치의 파일을 확인해 주세요. 원본 ZIP은 변경하지 않았습니다.",
+            false, started, errorCode = "OPERATION_INTERRUPTED")
+        mutableState.update { it.copy(backupTransfer = transfer.copy(phase = BackupTransferPhase.COPYING),
+            lastOperationResult = interrupted) }
+        backupTransferJob = viewModelScope.launch {
+            try {
+                backupTransferController.export(source, uri, transfer.archive) { progress ->
+                    mutableState.update { current -> current.copy(backupTransfer = current.backupTransfer?.copy(
+                        bytes = progress.bytes, total = progress.total)) }
+                }
+                val detail = "선택한 위치에 백업을 저장했습니다. 원본 ZIP도 그대로 유지했습니다."
+                val summary = operationSummary("export-backup", "백업 내보내기", detail, true, started)
+                mutableState.update { it.copy(lastOperationResult = summary) }
+                finishBackupTransferNotice(detail)
+            } catch (cancelled: CancellationException) {
+                val detail = "내보내기를 중단했습니다. 원본 ZIP은 유지됩니다. 저장 위치에 미완성 파일이 남아 있는지 확인해 주세요."
+                val summary = operationSummary("export-backup", "백업 내보내기", detail, false, started,
+                    errorCode = "OPERATION_CANCELLED")
+                mutableState.update { it.copy(lastOperationResult = summary) }
+                finishBackupTransferNotice(detail)
+                throw cancelled
+            } catch (error: Exception) {
+                val detail = "내보내기에 실패했습니다. 원본 ZIP은 유지됩니다.\n${error.userMessage()}"
+                val summary = operationSummary("export-backup", "백업 내보내기", detail, false, started,
+                    errorCode = "BACKUP_EXPORT_FAILED")
+                mutableState.update { it.copy(lastOperationResult = summary) }
+                finishBackupTransferNotice(detail)
+            }
+        }
+    }
+
+    fun cancelBackupTransfer() {
+        val copying = state.value.backupTransfer?.phase == BackupTransferPhase.COPYING
+        if (copying) mutableState.update { it.copy(backupTransfer = it.backupTransfer?.copy(cancellationRequested = true)) }
+        backupTransferJob?.cancel()
+        if (!copying) finishBackupTransferNotice(null)
+    }
+
+    fun failBackupTransferPicker() {
+        cancelBackupTransfer()
+        finishBackupTransferNotice("파일 선택 화면을 열 수 없습니다. 다른 파일 앱을 사용하거나 잠시 후 다시 시도해 주세요.")
+    }
+
+    private fun finishBackupTransferNotice(message: String?) {
+        backupTransferSource = null
+        backupShareIntent = null
+        mutableState.update { it.copy(backupTransfer = null, message = message ?: it.message) }
+    }
+
+    private fun rememberSuccessfulBackup(request: BackupRequest?) {
+        if (request == null) return
+        // Bookkeeping must not turn an already committed backup into a failed operation.
+        runCatching {
+            val reminder = backupReminderStore.recordSuccessful(request, System.currentTimeMillis())
+            mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
+        }
     }
 
     fun setWakeLockEnabled(enabled: Boolean) {
@@ -260,6 +414,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun refreshEnvironment(firstConnectionButton: Boolean) {
+        if (state.value.backupTransfer != null) return
         if (refreshJob?.isActive == true) return
         if (!environmentRefreshGate.tryStart(
                 appInForeground = appInForeground,
@@ -311,6 +466,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     repository.readProgress()
                 } else {
                     null
+                }
+                runCatching {
+                    val reminder = backupReminderStore.recordRecovered(repository.savedBackupRequest(), progress)
+                    mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
                 }
                 val recoveredTerminal = !environment.operationActive && !environment.recoveryPending &&
                     progress?.status in setOf("success", "error", "cancelled") &&
@@ -453,6 +612,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshSilently() {
+        if (state.value.backupTransfer != null) return
         if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true) return
         // Setup/reconnection needs the same recovery path as a cold start, not a
         // swallowed background exception or an unverified manager bootstrap.
@@ -514,6 +674,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshAfterResume() {
+        if (state.value.backupTransfer != null) return
         // A delayed resume callback may arrive after a quick button check has
         // already succeeded. Don't send a second doctor while still onboarding.
         if (!state.value.hasInstallationHistory) {
@@ -595,6 +756,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     progress
                 }
                 val recoveredStatus = recoveredOperationStatus(progress?.status)
+                runCatching {
+                    val reminder = backupReminderStore.recordRecovered(repository.savedBackupRequest(), progress)
+                    mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
+                }
                 val mergedProgress = progress?.let(progressLogHistory::merge)
                 val failed = recoveredStatus != RecoveredOperationStatus.SUCCESS
                 val interrupted = recoveredStatus == RecoveredOperationStatus.INTERRUPTED
@@ -922,6 +1087,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         customFolders = emptySet(),
                         parentOperation = "update",
                     ).requireSuccess()
+                    rememberSuccessfulBackup(repository.savedBackupRequest())
                     refreshBackupListAfterOperation()
                 }
                 updateInvoked = true
@@ -1080,11 +1246,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             try {
                 val storageReady = repository.backupStorageReady()
                 val backups = repository.listBackups()
+                val reminder = backupReminderStore.observeArchives(backups)
                 val folders = repository.listUserBackupFolders()
                 val updateRecord = repository.lastUpdateRecord()
                 mutableState.update {
                     it.copy(
                         backups = backups,
+                        backupReminder = reminder,
+                        backupReminderNowMillis = System.currentTimeMillis(),
                         backupFolders = folders,
                         backupsLoaded = true,
                         backupStorageReady = storageReady,
@@ -1204,6 +1373,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         repository.createBackup(setOf(BackupCategory.FULL), includeSecrets = true, customFolders = emptySet(),
             parentOperation = parentOperation)
             .requireSuccess()
+        rememberSuccessfulBackup(repository.savedBackupRequest())
         refreshBackupListAfterOperation()
         operationCheckpoint()
     }
@@ -1238,7 +1408,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             backupRequest = request,
         ) {
             val result = repository.createBackup(request)
-            if (result.isSuccess) refreshBackupListAfterOperation()
+            if (result.isSuccess) {
+                rememberSuccessfulBackup(request)
+                refreshBackupListAfterOperation()
+            }
             result
         }
     }
@@ -1290,7 +1463,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             // This read follows a committed backup/restore. Do not relabel that
             // completed operation as cancelled while merely refreshing its list.
             val backups = withoutOperationCancellation { repository.listBackups() }
-            mutableState.update { it.copy(backups = backups, backupsLoaded = true) }
+            val reminder = backupReminderStore.observeArchives(backups)
+            mutableState.update { it.copy(backups = backups, backupsLoaded = true,
+                backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -1746,6 +1921,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun commandEntryBlocked(requireManager: Boolean = true, allowWhileWorking: Boolean = false): Boolean {
+        if (state.value.backupTransfer != null) return true
         if ((state.value.isWorking && !allowWhileWorking) || refreshJob?.isActive == true) return true
         val current = state.value
         if (!current.termuxSetup.verified || !current.environment.termuxInstalled ||

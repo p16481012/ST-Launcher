@@ -244,6 +244,7 @@ class LauncherRepository(private val context: Context) {
     suspend fun checkUpdate(): UpdatePreflight {
         val result = runManager("update-preflight", timeoutMillis = 3 * 60_000L)
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
+        check(!result.stdoutTruncated) { "업데이트 검사 결과가 통신 중 잘렸습니다. 안전 검사를 다시 실행해 주세요." }
         return UpdatePreflightParser.parse(result.stdout)
     }
 

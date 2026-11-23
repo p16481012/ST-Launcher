@@ -56,6 +56,7 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Update
@@ -70,6 +71,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -131,6 +134,7 @@ import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.BackupCategory
+import app.tavernbridge.launcher.model.BackupTransferAction
 import app.tavernbridge.launcher.model.BrowserOption
 import app.tavernbridge.launcher.model.backupFolderInfo
 import app.tavernbridge.launcher.model.DiagnosticItem
@@ -263,6 +267,7 @@ fun LauncherApp(viewModel: LauncherViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewModel) {
+    BackupTransferHost(state.backupTransfer, viewModel)
     val snackbarHostState = remember { SnackbarHostState() }
     var confirmation by remember { mutableStateOf<Confirmation?>(null) }
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
@@ -488,6 +493,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onRetry = viewModel::retryLastOperation,
                         setupCommand = viewModel.setupCommand,
                         onOpenPermissionSettings = viewModel::openPermissionSettings,
+                        onOpenBackups = viewModel::openBackups,
+                        onSnoozeBackupReminder = viewModel::snoozeBackupReminder,
                     )
                     MainSection.SETUP -> if (!state.environmentChecked && !state.shouldShowSetupGuide) {
                         EnvironmentCheckingScreen(
@@ -527,6 +534,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             },
                             onCreateBackup = viewModel::createBackup,
                             onRefreshBackups = viewModel::loadBackups,
+                            onBackupReminderChange = viewModel::setBackupReminderEnabled,
+                            onTransferBackup = viewModel::beginBackupTransfer,
                             onOpenBackupFolder = viewModel::openDownloadsFolder,
                             onImportBackup = pickBackup,
                             onPickInstallation = pickInstallation,
@@ -697,6 +706,8 @@ private fun HomeScreen(
     onRetry: () -> Unit,
     setupCommand: String,
     onOpenPermissionSettings: () -> Unit,
+    onOpenBackups: () -> Unit,
+    onSnoozeBackupReminder: () -> Unit,
 ) {
     val environment = state.environment
     LazyColumn(
@@ -720,6 +731,11 @@ private fun HomeScreen(
         }
         if (!environment.recoveryPending) state.lastOperationResult?.let { summary ->
             item { OperationResultCard(summary, onRetry) }
+        }
+        if (state.environmentChecked && !environment.recoveryPending && !state.isWorking) {
+            state.backupReminder.notice(state.backupReminderNowMillis, environment.sillyTavernInstalled)?.let { notice ->
+                item { BackupReminderCard(notice, onOpenBackups, onSnoozeBackupReminder) }
+            }
         }
         if (state.environmentChecked && environment.sillyTavernInstalled && !environment.recoveryPending) {
             item {
@@ -1264,7 +1280,10 @@ private fun BackupArchiveCard(
     selected: Boolean,
     onSelectedChange: (Boolean) -> Unit,
     onRestore: () -> Unit,
+    onShare: () -> Unit,
+    onExport: () -> Unit,
 ) {
+    var transferMenuOpen by remember(backup.fileName) { mutableStateOf(false) }
     val itemLabels = backup.categories.map { it.label }.toMutableList().apply {
         if (backup.customFolders.isNotEmpty()) add("직접 선택 ${backup.customFolders.size}개")
     }
@@ -1276,9 +1295,21 @@ private fun BackupArchiveCard(
                     Text(if (selected) "삭제 대상으로 선택됨" else "삭제할 백업 선택")
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(backup.createdAt.ifBlank { "날짜 알 수 없음" }, fontWeight = FontWeight.SemiBold)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(backup.createdAt.ifBlank { "날짜 알 수 없음" }, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Text(formatBackupBytes(backup.sizeBytes), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!selectionMode) Box {
+                    IconButton(onClick = { transferMenuOpen = true }) {
+                        Icon(Icons.Outlined.MoreHoriz, contentDescription = "백업 공유·저장 메뉴")
+                    }
+                    DropdownMenu(expanded = transferMenuOpen, onDismissRequest = { transferMenuOpen = false }) {
+                        DropdownMenuItem(text = { Text("공유") }, leadingIcon = { Icon(Icons.Outlined.Share, null) },
+                            onClick = { transferMenuOpen = false; onShare() })
+                        DropdownMenuItem(text = { Text("다른 위치에 저장") }, leadingIcon = { Icon(Icons.Outlined.Download, null) },
+                            onClick = { transferMenuOpen = false; onExport() })
+                    }
+                }
             }
             Text(
                 itemLabels.distinct().joinToString(" · ").ifBlank { "포함 항목 알 수 없음" },
@@ -1422,6 +1453,8 @@ private fun ManagementScreen(
     onUpdate: () -> Unit,
     onCreateBackup: (Set<BackupCategory>, Boolean, Set<String>) -> Unit,
     onRefreshBackups: () -> Unit,
+    onBackupReminderChange: (Boolean) -> Unit,
+    onTransferBackup: (BackupArchive, BackupTransferAction) -> Unit,
     onOpenBackupFolder: () -> Unit,
     onImportBackup: () -> Unit,
     onPickInstallation: () -> Unit,
@@ -1597,6 +1630,7 @@ private fun ManagementScreen(
                         )
                         if (updateReport.updateAvailable) {
                             InfoRow("새 커밋", "${updateReport.commitsBehind.coerceAtLeast(1)}개")
+                            UpdateChangesPreview(updateReport)
                         }
                         InfoRow(
                             "Node.js",
@@ -1709,6 +1743,9 @@ private fun ManagementScreen(
             }
 
             if (selectedPanel == ManagementPanel.BACKUP) {
+        item {
+            BackupReminderSetting(state.backupReminder.enabled, onBackupReminderChange)
+        }
         if (state.backupStorageReady == false) {
             item {
                 BackupStorageSetupCard(
@@ -1865,6 +1902,8 @@ private fun ManagementScreen(
                     }
                 },
                 onRestore = { onRestoreBackup(backup) },
+                onShare = { onTransferBackup(backup, BackupTransferAction.SHARE) },
+                onExport = { onTransferBackup(backup, BackupTransferAction.EXPORT) },
             )
         }
             }

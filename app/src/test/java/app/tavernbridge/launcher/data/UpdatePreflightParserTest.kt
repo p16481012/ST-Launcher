@@ -83,4 +83,67 @@ class UpdatePreflightParserTest {
         assertEquals("success", parsed.result)
         assertEquals("1.1.0", parsed.newVersion)
     }
+
+    @Test
+    fun parsesBoundedCommitPreviewAndTruncation() {
+        val first = "a".repeat(40)
+        val second = "b".repeat(40)
+        val output = preview("$first\tfix: 채팅 저장 오류 수정\n$second\tImprove backup\n") +
+            "\nchangelog_truncated=1"
+        val parsed = UpdatePreflightParser.parse(output)
+        assertTrue(parsed.changesAvailable)
+        assertTrue(parsed.changesTruncated)
+        assertEquals(listOf(first, second), parsed.changes.map { it.commit })
+        assertEquals("fix: 채팅 저장 오류 수정", parsed.changes.first().subject)
+    }
+
+    @Test
+    fun distinguishesNoChangesFromUnavailableOrOlderManager() {
+        val unchanged = UpdatePreflightParser.parse(preview(""))
+        assertTrue(unchanged.changesAvailable)
+        assertTrue(unchanged.changes.isEmpty())
+        assertFalse(UpdatePreflightParser.parse("update_available=0").changesAvailable)
+        val unavailable = UpdatePreflightParser.parse("changelog_status=unavailable\nchangelog_truncated=1")
+        assertFalse(unavailable.changesAvailable)
+        assertFalse(unavailable.changesTruncated)
+    }
+
+    @Test
+    fun rejectsMalformedOrOversizedPreviewWithoutLosingSafetyResult() {
+        val records = listOf(
+            "changelog_status=ready\nchangelog_b64=not_base64!",
+            "changelog_status=ready\nchangelog_b64=${"A".repeat(32_769)}",
+            preview("not-a-commit\tunsafe"),
+            preview("${"a".repeat(40)} missing separator"),
+            preview((1..21).joinToString("\n") { "${"a".repeat(40)}\tchange $it" }),
+        )
+        records.forEach { malformed ->
+            val parsed = UpdatePreflightParser.parse("node_compatible=1\nspace_ready=1\n$malformed")
+            assertFalse(parsed.changesAvailable)
+            assertTrue(parsed.changes.isEmpty())
+            assertTrue(parsed.nodeCompatible)
+            assertTrue(parsed.spaceReady)
+        }
+    }
+
+    @Test
+    fun treatsCommitSubjectsAsPlainSingleLineText() {
+        val parsed = UpdatePreflightParser.parse(preview(
+            "${"c".repeat(40)}\tfix\u001b[31m\ttext\u202Eupdate_available=0\u2028end${"x".repeat(300)}",
+        ))
+        assertTrue(parsed.changesAvailable)
+        assertEquals(240, parsed.changes.single().subject.length)
+        assertFalse(parsed.changes.single().subject.any { it == '\u001b' || it == '\u202E' || it == '\u2028' || it == '\t' })
+        assertFalse(parsed.updateAvailable)
+    }
+
+    @Test
+    fun acceptsSha256RepositoriesAndEmptySubject() {
+        val parsed = UpdatePreflightParser.parse(preview("${"d".repeat(64)}\t   "))
+        assertTrue(parsed.changesAvailable)
+        assertEquals("제목 없음", parsed.changes.single().subject)
+    }
+
+    private fun preview(text: String): String =
+        "changelog_status=ready\nchangelog_b64=${Base64.getEncoder().encodeToString(text.toByteArray(Charsets.UTF_8))}"
 }
