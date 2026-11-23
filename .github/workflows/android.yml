@@ -45,6 +45,7 @@ jobs:
       - name: Test manager safety helpers
         run: |
           bash scripts/test-manager.sh
+          bash scripts/test-manager-storage.sh
           bash scripts/test-manager-files.sh
           bash scripts/test-manager-progress.sh
           bash scripts/test-progress.sh

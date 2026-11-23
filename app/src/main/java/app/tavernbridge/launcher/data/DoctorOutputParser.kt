@@ -59,6 +59,7 @@ object DoctorOutputParser {
             }.getOrDefault(""), maxLength = 4_000),
             portListening = values["port_listening"] == "1",
             port = values["port"]?.toIntOrNull() ?: 8000,
+            configPort = values["config_port"]?.toIntOrNull()?.takeIf { it in 1..65535 },
             externalAccessEnabled = values["external_access"] == "1",
             whitelist = runCatching {
                 String(Base64.getDecoder().decode(values["whitelist_b64"].orEmpty()))

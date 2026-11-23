@@ -9,6 +9,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DoctorOutputParserTest {
+    @Test fun reportsConfigPortWithoutReplacingLauncherPort() {
+        val parsed = DoctorOutputParser.parse("port=8000\nconfig_port=12556")
+        assertEquals(8000, parsed.port)
+        assertEquals(12556, parsed.configPort)
+        for (invalid in listOf("", "no", "0", "65536", "-1", "8000.0", "999999999999999")) {
+            assertEquals(null, DoctorOutputParser.parse("config_port=$invalid").configPort)
+        }
+        assertEquals(null, DoctorOutputParser.parse("port=8000").configPort)
+    }
+
     private fun completeResponse(installed: Boolean = true) = """
         recovery_pending=0
         protocol=1

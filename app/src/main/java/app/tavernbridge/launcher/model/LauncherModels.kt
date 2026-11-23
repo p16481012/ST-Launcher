@@ -75,6 +75,8 @@ data class EnvironmentStatus(
     val serverReachable: Boolean = false,
     val portListening: Boolean = false,
     val port: Int = 8000,
+    // File value can differ from the launcher's explicit command-line port.
+    val configPort: Int? = null,
     val externalAccessEnabled: Boolean = false,
     val whitelist: List<String> = listOf("::1", "127.0.0.1"),
     val sessionStartedEpoch: Long = 0,

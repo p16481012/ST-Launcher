@@ -7,6 +7,7 @@ import android.content.ClipData
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import android.provider.DocumentsContract
 import android.os.PowerManager
@@ -382,7 +383,8 @@ class LauncherRepository(private val context: Context) {
     /** Resolve the selected local folder directly: no duplicate SAF staging tree is created. */
     suspend fun stageInstallationFolder(uri: Uri): ExistingInstallation {
         require(uri.scheme == "content" && DocumentsContract.isTreeUri(uri)) { "설치 폴더를 선택해 주세요." }
-        return inspectExistingInstallation(localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri)))
+        return inspectExistingInstallation(localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri),
+            Environment.getExternalStorageDirectory().absolutePath))
     }
 
     suspend fun importExistingInstallation(path: String, mode: InstallationImportMode, replaceExisting: Boolean): TermuxCommandResult =
@@ -450,7 +452,8 @@ class LauncherRepository(private val context: Context) {
 
     suspend fun importSillyTavernFolder(parent: String, uri: Uri): TermuxCommandResult {
         require(uri.scheme == "content" && DocumentsContract.isTreeUri(uri)) { "가져올 폴더를 선택해 주세요." }
-        val source = localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri))
+        val source = localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri),
+            Environment.getExternalStorageDirectory().absolutePath)
         val destination = fileChildPath(parent, source.substringAfterLast('/'))
         // Copy directly in Termux; no intermediate ZIP or duplicate shared-storage staging tree.
         return runManager(
@@ -482,10 +485,23 @@ class LauncherRepository(private val context: Context) {
         return runCatching { context.startActivity(chooser); true }.getOrDefault(false)
     }
 
-    suspend fun backupStorageReady(): Boolean {
+    suspend fun backupStorageReady(verifySharedRead: Boolean = false): Boolean {
         val result = runManager("backup-storage-status", timeoutMillis = 30_000)
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
-        return result.stdout.lineSequence().any { it == "backup_storage_ready=1" }
+        val ready = result.stdout.lineSequence().any { it == "backup_storage_ready=1" }
+        // Legacy Android has no app-owned MediaStore Downloads API. Keep existing
+        // backup access available; diagnosis explicitly states this check's limit.
+        if (ready && verifySharedRead && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) verifySharedStorageRead()
+        return ready
+    }
+
+    private suspend fun verifySharedStorageRead() {
+        importStaging.withReadProbe { probe ->
+            val result = runManager("verify-shared-read ${shellQuote(probe.transfer.name)} ${shellQuote(probe.token)}", 30_000)
+            if (!result.isSuccess) throw IllegalStateException(result.readableError())
+            check(!result.stdoutTruncated) { "[SHARED_STORAGE_READ_FAILED]\n저장소 읽기 검사 응답이 잘렸습니다. 다시 확인해 주세요." }
+            SharedStorageProbe.requireReadable(result.stdout)
+        }
     }
 
     suspend fun deleteBackup(fileName: String): TermuxCommandResult =
@@ -531,7 +547,24 @@ class LauncherRepository(private val context: Context) {
     suspend fun diagnose(): DiagnosticReport {
         val progress = LocalProgressJournal("diagnose", { localOperationProgress = it })
         progress.phase("Android 설정 검사", "Termux 설치·명령 권한·배터리 설정을 확인합니다.", 3)
-        return try { diagnoseWithProgress(progress) } finally { localOperationProgress = null }
+        return try {
+            val report = diagnoseWithProgress(progress)
+            val installation = withContext(Dispatchers.IO) {
+                runCatching { TermuxInstallationInspector(context).inspect() }.getOrNull()
+            }
+            val storageNotice = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) listOf(DiagnosticItem(
+                id = "shared_read_probe",
+                title = "공유 파일 실제 읽기 검사",
+                value = "이 Android 버전에서는 지원하지 않음",
+                status = DiagnosticStatus.INFO,
+                detail = "Android 9 이하는 폴더 접근 상태만 확인합니다. 런처가 만든 파일을 Termux가 실제로 읽는 검사는 Android 10 이상에서 지원합니다.",
+                recommendation = "파일 접근 문제가 있으면 Android 설정에서 Termux 저장소 권한과 termux-setup-storage 연결을 확인해 주세요.",
+            )) else emptyList()
+            report.copy(
+                items = report.items + (installation?.diagnosticItems() ?: emptyList()) + storageNotice,
+                copyOnlyDetails = report.copyOnlyDetails + (installation?.copyOnlyDetails() ?: emptyMap()),
+            )
+        } finally { localOperationProgress = null }
     }
 
     private suspend fun diagnoseWithProgress(progress: LocalProgressJournal): DiagnosticReport {
@@ -737,6 +770,26 @@ class LauncherRepository(private val context: Context) {
             status = if (lastError.isBlank()) DiagnosticStatus.OK else DiagnosticStatus.WARNING,
             recommendation = if (lastError.isBlank()) "" else "서버 로그의 같은 시각을 확인하고, 오류 코드와 함께 진단 내용을 복사해 주세요.",
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            progress.phase("공유 파일 읽기 검사", "런처가 만든 작은 검사 파일을 Termux가 실제로 읽을 수 있는지 확인합니다.")
+            items += try {
+                verifySharedStorageRead()
+                DiagnosticItem(
+                    id = "shared_read_probe", title = "공유 파일 실제 읽기 검사", value = "정상",
+                    detail = "런처가 만든 작은 Download 검사 파일을 Termux에서 읽고 내용 일치를 확인했습니다.",
+                    status = DiagnosticStatus.OK,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                DiagnosticItem(
+                    id = "shared_read_probe", title = "공유 파일 실제 읽기 검사", value = "접근 확인 필요",
+                    detail = redactSecrets(error.message.orEmpty()).take(1_000),
+                    status = DiagnosticStatus.WARNING,
+                    recommendation = "Android 설정에서 Termux 파일 접근 권한과 저장소 연결을 확인해 주세요. 이 결과는 Termux가 직접 만든 기존 백업의 사용 가능 여부와는 별개입니다.",
+                )
+            }
+        }
         progress.phase("진단 보고서 정리", "완료된 검사 결과를 진단 항목으로 정리합니다.", items.size.toLong())
         items.forEach { item ->
             val status = when (item.status) {
@@ -1007,7 +1060,7 @@ class LauncherRepository(private val context: Context) {
                 preferences.edit().putBoolean("known_st_installation", status.sillyTavernInstalled).apply()
                 termuxSetup = TermuxSetupState(TermuxSetupStatus.READY, "Termux 환경 검사와 기존 설치 상태를 확인했습니다.")
             }
-            if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "list-backups", "list-user-folders", "last-update-record")) {
+            if (result.isSuccess && operation in setOf("doctor", "backup-storage-status", "verify-shared-read", "list-backups", "list-user-folders", "last-update-record")) {
                 control?.checkpoint()
             }
             return result
@@ -1057,6 +1110,8 @@ class LauncherRepository(private val context: Context) {
 
     private suspend fun stageTransfer(uri: Uri, backup: Boolean): SharedImportStaging.Transfer {
         operationCheckpoint()
+        // Fail before copying gigabytes if Android's per-file access rules block Termux.
+        verifySharedStorageRead()
         val started = System.currentTimeMillis()
         var activity = started
         var previousBytes = -1L

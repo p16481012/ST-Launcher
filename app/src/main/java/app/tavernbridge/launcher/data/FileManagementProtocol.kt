@@ -19,13 +19,20 @@ internal fun fileChildPath(parent: String, name: String): String {
 }
 
 /** Only documented local providers have paths that Termux can access directly. */
-internal fun localFolderPathForTree(authority: String?, documentId: String): String {
+internal fun localFolderPathForTree(authority: String?, documentId: String, primaryStorageRoot: String): String {
+    val sharedRoot = primaryStorageRoot.trimEnd('/')
+    require(sharedRoot.matches(Regex("/storage/emulated/[0-9]+"))) {
+        "이 기기의 내부 저장소 경로를 안전하게 확인할 수 없습니다."
+    }
     val path = when (authority) {
         "com.android.externalstorage.documents" -> {
             require(documentId.startsWith("primary:")) { "내부 저장소의 폴더를 선택해 주세요." }
-            "/storage/emulated/0/" + documentId.removePrefix("primary:")
+            "$sharedRoot/" + documentId.removePrefix("primary:").trimStart('/')
         }
         "com.termux.documents" -> {
+            require(sharedRoot == "/storage/emulated/0") {
+                "보조 사용자·업무 프로필의 Termux 전용 경로는 아직 지원하지 않습니다. 내부 저장소의 폴더를 선택해 주세요."
+            }
             require(documentId.startsWith("/data/data/com.termux/files/home/")) {
                 "Termux 홈 안의 폴더를 선택해 주세요."
             }
@@ -37,7 +44,7 @@ internal fun localFolderPathForTree(authority: String?, documentId: String): Str
         "안전하지 않은 폴더 경로입니다."
     }
     val folder = path.trimEnd('/')
-    require(folder != "/storage/emulated/0" && folder != "/data/data/com.termux/files/home") {
+    require(folder != sharedRoot && folder != "/data/data/com.termux/files/home") {
         "저장소 전체가 아닌 가져올 폴더를 선택해 주세요."
     }
     return folder

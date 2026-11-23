@@ -25,8 +25,37 @@ import kotlinx.coroutines.launch
 /** App-owned transfer files only. The user-selected original is never removed here. */
 internal class SharedImportStaging(private val context: Context) {
     data class Transfer(val uri: Uri, val name: String)
+    data class ReadProbe(val transfer: Transfer, val token: String)
     data class CopyProgress(val bytes: Long, val total: Long, val name: String, val finished: Boolean = false)
     private val pending = context.getSharedPreferences("pending_import_transfers", Context.MODE_PRIVATE)
+
+    /** Publish a tiny app-owned file so the other app must prove actual read access. */
+    suspend fun <T> withReadProbe(action: suspend (ReadProbe) -> T): T = withContext(Dispatchers.IO) {
+        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "[SHARED_STORAGE_PROBE_UNSUPPORTED]\n실제 공유 파일 접근 검사는 Android 10 이상에서 지원합니다. Android 9 이하는 Termux 저장소 권한을 직접 확인해 주세요."
+        }
+        currentCoroutineContext().ensureActive()
+        currentCoroutineContext().operationCancellationControl()?.checkpoint()
+        val name = "SillyTavern-Probe-${UUID.randomUUID()}.txt"
+        val token = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "")
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }) ?: error("[SHARED_STORAGE_PROBE_FAILED]\nDownload 폴더에 접근 검사 파일을 만들지 못했습니다.")
+        val transfer = Transfer(uri, name)
+        try {
+            check(pending.edit().putString(uri.toString(), "${System.currentTimeMillis()}|$name").commit())
+            resolver.openOutputStream(uri, "w")?.use { it.write(token.toByteArray(Charsets.US_ASCII)) }
+                ?: error("[SHARED_STORAGE_PROBE_FAILED]\nDownload 폴더에 접근 검사 파일을 쓰지 못했습니다.")
+            check(resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null) == 1)
+            action(ReadProbe(transfer, token))
+        } finally {
+            remove(transfer)
+        }
+    }
 
     suspend fun copy(source: Uri, backup: Boolean, onProgress: (CopyProgress) -> Unit = {}): Transfer = withContext(Dispatchers.IO) {
         val operation = currentCoroutineContext().operationCancellationControl()
@@ -164,7 +193,7 @@ internal class SharedImportStaging(private val context: Context) {
             val record = rawRecord as? String ?: return@forEach
             val time = record.substringBefore('|').toLongOrNull() ?: return@forEach
             val name = record.substringAfter('|')
-            if (time > cutoff || !name.matches(Regex("SillyTavern-(Import|File)-[0-9a-f-]{36}\\.(zip|tmp)"))) return@forEach
+            if (time > cutoff || !name.matches(Regex("SillyTavern-(Import|File|Probe)-[0-9a-f-]{36}\\.(zip|tmp|txt)"))) return@forEach
             val uri = Uri.parse(rawUri)
             if (uri.scheme != "content" || uri.authority != MediaStore.AUTHORITY) return@forEach
             runCatching {

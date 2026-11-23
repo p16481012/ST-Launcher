@@ -21,9 +21,9 @@ class FileManagementProtocolTest {
 
     @Test fun mapsLocalTreesWithoutMakingCopies() {
         assertEquals("/storage/emulated/0/Documents/SillyTavern", localFolderPathForTree(
-            "com.android.externalstorage.documents", "primary:Documents/SillyTavern"))
+            "com.android.externalstorage.documents", "primary:Documents/SillyTavern", "/storage/emulated/0"))
         val termux = "/data/data/com.termux/files/home/SillyTavern"
-        assertEquals(termux, localFolderPathForTree("com.termux.documents", termux))
+        assertEquals(termux, localFolderPathForTree("com.termux.documents", termux, "/storage/emulated/0"))
     }
 
     @Test fun rejectsUnknownProvidersAndEscapes() {
@@ -38,14 +38,36 @@ class FileManagementProtocolTest {
             "com.android.externalstorage.documents" to "primary:Documents/bad\\name",
             "com.android.externalstorage.documents" to "primary:Documents/bad\nname",
             "com.termux.documents" to "/data/data/com.termux/files/home/",
-        )) assertThrows(IllegalArgumentException::class.java) { localFolderPathForTree(provider, path) }
+        )) assertThrows(IllegalArgumentException::class.java) { localFolderPathForTree(provider, path, "/storage/emulated/0") }
     }
 
     @Test fun folderImportKeepsSelectedFolderNameUnderCurrentLocation() {
-        val source = localFolderPathForTree("com.android.externalstorage.documents", "primary:Download/새 폴더/")
+        val source = localFolderPathForTree("com.android.externalstorage.documents", "primary:Download/새 폴더/", "/storage/emulated/0")
         assertEquals("/storage/emulated/0/Download/새 폴더", source)
         assertEquals("data/default-user/새 폴더", fileChildPath("data/default-user", source.substringAfterLast('/')))
         assertEquals("새 폴더", fileChildPath("", source.substringAfterLast('/')))
+    }
+
+    @Test fun usesCurrentProfileSharedStorageWithoutGuessingPrivateStorage() {
+        for (profile in listOf("10", "150")) {
+            val root = "/storage/emulated/$profile"
+            assertEquals("$root/Documents/SillyTavern", localFolderPathForTree(
+                "com.android.externalstorage.documents", "primary:Documents/SillyTavern", root))
+            assertThrows(IllegalArgumentException::class.java) {
+                localFolderPathForTree("com.android.externalstorage.documents", "primary:", root)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                localFolderPathForTree("com.termux.documents", "/data/data/com.termux/files/home/SillyTavern", root)
+            }
+        }
+        for (root in listOf("/storage/emulated/10/../0", "/storage/emulated", "/", "/storage/emulated/0/foreign")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                localFolderPathForTree("com.android.externalstorage.documents", "primary:SillyTavern", root)
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            localFolderPathForTree("com.termux.documents", "/data/user/10/com.termux/files/home/SillyTavern", "/storage/emulated/0")
+        }
     }
 
     @Test fun preservesUnicodeAndEmptyText() {

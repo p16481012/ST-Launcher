@@ -2,6 +2,7 @@ package app.tavernbridge.launcher.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Build
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -112,6 +113,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
@@ -631,6 +633,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onLoadHistory = viewModel::loadOperationHistory,
                         onOpenTerminalLog = viewModel::openServerLogTerminal,
                         onOpenBatterySettings = viewModel::openBatteryOptimizationSettings,
+                        onOpenTermuxSettings = viewModel::openTermuxAppSettings,
                         storageSetupCommand = viewModel.storageSetupCommand,
                         onOpenTermux = viewModel::openTermux,
                         onStorageCommandCopied = { viewModel.showMessage("저장공간 연결 명령을 복사하고 Termux를 열었습니다.") },
@@ -2293,6 +2296,7 @@ private fun DiagnosticsScreen(
     onLoadHistory: () -> Unit,
     onOpenTerminalLog: () -> Unit,
     onOpenBatterySettings: () -> Unit,
+    onOpenTermuxSettings: () -> Unit,
     storageSetupCommand: String,
     onOpenTermux: () -> Unit,
     onStorageCommandCopied: () -> Unit,
@@ -2332,6 +2336,7 @@ private fun DiagnosticsScreen(
                 report = state.diagnosticReport,
                 onRun = onRunDiagnostics,
                 onOpenBatterySettings = onOpenBatterySettings,
+                onOpenTermuxSettings = onOpenTermuxSettings,
                 onStorageSetup = {
                     clipboard.setText(AnnotatedString(storageSetupCommand))
                     onStorageCommandCopied()
@@ -2420,11 +2425,13 @@ private fun DiagnosticOverview(
     report: DiagnosticReport?,
     onRun: () -> Unit,
     onOpenBatterySettings: () -> Unit,
+    onOpenTermuxSettings: () -> Unit,
     onStorageSetup: () -> Unit,
     onCopied: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val clipboard = LocalClipboardManager.current
+    val uriHandler = LocalUriHandler.current
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(bottom = 16.dp),
@@ -2462,6 +2469,14 @@ private fun DiagnosticOverview(
                     }
                 }
             }
+        }
+        item {
+            TermuxProcessHelpCard(
+                androidSdk = Build.VERSION.SDK_INT,
+                onOpenTermuxSettings = onOpenTermuxSettings,
+                onOpenBatterySettings = onOpenBatterySettings,
+                onOpenOfficialHelp = { url -> runCatching { uriHandler.openUri(url) } },
+            )
         }
         if (report == null) {
             item {
@@ -2739,6 +2754,11 @@ private fun SettingsScreen(
             Card(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text("서버 주소", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "런처 실행 포트: ${state.configuredPort} · config.yaml: ${state.environment.configPort?.toString() ?: "확인되지 않음"}\n런처로 시작하면 런처의 포트 설정을 우선 사용합니다.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Text(
                         "변경한 주소는 다음 서버 시작부터 적용됩니다.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

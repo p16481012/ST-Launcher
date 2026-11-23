@@ -1439,6 +1439,7 @@ version_from_file() {
 server_connection_settings() {
     local config="$ST_HOME/config.yaml"
     if [[ ! -f "$config" || ! -d "$ST_HOME/node_modules/yaml" ]]; then
+        echo "config_port="
         echo "external_access=0"
         echo "whitelist_b64=$(printf '%s' $'::1\n127.0.0.1' | base64 -w 0)"
         return 0
@@ -1446,12 +1447,21 @@ server_connection_settings() {
     (cd "$ST_HOME" && node --input-type=commonjs - "$config" <<'NODE'
 const fs = require('fs');
 const YAML = require('yaml');
+if (fs.statSync(process.argv[2]).size > 1024 * 1024) throw new Error('config.yaml is too large');
 const config = YAML.parse(fs.readFileSync(process.argv[2], 'utf8')) || {};
 const whitelist = Array.isArray(config.whitelist) ? config.whitelist.map(String) : ['::1', '127.0.0.1'];
+const port = config.port;
+console.log(`config_port=${Number.isInteger(port) && port >= 1 && port <= 65535 ? port : ''}`);
 console.log(`external_access=${config.listen === true ? 1 : 0}`);
 console.log(`whitelist_b64=${Buffer.from(whitelist.join('\n')).toString('base64')}`);
 NODE
-    )
+    ) 2>/dev/null || {
+        # A missing runtime or invalid YAML must not hide an existing installation.
+        # This is read-only: never rewrite config.yaml to match the launcher's port.
+        echo "config_port="
+        echo "external_access=0"
+        echo "whitelist_b64=$(printf '%s' $'::1\n127.0.0.1' | base64 -w 0)"
+    }
 }
 
 save_server_connection_settings() {
@@ -2422,13 +2432,13 @@ st_file_action() {
     ST_PROGRESS_HELPER="$PROGRESS_HELPER" ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" \
         ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
         ST_PROGRESS_PHASE="SillyTavern에 파일 저장" ST_PROGRESS_DETAIL="실제 기록한 용량을 세며 선택한 파일을 가져옵니다." \
-        node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$HOME" "$@" <<'ST_LAUNCHER_FILES_JS'
+        node - "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "$HOME" "$(shared_storage_root)" "$@" <<'ST_LAUNCHER_FILES_JS'
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { TextDecoder } = require('util');
-const [rootArgument, launcherArgument, downloadArgument, homeArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
+const [rootArgument, launcherArgument, downloadArgument, homeArgument, sharedArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
 const MAX_TEXT_BYTES = 65536;
 const fail = (code, message) => { const error = new Error(message); error.fileCode = code; throw error; };
 const exists = filename => { try { fs.lstatSync(filename); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
@@ -2519,7 +2529,7 @@ function folderImportSource(encodedSource) {
     // isolated regression harness to run without Android-specific directories).
     // Check only roots that lexically contain the requested source. An unrelated
     // shared-storage permission denial must not break a Termux-local import.
-    const candidates = [homeArgument, '/storage/emulated/0', downloadArgument, rootArgument]
+    const candidates = [homeArgument, sharedArgument, downloadArgument, rootArgument].filter(Boolean)
         .map(candidate => path.resolve(candidate)).filter(candidate => within(candidate, absolute))
         .sort((a, b) => b.length - a.length);
     const suppliedBase = candidates.find(candidate => exists(candidate));
@@ -2536,7 +2546,7 @@ function folderImportSource(encodedSource) {
     if (!fs.lstatSync(current).isDirectory()) fail(64, '일반 폴더를 선택해 주세요.');
     const launcher = fs.realpathSync(launcherArgument);
     if (within(launcher, current) || within(current, launcher) || current === path.parse(current).root) fail(44, '런처 관리 폴더 또는 저장소 전체는 가져올 수 없습니다.');
-    if (current === fs.realpathSync(homeArgument) || absolute === path.resolve('/storage/emulated/0')) fail(44, '저장소 전체 대신 가져올 하위 폴더를 선택해 주세요.');
+    if (current === fs.realpathSync(homeArgument) || /^\/storage\/emulated\/[0-9]+$/.test(current) || sharedArgument && current === path.resolve(sharedArgument)) fail(44, '저장소 전체 대신 가져올 하위 폴더를 선택해 주세요.');
     if (components.some(component => component === '.git' || component === 'node_modules')) fail(44, 'Git 정보 또는 node_modules 폴더는 가져올 수 없습니다.');
     return current;
 }
@@ -2750,6 +2760,34 @@ try {
 ST_LAUNCHER_FILES_JS
 }
 
+shared_storage_root() {
+    local candidate=""
+    candidate="$(realpath -e -- "$HOME/storage/shared" 2>/dev/null || true)"
+    if [[ ! "$candidate" =~ ^/storage/emulated/[0-9]+$ ]]; then
+        candidate="${EXTERNAL_STORAGE:-}"
+        [[ "$candidate" =~ ^/storage/emulated/[0-9]+$ ]] || candidate=""
+        [[ -z "$candidate" ]] || candidate="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+    fi
+    if [[ "$candidate" =~ ^/storage/emulated/[0-9]+$ ]]; then printf '%s' "$candidate"; fi
+}
+
+verify_shared_read() {
+    local name="${1:-}" token="${2:-}" file content reason=ok
+    [[ "$name" =~ ^SillyTavern-Probe-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.txt$ &&
+        "$token" =~ ^[0-9a-f]{64}$ ]] || { echo "공유 저장소 검사 요청이 올바르지 않습니다." >&2; return 64; }
+    file="$DOWNLOAD_DIR/$name"
+    if [[ ! -d "$DOWNLOAD_DIR" ]]; then reason=storage_unavailable
+    elif [[ ! -e "$file" ]]; then reason=missing
+    elif [[ ! -f "$file" || -L "$file" || ! -r "$file" ]]; then reason=read_denied
+    elif [[ "$(stat -c '%s' -- "$file" 2>/dev/null || true)" != 64 ]]; then reason=content_mismatch
+    elif ! content="$(head -c 65 -- "$file" 2>/dev/null)"; then reason=read_denied
+    elif [[ "$content" != "$token" ]]; then reason=content_mismatch
+    fi
+    # The app removes only its own MediaStore URI in finally; the shell never deletes a probe.
+    echo "shared_read_ready=$([[ "$reason" == ok ]] && echo 1 || echo 0)"
+    echo "shared_read_reason=$reason"
+}
+
 backup_storage_status() {
     if [[ -d "$DOWNLOAD_DIR" && -w "$DOWNLOAD_DIR" ]]; then
         echo "backup_storage_ready=1"
@@ -2857,14 +2895,19 @@ sanitize_imported_git() {
 }
 
 resolve_install_source() {
-    local encoded="${1:-}" source resolved destination
+    local encoded="${1:-}" source resolved destination shared_root
     [[ "$encoded" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 50
     source="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || return 50
     [[ "$(printf '%s' "$source" | base64 -w 0)" == "$encoded" && "$source" == /* &&
         "$source" != *$'\n'* && "$source" != *$'\r'* && "$source" != *$'\t'* && ! -L "$source" ]] || return 50
     resolved="$(realpath -e -- "$source" 2>/dev/null)" || return 50
     [[ -d "$resolved" && -r "$resolved" && "$resolved" != / && "$resolved" != /data &&
-        "$resolved" != /storage/emulated/0 && "$resolved" != "$(realpath -m "$HOME")" ]] || return 50
+        "$resolved" != /storage && "$resolved" != /storage/emulated &&
+        ! "$resolved" =~ ^/storage/emulated/[0-9]+$ && "$resolved" != "$(realpath -m "$HOME")" ]] || return 50
+    if [[ "$resolved" == /storage/emulated/* ]]; then
+        shared_root="$(shared_storage_root)"
+        [[ -n "$shared_root" && "$resolved" == "$shared_root/"* ]] || return 50
+    fi
     destination="$(realpath -m "$ST_HOME")" || return 50
     if [[ "$resolved" != "$destination" && ( "$resolved" == "$destination/"* || "$destination" == "$resolved/"* ) ]]; then return 51; fi
     [[ "$resolved" != "$(realpath -m "$LAUNCHER_HOME")" && "$resolved" != "$(realpath -m "$LAUNCHER_HOME")/"* ]] || return 51
@@ -4224,6 +4267,7 @@ case "${1:-doctor}" in
     delete-st) delete_st "${2:-}" ;;
     restore-st-trash) restore_st_trash "${2:-}" ;;
     backup-storage-status) backup_storage_status ;;
+    verify-shared-read) verify_shared_read "${2:-}" "${3:-}" ;;
     delete-backup) delete_backup "${2:-}" ;;
     delete-backups) delete_backups "${2:-}" ;;
     restore) restore_backup "${2:-}" ;;
