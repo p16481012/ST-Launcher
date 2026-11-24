@@ -60,18 +60,17 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
         }
     }
     if (transfer == null || transfer.phase in setOf(EncryptedBackupPhase.PICK_SOURCE, EncryptedBackupPhase.SOURCE_OPEN,
-            EncryptedBackupPhase.PICK_DESTINATION, EncryptedBackupPhase.DESTINATION_OPEN)) return
+            EncryptedBackupPhase.PICK_DESTINATION, EncryptedBackupPhase.DESTINATION_OPEN, EncryptedBackupPhase.RUNNING)) return
     // Deliberately NOT rememberSaveable: passwords never enter saved-instance state.
     var password by remember(transfer.id) { mutableStateOf("") }
     var again by remember(transfer.id) { mutableStateOf("") }
     var backupBefore by rememberSaveable(transfer.id) { mutableStateOf(true) }
     val export = transfer.mode == EncryptedBackupMode.EXPORT
     val entering = transfer.phase == EncryptedBackupPhase.PASSWORD
-    val running = transfer.phase == EncryptedBackupPhase.RUNNING
     val restoring = transfer.phase == EncryptedBackupPhase.RESTORE_CONFIRM
-    AlertDialog(onDismissRequest = { if (!running) viewModel.cancelEncryptedBackup() },
+    AlertDialog(onDismissRequest = viewModel::cancelEncryptedBackup,
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
-        title = { Text(when { entering -> "백업 암호"; running -> if(export) "암호화 저장 중" else "복호화·인증 중"; restoring -> "인증 완료 · 복원 확인"; else -> "백업 처리 실패" }) },
+        title = { Text(when { entering -> "백업 암호"; restoring -> "인증 완료 · 복원 확인"; else -> "백업 처리 실패" }) },
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (entering) {
                 Text(if(export) "12자 이상 암호를 설정하세요. 암호는 저장하지 않으며 분실하면 복구할 수 없습니다." else "백업을 만들 때 사용한 암호를 입력하세요. 전체 인증을 통과하기 전에는 복원하지 않습니다.")
@@ -80,12 +79,6 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
                 if(export) OutlinedTextField(again, { if(it.length<=1024) again=it }, label={Text("암호 다시 입력")}, singleLine=true,
                     visualTransformation=PasswordVisualTransformation(), keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password), modifier=Modifier.fillMaxWidth())
                 if(!export) Text("복호화 ZIP을 앱 전용 저장소에서 인증한 뒤 Termux에 전달합니다. 원본 외에 임시 ZIP 두 개와 해제 공간이 필요합니다.", style=MaterialTheme.typography.bodySmall)
-            } else if(running) {
-                if(transfer.total>0) {
-                    LinearProgressIndicator(progress = { (transfer.bytes.toDouble()/transfer.total).coerceIn(0.0,1.0).toFloat() }, modifier=Modifier.fillMaxWidth())
-                    Text("${transfer.bytes / 1048576} / ${transfer.total / 1048576} MiB")
-                } else V2BusyIndicator(linear = false)
-                Text("처리 후 인증·파일 기록까지 완료되어야 성공으로 표시합니다.", style=MaterialTheme.typography.bodySmall)
             } else if(restoring) {
                 Text("같은 항목의 현재 데이터는 백업 내용으로 교체됩니다. 백업 이후의 대화가 사라질 수 있습니다. 원본 암호화 파일은 유지합니다.")
                 if(state.environment.sillyTavernInstalled) Row(verticalAlignment=Alignment.CenterVertically) {
@@ -99,9 +92,8 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
             when {
                 entering -> TextButton(onClick = { val secret=password.toCharArray();password="";again="";viewModel.submitEncryptedBackupPassword(secret) },
                     enabled=password.isNotEmpty() && (!export || (password.length>=12 && password==again && password.any { !it.isWhitespace() }))) { Text(if(export) "저장 위치 선택" else "복호화·인증") }
-                running -> TextButton(onClick=viewModel::cancelEncryptedBackup) { Text("중단") }
                 restoring -> TextButton(onClick={viewModel.restoreDecryptedBackup(state.environment.sillyTavernInstalled && backupBefore)}, enabled=!state.environment.processRunning && !state.isWorking) {Text("검사 후 복원")}
             }
         },
-        dismissButton={if(!running) TextButton(onClick={password="";again="";viewModel.cancelEncryptedBackup()}) {Text("닫기")}})
+        dismissButton={TextButton(onClick={password="";again="";viewModel.cancelEncryptedBackup()}) {Text("닫기")}})
 }

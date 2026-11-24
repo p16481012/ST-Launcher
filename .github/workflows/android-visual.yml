@@ -81,14 +81,18 @@ jobs:
           adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           mkdir -p visual-results
           adb shell am instrument -w -r -e class app.tavernbridge.launcher.ui.V2VisualTest app.tavernbridge.stlauncher.debug.test/androidx.test.runner.AndroidJUnitRunner | tee visual-results/instrumentation.txt
-          grep -q 'OK (3 tests)' visual-results/instrumentation.txt
+          grep -q 'OK (6 tests)' visual-results/instrumentation.txt
       - name: Collect screenshots
         if: always()
         run: |
           mkdir -p visual-results
           if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then cp "$RUNNER_TEMP/emulator.log" visual-results/emulator.log; fi
           if adb get-state 2>/dev/null | grep -q device; then
-            for name in home setup-step-3 settings-index settings-display; do
+            names=(home setup-step-3 settings-index settings-display)
+            for screen in home settings backups; do for mode in light dark; do for contrast in normal high; do for accent in amber green wine slate; do
+              names+=("palette-$screen-$mode-$contrast-$accent")
+            done; done; done; done
+            for name in "${names[@]}"; do
               path="files/v2-visual/$name.png"
               if adb shell run-as app.tavernbridge.stlauncher.debug ls "$path" >/dev/null 2>&1; then
                 adb exec-out run-as app.tavernbridge.stlauncher.debug cat "$path" > "visual-results/$name.png"
@@ -105,6 +109,8 @@ jobs:
             test -s "visual-results/$name.png"
             file "visual-results/$name.png" | grep -q 'PNG image data'
           done
+          if ! python -c 'from PIL import Image' 2>/dev/null; then python -m pip install Pillow; fi
+          python scripts/check_visual_matrix.py visual-results
       - uses: actions/upload-artifact@v6
         if: always()
         with:

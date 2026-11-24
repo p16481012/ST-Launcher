@@ -7,13 +7,13 @@ import org.junit.Test
 
 class AdaptiveLayoutPolicyTest {
     @Test fun phoneAndNarrowSplitScreenKeepBottomNavigation() {
-        listOf(320f, 360f, 411f, 599f).forEach {
+        listOf(320f, 360f, 411f, 599f, 720f, 839f).forEach {
             assertEquals(LauncherNavigationMode.BOTTOM_BAR, chooseLauncherNavigation(it))
         }
     }
 
     @Test fun landscapeAndTabletUseRailAtMediumWindowWidth() {
-        listOf(600f, 720f, 840f, 1280f).forEach {
+        listOf(840f, 1024f, 1280f).forEach {
             assertEquals(LauncherNavigationMode.RAIL, chooseLauncherNavigation(it))
         }
     }

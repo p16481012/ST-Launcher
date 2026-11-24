@@ -5,6 +5,8 @@ import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
 import app.tavernbridge.launcher.model.BackupRequestCodec
 import app.tavernbridge.launcher.security.redactSensitiveText
+import org.json.JSONArray
+import org.json.JSONObject
 
 class OperationResultStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -27,8 +29,28 @@ class OperationResultStore(context: Context) {
         )
     }
 
-    fun save(summary: OperationResultSummary) {
+    fun recent(): List<OperationResultSummary> = runCatching {
+        val rows = JSONArray(preferences.getString("recent_results", null) ?: "[]")
+        (0 until minOf(rows.length(), 5)).map { i -> rows.getJSONObject(i).let { r ->
+            OperationResultSummary(r.getString("op"), r.getString("name"), r.getString("detail"), r.getBoolean("ok"),
+                r.optString("error"), r.getString("date"), r.getLong("ms"), r.getLong("seconds"))
+        } }
+    }.getOrDefault(emptyList()).ifEmpty { listOfNotNull(load()?.takeIf { it.operation in ACTIVITY_TYPES }) }
+
+    @Synchronized fun save(summary: OperationResultSummary) {
         preferences.edit()
+            .apply {
+                if (summary.operation in ACTIVITY_TYPES) {
+                    val rows = JSONArray()
+                    (listOf(summary) + recent()).distinctBy { it.operation to it.completedAtMillis }.take(5).forEach { r ->
+                        rows.put(JSONObject().put("op", r.operation).put("name", r.title.take(160))
+                            .put("detail", redactSensitiveText(r.detail, maxLength = 900)).put("ok", r.succeeded)
+                            .put("error", r.errorCode.take(100)).put("date", r.completedAt)
+                            .put("ms", r.completedAtMillis).put("seconds", r.durationSeconds))
+                    }
+                    putString("recent_results", rows.toString())
+                }
+            }
             .putString(KEY_OPERATION, summary.operation)
             .putString(KEY_TITLE, summary.title)
             .putString(KEY_DETAIL, redactSensitiveText(summary.detail, maxLength = 6_000))
@@ -43,6 +65,8 @@ class OperationResultStore(context: Context) {
     }
 
     private companion object {
+        val ACTIVITY_TYPES = setOf("start", "stop", "restart", "backup", "restore", "restore-selected",
+            "import-backup", "update", "update-preflight", "install")
         const val PREFERENCES_NAME = "operation_results"
         const val KEY_OPERATION = "operation"
         const val KEY_TITLE = "title"

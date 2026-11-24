@@ -26,6 +26,10 @@ fun isTavernPng(entry: TavernFileEntry): Boolean = !entry.isDirectory && entry.n
 
 const val MAX_FILE_SELECTION = 200
 
+private val fileDateStamp = Regex("""^\d{4}-(\d{2})-(\d{2})[T ](\d{2}:\d{2})(?::\d{2}.*)?$""")
+internal fun fileListDate(value: String): String = fileDateStamp.matchEntire(value)?.destructured
+    ?.let { (month, day, time) -> "$month/$day $time" } ?: value
+
 fun canSelectTavernFileForTrash(entry: TavernFileEntry): Boolean =
     entry.relativePath.isNotEmpty() && entry.relativePath.split('/').none { it == ".git" || it == "node_modules" } &&
         entry.revision.matches(Regex("[a-f0-9]{64}"))

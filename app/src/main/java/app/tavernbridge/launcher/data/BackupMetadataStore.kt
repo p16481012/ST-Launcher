@@ -17,7 +17,8 @@ internal class BackupMetadataStore(context: Context, scope: String) {
         return runCatching {
             val memo = preferences.getString("${prefix}memo:$fileName", "").orEmpty()
             require(memo == BackupRetentionPolicy.normalizeMemo(memo))
-            BackupAnnotation(preferences.getBoolean("${prefix}pin:$fileName", false), memo)
+            BackupAnnotation(preferences.getBoolean("${prefix}pin:$fileName", false), memo,
+                createdRevision = preferences.getString("${prefix}created:$fileName", "").orEmpty())
         }.getOrElse { BackupAnnotation(pinned = true, trusted = false) }
     }
 
@@ -28,9 +29,19 @@ internal class BackupMetadataStore(context: Context, scope: String) {
     }
 
     @Synchronized
+    fun rememberCreated(output: String) {
+        val receipt = output.lineSequence().filter { it.startsWith("backup_receipt=") }.singleOrNull()?.removePrefix("backup_receipt=") ?: return
+        val name = receipt.substringBefore('|')
+        val revision = receipt.substringAfter('|', "")
+        if (BackupRetentionPolicy.validFileName(name) && revision.matches(Regex("[a-f0-9]{64}"))) {
+            preferences.edit().putString("${prefix}created:$name", revision).apply()
+        }
+    }
+
+    @Synchronized
     fun save(fileName: String, pinned: Boolean, memo: String): BackupAnnotation {
         require(BackupRetentionPolicy.validFileName(fileName))
-        val state = BackupAnnotation(pinned, BackupRetentionPolicy.normalizeMemo(memo))
+        val state = load(fileName).copy(pinned = pinned, memo = BackupRetentionPolicy.normalizeMemo(memo), trusted = true)
         check(preferences.edit().putBoolean("${prefix}pin:$fileName", state.pinned)
             .putString("${prefix}memo:$fileName", state.memo).commit()) { "백업 고정·메모를 저장하지 못했습니다. 다시 시도해 주세요." }
         return state

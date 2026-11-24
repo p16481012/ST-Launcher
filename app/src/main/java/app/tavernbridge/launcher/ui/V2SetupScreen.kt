@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -21,13 +22,13 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.setupEligibleStep
+import app.tavernbridge.launcher.ui.theme.V2Mono
 
 private val setupLabels = listOf("Termux 설치", "실행 권한 허용", "외부 명령 허용", "연결 확인", "SillyTavern 설치")
 
@@ -60,7 +61,7 @@ internal fun SetupScreen(
     val done = step == 5 && eligible == 5 && env.sillyTavernInstalled
     val ready = !state.isWorking && state.termuxSetup.status != TermuxSetupStatus.CHECKING
     var showFullCommand by rememberSaveable { mutableStateOf(false) }
-    var copied by rememberSaveable { mutableStateOf(false) }
+    var copied by rememberSaveable(setupCommand) { mutableStateOf(false) }
     var showImport by rememberSaveable { mutableStateOf(false) }
     var existingActions by rememberSaveable { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
@@ -72,7 +73,7 @@ internal fun SetupScreen(
         val minimumHeight = maxHeight
         key(step) {
             Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().verticalScroll(rememberScrollState())
-                .heightIn(min = minimumHeight).padding(horizontal = 24.dp, vertical = 16.dp)) {
+                .heightIn(min = minimumHeight).padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (step > 1) TextButton(onClick = { requested = step - 1 }, enabled = ready,
                         contentPadding = PaddingValues(horizontal = 2.dp)) { Text("이전으로") }
@@ -80,7 +81,7 @@ internal fun SetupScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         repeat(5) { index ->
                             Surface(Modifier.weight(1f).height(3.dp), shape = CircleShape,
-                                color = if (index < step) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.outlineVariant) {}
+                                color = if (index < step) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant) {}
                         }
                     }
                     if (step < 5) TextButton(onClick = onLeave, enabled = ready, contentPadding = PaddingValues(horizontal = 4.dp)) {
@@ -100,6 +101,8 @@ internal fun SetupScreen(
                     }
                 }
                 Spacer(Modifier.height(44.dp))
+                Text("$step / 5", fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(when (step) {
                     1 -> "Termux부터\n설치해요"
                     2 -> "실행 권한을\n허용해요"
@@ -112,7 +115,7 @@ internal fun SetupScreen(
                 Text(when (step) {
                     1 -> "SillyTavern은 Termux 안에서 돌아가요.\nF-Droid에서 Termux를 설치하고 한 번 열어 주세요."
                     2 -> "Android에서 런처가 Termux에 명령을 보낼 수 있게 ‘Termux 환경에서 명령 실행’을 허용해 주세요."
-                    3 -> "Termux의 빈 곳을 길게 눌러 붙여 넣고 Enter를 누르세요. 런처로 돌아온 뒤 연결을 확인해요."
+                    3 -> "명령을 복사하고 Termux를 여세요. 빈 곳을 길게 눌러 붙여 넣고 Enter를 누른 뒤, 여기서 ‘실행했어요’를 눌러요."
                     4 -> "관리 스크립트를 연결하고 기존 설치를 확인해요. 지금 있는 파일을 지우거나 덮어쓰지 않아요."
                     else -> if (done) "처음 한 번만 필요한 설정을 모두 마쳤어요." else "처음이라면 정식 버전인 Release를 선택하세요. 이미 쓰던 폴더나 설치 ZIP도 가져올 수 있어요."
                 }, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -122,12 +125,18 @@ internal fun SetupScreen(
                         Surface(color = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface,
                             shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row { Text("Termux", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-                                    Text(if (copied) "복사됨" else "명령 미리보기", style = MaterialTheme.typography.labelMedium) }
-                                if (showFullCommand) SelectionContainer { Text(setupCommand, fontFamily = FontFamily.Monospace,
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Termux", Modifier.weight(1f), fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium)
+                                    TextButton(onClick = copy, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.inverseOnSurface)) {
+                                        Icon(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, null, Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(if (copied) "복사됨" else "명령 복사")
+                                    }
+                                }
+                                if (showFullCommand) SelectionContainer { Text(setupCommand, fontFamily = V2Mono,
                                     style = MaterialTheme.typography.bodyMedium) }
                                 else Text(setupCommand.take(82) + if (setupCommand.length > 82) "…" else "",
-                                    fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium)
+                                    fontFamily = V2Mono, style = MaterialTheme.typography.bodyMedium)
                             }
                         }
                         TextButton(onClick = { showFullCommand = !showFullCommand }) { Text(if (showFullCommand) "전체 명령 접기" else "복사될 전체 명령 보기") }
@@ -167,6 +176,8 @@ internal fun SetupScreen(
                 }
                 Spacer(Modifier.weight(1f))
                 Spacer(Modifier.height(24.dp))
+                V2BottomActions {
+                Column {
                 when (step) {
                     1 -> {
                         SetupPrimary(if (env.termuxInstalled) "다음" else "F-Droid에서 받기", ready) {
@@ -182,7 +193,7 @@ internal fun SetupScreen(
                         SetupQuiet("앱 권한 설정 열기", ready, onOpenPermissionSettings)
                     }
                     3 -> {
-                        SetupPrimary("복사하고 Termux 열기", ready) { copy(); onOpenTermux() }
+                        SetupPrimary("Termux 열기", ready, onOpenTermux)
                         SetupQuiet(if (state.termuxSetup.verified) "다음" else if (ready) "실행했어요 · 연결 확인" else "연결 확인 중…", ready) {
                             if (state.termuxSetup.verified) requested = 4 else onConfirmFirstConnection()
                         }
@@ -190,8 +201,10 @@ internal fun SetupScreen(
                     4 -> SetupPrimary(if (env.managerConnected) "다음" else "연결 확인", ready && state.termuxSetup.verified) {
                         if (env.managerConnected) requested = 5 else onConnect()
                     }
-                    else -> if (done) SetupPrimary("홈으로", ready, onLeave)
+                    else -> if (done) SetupPrimary("시작하기", ready, onLeave)
                         else SetupPrimary("${state.selectedInstallBranch.label} 설치", canInstall, onInstall)
+                }
+                }
                 }
             }
         }

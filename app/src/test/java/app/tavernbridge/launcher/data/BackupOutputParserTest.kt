@@ -30,6 +30,7 @@ class BackupOutputParserTest {
         assertTrue(parsed.first().includesSecrets)
         assertEquals(null, parsed.first().characterFiles)
         assertEquals(null, parsed.first().chatFiles)
+        assertEquals(null, parsed.first().extensionCount)
     }
 
     @Test
@@ -55,10 +56,23 @@ class BackupOutputParserTest {
         val withCounts = BackupOutputParser.parse("$record\t3\t0").single()
         assertEquals(3, withCounts.characterFiles)
         assertEquals(0, withCounts.chatFiles)
+        val revision = "9".repeat(64)
+        val withExtensions = BackupOutputParser.parse("$record\t3\t0\t$revision\t12").single()
+        assertEquals(revision, withExtensions.revision)
+        assertEquals(12, withExtensions.extensionCount)
         for (bad in listOf("-1", "500001", "99999999999999", "broken", "")) {
-            val unknown = BackupOutputParser.parse("$record\t$bad\t$bad").single()
+            val unknown = BackupOutputParser.parse("$record\t$bad\t$bad\t$revision\t$bad").single()
             assertEquals(null, unknown.characterFiles)
             assertEquals(null, unknown.chatFiles)
+            assertEquals(null, unknown.extensionCount)
+        }
+    }
+
+    @Test fun missingOrInvalidSafetyInventoryIsNotZero() {
+        assertEquals(0, BackupOutputParser.safetyCopies("safety_copies=0"))
+        assertEquals(3, BackupOutputParser.safetyCopies("zip\nsafety_copies=3\n"))
+        for (bad in listOf("", "safety_copies=-1", "safety_copies=3\nsafety_copies=3", "safety_copies=40000000")) {
+            assertEquals(null, BackupOutputParser.safetyCopies(bad))
         }
     }
 

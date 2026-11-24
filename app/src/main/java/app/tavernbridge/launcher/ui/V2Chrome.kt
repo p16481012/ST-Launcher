@@ -16,6 +16,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalAccessibilityManager
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import kotlinx.coroutines.delay
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -36,7 +41,7 @@ internal fun V2BottomSheet(onClose: () -> Unit, content: @Composable ColumnScope
                 val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                 Spacer(Modifier.matchParentSize().clickable(interactionSource = interaction, indication = null, onClick = onClose))
                 Surface(Modifier.widthIn(max = 640.dp).fillMaxWidth(),
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.surface) {
+                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), color = MaterialTheme.colorScheme.surface) {
                     Column(Modifier.navigationBarsPadding()) {
                         Box(Modifier.fillMaxWidth().height(40.dp).pointerInput(onClose) {
                             var dy = 0f
@@ -52,6 +57,7 @@ internal fun V2BottomSheet(onClose: () -> Unit, content: @Composable ColumnScope
             }
         }
     } else ModalBottomSheet(onDismissRequest = onClose, containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), tonalElevation = 0.dp,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) { body() }
 }
 
@@ -63,7 +69,7 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
             Row(Modifier.fillMaxWidth().selectableGroup()) {
                 launcherTabs.forEach { tab ->
                     val active = tab == current
-                    val ink = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                    val ink = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline
                     Column(Modifier.weight(1f).heightIn(min = 65.dp)
                         .selectable(active, role = Role.Tab, onClick = { onSelect(tab) }).padding(vertical = 6.dp),
                         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -77,17 +83,37 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
     }
 }
 
+internal val LocalV2NoticeHost = staticCompositionLocalOf<SnackbarHostState?> { null }
+
+@Composable
+internal fun V2BottomActions(content: @Composable () -> Unit) {
+    if (LocalV2NoticeHost.current?.currentSnackbarData == null) content()
+}
+
+internal suspend fun showV2Notice(host: SnackbarHostState, message: String, actionLabel: String? = null): SnackbarResult =
+    host.showSnackbar(message, actionLabel, withDismissAction = true, duration = SnackbarDuration.Indefinite)
+
 @Composable
 internal fun V2NoticeHost(host: SnackbarHostState) {
-    SnackbarHost(hostState = host) { data ->
+    host.currentSnackbarData?.let { data ->
         key(data) {
+            val accessibility = LocalAccessibilityManager.current
+            LaunchedEffect(data, accessibility) {
+                delay(accessibility?.calculateRecommendedTimeoutMillis(5_000L, true, true, true) ?: 5_000L)
+                data.dismiss()
+            }
             val swipe = rememberSwipeToDismissBoxState()
             LaunchedEffect(swipe.currentValue) {
                 if (swipe.currentValue != SwipeToDismissBoxValue.Settled) data.dismiss()
             }
             SwipeToDismissBox(state = swipe, backgroundContent = {}) {
-                Snackbar(snackbarData = data, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(14.dp))
+                Snackbar(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
+                    action = data.visuals.actionLabel?.let { label -> { TextButton(onClick = data::performAction) {
+                        Text(label, color = MaterialTheme.colorScheme.inversePrimary)
+                    } } }, dismissAction = { TextButton(onClick = data::dismiss) {
+                        Text("닫기", color = MaterialTheme.colorScheme.inverseOnSurface)
+                    } }) { Text(data.visuals.message) }
             }
         }
     }

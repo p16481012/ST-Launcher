@@ -48,6 +48,7 @@ try {
         makeTrash('1234-12345678-abcd-abcd-abcd-123456789abc', 'data/한글');
         const list = rows(run('list'));
         assert.equal(list.length, 4); assert.equal(list.filter(row => row[1] === 'trash')[0][9], '1');
+        assert.equal(run('count').trim(), 'safety_copies=3', 'do not count trash or unrelated files');
     });
     check('incomplete snapshot scratch is never selectable', () => {
         fs.mkdirSync(path.join(snapshot, '.st-safety-unfinished'));

@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,7 +35,7 @@ fun ExtensionManagerDialog(
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     var bulkRevisions by remember { mutableStateOf<Map<String,String>?>(null) }
     var info by rememberSaveable { mutableStateOf(false) }
-    val entries = inventory?.items.orEmpty().sortedByDescending { it.remoteAhead ?: -1 }
+    val entries = remember(inventory) { extensionDisplayOrder(inventory?.items.orEmpty()) }
     val outdated = entries.filter { it.canUpdate && (it.remoteAhead ?: 0) > 0 }
     val canChange = canModify && !busy && !loading && inventory?.recoveryStatus == "none"
     val select: (ManagedExtension, ExtensionAction) -> Unit = { item, action ->
@@ -42,24 +43,23 @@ fun ExtensionManagerDialog(
     }
     val clearSelection = { selectedId = null; selectedRevision = null; selectedAction = null }
     ToolPaneHost(embedded, { if (!busy) onClose() }) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val checked = entries.count { it.remoteAhead != null }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (inventory == null) "설치된 확장 확인" else "${entries.size}개${if (inventory.nextCursor != null) "+" else ""} 설치됨",
-                        Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                    Text(if (inventory == null) "설치된 확장 확인" else listOf(
+                        "${entries.size}개${if (inventory.nextCursor != null) "+" else ""} 설치됨", if (checked == 0 && entries.any { it.canUpdate }) "업데이트 미확인" else "업데이트 ${outdated.size}개",
+                        "꺼짐 ${entries.count { it.disabled }}개").joinToString(" · "),
+                        Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     IconButton(onClick = onRefresh, enabled = !loading && !busy) { Icon(Icons.Outlined.Refresh, "확장 목록 새로고침") }
                 }
                 if (loading || busy) V2BusyIndicator(Modifier.fillMaxWidth())
-                val checked = entries.count { it.remoteAhead != null }
-                Text(listOfNotNull(if (checked > 0) "업데이트 ${outdated.size}개" else null,
-                    "꺼짐 ${entries.count { it.disabled }}개").joinToString("  ·  "), style = MaterialTheme.typography.bodySmall)
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("설치된 확장", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                            TextButton(onClick = { info = !info }) { Text("안내") }
+                            IconButton(onClick = { info = true }) { Icon(Icons.Outlined.Info, "확장 프로그램 설명") }
                         }
-                        if (info) Text("목록은 로컬 파일 상태예요. 꺼짐은 런처가 비활성화한 확장만 뜻해요. 새 버전 확인은 지원하는 HTTPS GitHub 원본에만 연결하며 파일은 변경하지 않아요. 확장을 변경하려면 서버를 먼저 종료하세요.", style = MaterialTheme.typography.bodySmall)
                         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus != null && inventory.recoveryStatus != "none") Text(inventory.recoveryMessage, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus == "pending") OutlinedButton(
@@ -72,10 +72,17 @@ fun ExtensionManagerDialog(
                     items(entries, key = { it.id }) { item ->
                         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
                             Column {
-                            ToolRow(item.name, listOfNotNull(item.version.ifBlank { null }, item.remoteAhead?.takeIf { it > 0 }?.let { "새 커밋 ${it}개" }).joinToString(" → "),
-                                when { item.disabled -> "꺼짐"; (item.remoteAhead ?: 0) > 0 -> "업데이트"; item.remoteAhead == 0 -> "최신"; else -> "" },
-                                icon = Icons.Outlined.Extension, accent = (item.remoteAhead ?: 0) > 0,
-                                onClick = { openId = if (openId == item.id) null else item.id })
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.weight(1f)) {
+                                    ToolRow(item.name, extensionVersionLabel(item),
+                                        when { item.disabled -> "꺼짐"; item.remoteAhead == 0 -> "최신"; else -> "" },
+                                        icon = Icons.Outlined.Extension, singleLine = true, dataNote = true,
+                                        onClick = { openId = if (openId == item.id) null else item.id })
+                                }
+                                if (item.canUpdate && (item.remoteAhead ?: 0) > 0)
+                                    TextButton({ select(item, ExtensionAction.UPDATE) }, enabled = canChange) { Text("업데이트", color = MaterialTheme.colorScheme.secondary) }
+                            }
+                            ToolDivider()
                             if (openId == item.id)
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("${item.scope} · ${if (item.disabled) "런처에서 비활성" else "사용 가능"}")
@@ -97,13 +104,16 @@ fun ExtensionManagerDialog(
                         OutlinedButton(onClick = onMore, enabled = !busy && !loading, modifier = Modifier.fillMaxWidth()) { Text("확장 목록 더 보기") }
                     }
                 }
+                V2BottomActions {
                 if (onCheckUpdates != null) OutlinedButton(onClick = onCheckUpdates, enabled = !loading && !busy && entries.any { it.canUpdate },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("새 버전 확인") }
                 if (onUpdateAll != null && outdated.isNotEmpty()) Button(onClick = { bulkRevisions = outdated.associate { it.id to it.revision } }, enabled = canChange,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("확인된 ${outdated.size}개 모두 업데이트") }
                 if (!embedded) TextButton(onClick = onClose, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("닫기") }
+                }
             }
         }
+        if (info) V2Explanation("확장 프로그램", "공개 GitHub 원본에서 버전이나 새 커밋 수만 확인해요. 확장을 변경하려면 서버를 먼저 종료해 주세요.", { info = false })
         bulkRevisions?.let { expected ->
             val targets = outdated.filter { expected[it.id] == it.revision }
             AlertDialog(onDismissRequest = { bulkRevisions = null }, title = { Text("확장 ${expected.size}개를 업데이트할까요?") },

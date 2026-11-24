@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -75,6 +76,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
+import app.tavernbridge.launcher.model.canModifyTavernFiles
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -97,6 +99,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import app.tavernbridge.launcher.ui.theme.V2Mono
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -159,8 +162,7 @@ private fun Text(
     MaterialText(
         text = formatUiText(
             text = text,
-            keepWordsTogether = fontFamily != FontFamily.Monospace &&
-                style.fontFamily != FontFamily.Monospace && LocalDensity.current.fontScale < 1.3f,
+            keepWordsTogether = fontFamily != V2Mono && style.fontFamily != V2Mono && LocalDensity.current.fontScale < 1.3f,
         ),
         modifier = modifier,
         color = color,
@@ -229,10 +231,31 @@ fun LauncherApp(viewModel: LauncherViewModel) {
 private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewModel) {
     BackupTransferHost(state.backupTransfer, viewModel)
     EncryptedBackupHost(state, viewModel)
+    val localTransfer = localTransferProgress(state.backupTransfer, state.encryptedBackup)
+    var localFolded by rememberSaveable(localTransfer?.key) { mutableStateOf(false) }
+    val localStarted = rememberSaveable(localTransfer?.key) { System.currentTimeMillis() }
+    if (localTransfer != null && !localFolded) {
+        WorkingOverlay(localTransfer.work.phase, localTransfer.work, localStarted, localTransfer.work.cancellationRequested,
+            onCancel = if (localTransfer.encrypted) viewModel::cancelEncryptedBackup else viewModel::cancelBackupTransfer,
+            onFold = { localFolded = true })
+    }
     EntryRequestDialog(state.pendingEntry, viewModel.entryActionGate(), viewModel::confirmEntryAction, viewModel::dismissEntryAction)
     val context = LocalContext.current
     val resources = LocalResources.current
     val snackbarHostState = remember { SnackbarHostState() }
+    var progressFolded by rememberSaveable(state.workingStartedAtMillis) { mutableStateOf(false) }
+    var lastOfferedUndo by rememberSaveable { mutableStateOf(state.lastTrashedEntryId) }
+    LaunchedEffect(state.isWorking, state.lastTrashedEntryId, state.lastOperationResult?.completedAtMillis) {
+        if (state.isWorking) return@LaunchedEffect
+        val receipt = state.lastTrashedEntryId
+        if (lastOfferedUndo == receipt) return@LaunchedEffect
+        lastOfferedUndo = receipt
+        if (receipt.isBlank() || state.lastOperationResult?.let { it.operation == "delete-st" && it.succeeded } != true) return@LaunchedEffect
+        val result = showV2Notice(snackbarHostState, "휴지통으로 옮겼어요.", "실행 취소")
+        val current = viewModel.state.value
+        if (result == SnackbarResult.ActionPerformed && current.lastTrashedEntryId == receipt && current.canModifyTavernFiles())
+            viewModel.undoLastTrashedEntry()
+    }
     var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
     var welcomeAfterInstall by rememberSaveable { mutableStateOf(false) }
     val showWelcome = welcomeAfterInstall && state.environment.sillyTavernInstalled &&
@@ -327,12 +350,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
 
     val requestReset: (Boolean) -> Unit = { keepBackup ->
-        val lastBackupAt = state.backupReminder.lastBackupAtMillis
-        val backupDate = if (lastBackupAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(lastBackupAt)) else "확인된 기록 없음"
         confirmation = Confirmation(
-            title = "SillyTavern을 완전히 초기화할까요?",
-            description = "현재 캐릭터·채팅·설정·확장 프로그램을 제거하고 같은 브랜치를 새로 설치합니다. 재설치가 실패하면 현재 설치로 자동 복구하며, 휴대폰 Download의 ZIP 백업은 삭제하지 않습니다. 서버를 먼저 종료해 주세요.\n\n최근 사용자 데이터 백업 생성 기록: $backupDate\n생성 기록만으로 파일이 남아 있다고 보장하지는 않습니다.",
-            confirmLabel = "초기화 후 재설치",
+            title = "SillyTavern을 초기화할까요?",
+            description = "채팅·캐릭터·설정·확장 프로그램이 지워져요. 백업이 없으면 되돌릴 수 없어요. Download의 백업은 남아요.",
+            confirmLabel = "초기화",
             action = ConfirmationAction.RESET,
             allowBackup = true, backupBefore = keepBackup,
             withoutBackupLabel = "백업 없이 초기화",
@@ -343,11 +364,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         val notice = state.error ?: state.message
         if (notice != null) {
             val retryable = state.error != null && state.lastOperationResult?.canRetry == true
-            val result = snackbarHostState.showSnackbar(
+            val result = showV2Notice(snackbarHostState,
                 message = notice,
                 actionLabel = if (retryable) "다시 시도" else null,
-                withDismissAction = retryable,
-                duration = androidx.compose.material3.SnackbarDuration.Short,
             )
             viewModel.consumeNotice()
             if (result == SnackbarResult.ActionPerformed) viewModel.retryLastOperation()
@@ -492,11 +511,18 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     BackHandler(section == MainSection.SETUP && !setupFullScreen && !state.isWorking) {
         selectTab(MainSection.LOGS)
     }
+    androidx.compose.runtime.CompositionLocalProvider(LocalV2NoticeHost provides snackbarHostState) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { V2NoticeHost(snackbarHostState) },
-        bottomBar = { if (!setupFullScreen && !useRail) V2TabBar(tab, selectTab) },
+        bottomBar = { Column {
+            if (localTransfer != null && localFolded && snackbarHostState.currentSnackbarData == null)
+                WorkingMiniBar(localTransfer.work.phase, localTransfer.work) { localFolded = false }
+            if (state.isWorking && progressFolded && snackbarHostState.currentSnackbarData == null)
+                WorkingMiniBar(state.workingLabel, state.workProgress) { progressFolded = false }
+            V2NoticeHost(snackbarHostState)
+            if (!setupFullScreen && !useRail) V2TabBar(tab, selectTab)
+        } },
     ) { padding ->
         Box(
             modifier = Modifier
@@ -631,7 +657,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onPickInstallation = pickInstallation,
                             onInspectInstallation = viewModel::inspectExistingInstallation,
                             onImportBackup = pickBackup,
-                            onCopied = { viewModel.showMessage("명령을 복사하고 Termux를 열었습니다.") },
+                            onCopied = {},
                         )
                     }
                     MainSection.LOGS -> V2ToolsScreen(state, viewModel,
@@ -678,15 +704,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onRefresh = viewModel::loadPreviousVersions,
                     onChange = viewModel::changeVersion, onClose = viewModel::closePreviousVersions)
             }
-            if (state.isWorking && !(state.fileBrowserOpen && state.fileBrowserMutating)) {
-                WorkingOverlay(
-                    label = state.workingLabel,
-                    progress = state.workProgress,
-                    startedAtMillis = state.workingStartedAtMillis,
-                    cancellationRequested = state.cancellationRequested,
-                    onCancel = viewModel::cancelCurrentOperation,
-                )
-            }
             if (state.fileBrowserOpen && !(state.section == MainSection.LOGS && state.toolPage == ToolPage.FILES)) {
                 TavernFileManagerDialog(
                     state = state,
@@ -704,7 +721,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onPreview = viewModel::previewSillyTavernFile,
                     preview = state.filePreview,
                     onClosePreview = viewModel::closeFilePreview,
-                    onUndoTrash = viewModel::undoLastTrashedEntry,
                     onImport = {
                         runCatching { fileImportPicker.launch(arrayOf("*/*")) }
                             .onFailure { viewModel.showMessage("파일 선택 화면을 열 수 없습니다.") }
@@ -714,10 +730,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             .onFailure { viewModel.showMessage("폴더 선택 화면을 열 수 없습니다.") }
                     },
                     onClose = viewModel::closeSillyTavernFolder,
-                    onCancelOperation = viewModel::cancelCurrentOperation,
                 )
             }
+            if (state.isWorking && !progressFolded) {
+                WorkingOverlay(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
+                    state.cancellationRequested, viewModel::cancelCurrentOperation) { progressFolded = true }
+            }
         }
+    }
     }
     }
 }
@@ -895,24 +915,13 @@ private fun EnvironmentCheckingCard(
 
 @Composable
 private fun EmptyHomeCard(onSetup: () -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        shape = RoundedCornerShape(28.dp),
-    ) {
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(
-                Icons.Outlined.InstallMobile,
-                contentDescription = null,
-                modifier = Modifier.size(36.dp),
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
-            Text("설치를 준비해볼까요?", style = MaterialTheme.typography.headlineMedium)
-            Text(
-                "기존 설치가 있다면 그대로 연결하고, 없다면 Release 또는 Staging을 선택해 설치할 수 있어요.",
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .76f),
-            )
-            Button(onClick = onSetup, modifier = Modifier.fillMaxWidth()) {
-                Text("설정 이어하기")
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("홈", style = MaterialTheme.typography.displaySmall)
+        Surface(onClick = onSetup, modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(14.dp)) {
+            Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("설정 이어하기", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.secondary)
             }
         }
     }
@@ -1103,7 +1112,7 @@ internal fun BackupStorageSetupCard(
                 )
             }
             Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp)) {
-                Text(command, Modifier.padding(12.dp), fontFamily = FontFamily.Monospace)
+                Text(command, Modifier.padding(12.dp), fontFamily = V2Mono)
             }
             Button(
                 onClick = {
@@ -1359,7 +1368,7 @@ private fun ManagementScreen(
                                         Text(
                                             updateReport.modifiedFiles.joinToString("\n"),
                                             color = MaterialTheme.colorScheme.onErrorContainer,
-                                            fontFamily = FontFamily.Monospace,
+                                            fontFamily = V2Mono,
                                             style = MaterialTheme.typography.bodySmall,
                                         )
                                     }
@@ -1444,8 +1453,8 @@ private fun WorkingOverlay(
     startedAtMillis: Long,
     cancellationRequested: Boolean,
     onCancel: () -> Unit,
+    onFold: () -> Unit,
 ) {
-    var collapsed by rememberSaveable(startedAtMillis) { mutableStateOf(false) }
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
     val finalizing = progress?.status == "success" && !finalConfirmation
     val measuredPercent = progress?.measuredPercent.takeUnless { finalizing }
@@ -1460,6 +1469,19 @@ private fun WorkingOverlay(
         else -> ""
     }
     val reduce = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
+    val tracker = remember(startedAtMillis, progress?.phaseStartedAtMillis, progress?.phase, progress?.progressMode,
+        progress?.totalBytes, progress?.totalFiles) { app.tavernbridge.launcher.model.PhaseEta() }
+    var eta by remember(tracker) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(tracker, progress?.completedBytes, progress?.completedFiles, measuredPercent) {
+        while (true) {
+            eta = if (measuredPercent == null || progress == null) null else {
+                val bytes = progress.progressMode == "bytes"
+                tracker.observe(android.os.SystemClock.elapsedRealtime(), if (bytes) progress.completedBytes else progress.completedFiles,
+                    if (bytes) progress.totalBytes else progress.totalFiles)
+            }
+            kotlinx.coroutines.delay(2_000)
+        }
+    }
     val title = label.ifBlank { phase }
     val bar: @Composable () -> Unit = {
         if (measuredPercent != null) LinearProgressIndicator(progress = { measuredPercent / 100f },
@@ -1467,27 +1489,11 @@ private fun WorkingOverlay(
         else if (!reduce) LinearProgressIndicator(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth().height(4.dp))
         else HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.outlineVariant)
     }
-    if (collapsed) {
-        Box(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.BottomCenter) {
-            Surface(onClick = { collapsed = false }, modifier = Modifier.widthIn(max = 550.dp).fillMaxWidth(),
-                color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = RoundedCornerShape(14.dp)) {
-                Column {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-                        measuredPercent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono) }
-                        Icon(Icons.Outlined.KeyboardArrowUp, stringResource(R.string.ui_expand_progress))
-                    }
-                    bar()
-                }
-            }
-        }
-    } else V2BottomSheet(onClose = { collapsed = true }) {
+    V2BottomSheet(onClose = onFold) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            measuredPercent?.let { Text("$it%", style = MaterialTheme.typography.titleLarge) }
-            IconButton(onClick = { collapsed = true }) {
+            measuredPercent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono, style = MaterialTheme.typography.titleLarge) }
+            IconButton(onClick = onFold) {
                 Icon(Icons.Outlined.KeyboardArrowDown, stringResource(R.string.ui_collapse_progress))
             }
         }
@@ -1498,8 +1504,30 @@ private fun WorkingOverlay(
                 style = MaterialTheme.typography.bodySmall)
             WorkElapsedTime(startedAtMillis)
         }
+        eta?.let { seconds ->
+            val estimate = when { seconds < 60 -> "${seconds}초"; seconds < 3600 -> "${(seconds + 59) / 60}분"; else -> "${seconds / 3600}시간 ${seconds % 3600 / 60}분" }
+            Text("이 단계 약 $estimate 남음", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono,
+                style = MaterialTheme.typography.bodySmall)
+        }
         WorkProgressLog(progress?.logText.orEmpty(), initiallyExpanded = false) {
             OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel, modifier = Modifier.weight(1f))
+        }
+    }
+}
+@Composable
+private fun WorkingMiniBar(label: String, progress: app.tavernbridge.launcher.model.WorkProgress?, expand: () -> Unit) {
+    val percent = progress?.measuredPercent.takeUnless { progress?.status == "success" }
+    Surface(onClick = expand, color = MaterialTheme.colorScheme.surface) {
+        Column {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                percent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono) }
+                Icon(Icons.Outlined.KeyboardArrowUp, stringResource(R.string.ui_expand_progress))
+            }
+            if (percent != null) LinearProgressIndicator(progress = { percent / 100f },
+                color = MaterialTheme.colorScheme.secondary, modifier = Modifier.fillMaxWidth().height(3.dp))
+            else HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
 }

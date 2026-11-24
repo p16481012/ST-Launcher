@@ -19,13 +19,14 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import kotlinx.coroutines.launch
 
 /** Real Compose layouts on device. Fixtures cannot call Termux, use the network, or alter user preferences. */
 @RunWith(AndroidJUnit4::class)
 class V2VisualTest {
     @get:Rule val compose = createComposeRule()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
-    private val wide get() = context.resources.configuration.screenWidthDp >= 720
+    private val wide get() = context.resources.configuration.screenWidthDp >= 840
     private val prefs = DisplayPreferences(reducedMotion = true)
     private val fixture = LauncherUiState(isWorking = false, environmentChecked = true, displayPreferences = prefs,
         environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true, managerConnected = true,
@@ -109,7 +110,77 @@ class V2VisualTest {
         capture("settings-display")
         compose.onNodeWithText("크게").performClick()
         compose.runOnIdle { assertEquals(LauncherTextSize.LARGE, shown.textSize) }
-        if (!wide) compose.onNodeWithContentDescription("설정 목록으로").performClick()
+        if (!wide) compose.onNodeWithContentDescription("뒤로").performClick()
         compose.onAllNodesWithText("설정").onFirst().assertIsDisplayed()
+    }
+
+    @Test fun displayChoicesSurviveAStoreReopen() {
+        val testContext = InstrumentationRegistry.getInstrumentation().context
+        val store = app.tavernbridge.launcher.data.ThemePreferences(testContext)
+        val saved = prefs.copy(textSize = LauncherTextSize.LARGE, accent = LauncherAccent.WINE, highContrast = true)
+        store.saveTheme(AppTheme.DARK)
+        store.saveDisplay(saved)
+        val reopened = app.tavernbridge.launcher.data.ThemePreferences(testContext)
+        assertEquals(AppTheme.DARK, reopened.loadTheme())
+        assertEquals(saved, reopened.loadDisplay())
+    }
+
+    @Test fun noticeReplacesActionsAndDismissDoesNotUndo() {
+        lateinit var host: androidx.compose.material3.SnackbarHostState
+        var undo = 0
+        compose.setContent {
+            host = remember { androidx.compose.material3.SnackbarHostState() }
+            val scope = rememberCoroutineScope()
+            CompositionLocalProvider(LocalV2NoticeHost provides host) {
+                Column {
+                    V2BottomActions {
+                        androidx.compose.material3.Button({ scope.launch {
+                            if (showV2Notice(host, "휴지통으로 옮겼어요.", "실행 취소") == androidx.compose.material3.SnackbarResult.ActionPerformed) undo++
+                        } }) { androidx.compose.material3.Text("휴지통") }
+                    }
+                    V2NoticeHost(host)
+                }
+            }
+        }
+        compose.onNodeWithText("휴지통").performClick()
+        compose.onNodeWithText("휴지통").assertDoesNotExist()
+        compose.onNodeWithText("닫기").performClick()
+        compose.onNodeWithText("휴지통").assertIsDisplayed().performClick()
+        compose.onNodeWithText("실행 취소").performClick()
+        compose.runOnIdle { assertEquals(1, undo) }
+    }
+
+    @Test fun captureRealScreensAcrossEveryPalette() {
+        var selectedTheme by mutableStateOf(AppTheme.LIGHT)
+        var selectedAccent by mutableStateOf(LauncherAccent.AMBER)
+        var contrast by mutableStateOf(false)
+        var section by mutableStateOf(MainSection.HOME)
+        val archive = BackupArchive("SillyTavern-Backup-20261121.zip", 2048, "2026-11-21 14:02:00",
+            setOf(BackupCategory.USER_DATA), emptySet(), false, "1.13.2", branch = "release")
+        compose.setContent {
+            val display = prefs.copy(accent = selectedAccent, highContrast = contrast)
+            val state = fixture.copy(theme = selectedTheme, displayPreferences = display,
+                backups = listOf(archive), backupsLoaded = true, backupStorageReady = true)
+            SillyTavernLauncherTheme(selectedTheme, display) {
+                ScreenChrome(section) {
+                    when (section) {
+                        MainSection.HOME -> V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                        MainSection.SETTINGS -> V2DisplaySettings(state, {}, {}, wide)
+                        MainSection.BACKUPS -> V2BackupScreen(state = state, onCreateBackup = { _,_,_ -> }, onRefresh = {},
+                            onReminderChange = {}, onTransfer = { _,_ -> }, onOpenFolder = {}, onSafety = {}, onScan = {},
+                            onPreviewCleanup = { _,_ -> }, onSaveAnnotation = { _,_,_ -> }, onEncrypted = {}, onSelective = {},
+                            onImport = {}, storageSetupCommand = "", onTermux = {}, onCopied = {}, onRestore = {}, onDelete = {})
+                        else -> error("Unexpected screen")
+                    }
+                }
+            }
+        }
+        for (screen in listOf(MainSection.HOME, MainSection.SETTINGS, MainSection.BACKUPS))
+            for (brightness in listOf(AppTheme.LIGHT, AppTheme.DARK))
+                for (high in listOf(false, true))
+                    for (accent in LauncherAccent.entries) {
+                        compose.runOnIdle { section = screen; selectedTheme = brightness; selectedAccent = accent; contrast = high }
+                        capture("palette-${screen.name.lowercase()}-${brightness.name.lowercase()}-${if (high) "high" else "normal"}-${accent.name.lowercase()}")
+                    }
     }
 }

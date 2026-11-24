@@ -70,7 +70,7 @@ internal fun WorkProgressLog(logText: String, initiallyExpanded: Boolean = true,
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("로그", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (expanded) "기록 접기" else "기록 보기", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             actions()
             IconButton(
@@ -91,7 +91,7 @@ internal fun WorkProgressLog(logText: String, initiallyExpanded: Boolean = true,
                     Text(
                         logText.ifBlank { "아직 출력된 상세 로그가 없습니다." },
                         modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(12.dp),
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono,
                         fontSize = 11.sp,
                         lineHeight = 16.sp,
                     )

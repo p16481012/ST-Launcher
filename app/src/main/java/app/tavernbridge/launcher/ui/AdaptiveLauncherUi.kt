@@ -36,7 +36,7 @@ internal fun AdaptiveInfoRow(
     modifier: Modifier = Modifier,
 ) {
     val fontScale = LocalDensity.current.fontScale
-    val valueFont = if (monospace) FontFamily.Monospace else FontFamily.Default
+    val valueFont = if (monospace) app.tavernbridge.launcher.ui.theme.V2Mono else MaterialTheme.typography.bodyMedium.fontFamily
     BoxWithConstraints(modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
         if (shouldStackInfoRow(maxWidth.value, fontScale)) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -81,6 +81,8 @@ internal fun LauncherNavigationRail(
                         indicatorColor = MaterialTheme.colorScheme.surface,
                         selectedIconColor = MaterialTheme.colorScheme.onSurface,
                         selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unselectedIconColor = MaterialTheme.colorScheme.outline,
+                        unselectedTextColor = MaterialTheme.colorScheme.outline,
                     ),
                 )
             }

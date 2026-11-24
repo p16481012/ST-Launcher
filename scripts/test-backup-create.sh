@@ -26,6 +26,9 @@ setup() {
     put "$ST_HOME/data/default-user/group chats/group.jsonl" '{"mes":"fixture"}'
     put "$ST_HOME/data/default-user/secrets.json" 'excluded secret'
     put "$ST_HOME/data/default-user/extensions/example/index.js" 'extension'
+    put "$ST_HOME/data/default-user/extensions/example/manifest.json" '{}'
+    put "$ST_HOME/public/scripts/extensions/third-party/global/manifest.json" '{}'
+    put "$ST_HOME/public/scripts/extensions/third-party/global/example/manifest.json" 'not another extension'
     put "$ST_HOME/node_modules/ignored.js" ignored
     put "$ST_HOME/config.yaml" 'port: 8000'
     SOURCE_HASH="$(sha256sum "$ST_HOME/data/default-user/chats/selected.txt" | cut -d ' ' -f1)"
@@ -59,6 +62,8 @@ happy() {
     grep -Fq 'items=user_data,extensions,custom,config' <<< "$manifest" || fail 'Selection scope changed'
     grep -Fxq 'character_files=1' <<< "$manifest" || fail 'Character file count missing'
     grep -Fxq 'chat_files=2' <<< "$manifest" || fail 'Chat file count missing'
+    grep -Fxq 'extension_count=2' <<< "$manifest" || fail 'Extension count must ignore nested manifests'
+    grep -Eq '^backup_receipt=SillyTavern-Launcher-[^|]+\.zip\|[a-f0-9]{64}$' "$TEST_ROOT/$1.output" || fail 'Missing private-origin revision'
     [[ "$(unzip -Z1 "$archive" | sort | uniq -d | wc -l)" == 0 ]] || fail 'Duplicate archive entries'
     ! unzip -Z1 "$archive" | grep -Eq 'secrets.json|node_modules' || fail 'Excluded content included'
     [[ "$(sha256sum "$ST_HOME/data/default-user/chats/selected.txt" | cut -d ' ' -f1)" == "$SOURCE_HASH" ]] || fail 'Original changed'

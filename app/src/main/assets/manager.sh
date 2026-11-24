@@ -1836,7 +1836,7 @@ backup_metadata_valid() {
         # These fields were absent from early v1 backups.
         unsigned_decimal "${value:-0}" >/dev/null || return 1
     done
-    for field in character_files chat_files; do
+    for field in character_files chat_files extension_count; do
         value="$(printf '%s\n' "$manifest" | sed -n "s/^${field}=//p")"
         # Empty/missing is unknown for old archives, never a reason to rescan them.
         [[ -n "$value" ]] || continue
@@ -1851,8 +1851,9 @@ archive_content_counts() {
     unzip -Z1 "$1" 2>/dev/null | LC_ALL=C awk '
         { entries++; name=tolower($0); sub(/^\.\//, "", name)
           if (name ~ /^(data\/[^/]+|public)\/characters\/[^/]+\.png$/) characters++
-          if (name ~ /^(data\/[^/]+|public)\/(chats|group chats)\/.+\.jsonl$/) chats++ }
-        END { printf "entry_count=%d\ncharacter_files=%d\nchat_files=%d\n", entries, characters, chats }'
+          if (name ~ /^(data\/[^/]+|public)\/(chats|group chats)\/.+\.jsonl$/) chats++
+          if (name ~ /^(public\/scripts\/extensions\/third-party|data\/[^/]+\/extensions)\/[^/]+\/manifest\.json$/) extensions++ }
+        END { printf "entry_count=%d\ncharacter_files=%d\nchat_files=%d\nextension_count=%d\n", entries, characters, chats, extensions }'
 }
 
 ensure_restore_space() {
@@ -2047,14 +2048,24 @@ backup_selected() {
         write_progress 100 "백업 완료" "검증된 ZIP을 휴대폰 Download 폴더에 저장했습니다." success
     fi
     echo "backup=$output"
+    # The app records a receipt only for a successful manual backup. A copied
+    # archive's self-declared manifest must never establish local provenance.
+    local published_revision
+    published_revision="$(bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" revision "$DOWNLOAD_DIR" "${output##*/}" 2>/dev/null || true)"
+    if [[ "$published_revision" =~ ^[a-f0-9]{64}$ ]]; then printf 'backup_receipt=%s|%s\n' "${output##*/}" "$published_revision"; fi
     echo "size=$size"
 }
 
 list_backups() {
+    if [[ "${1:-}" == overview ]]; then
+        # Count only private safety copies, even when Download is empty.
+        # No archive payload or trashed directory walk; failure does not block listing.
+        bash "$SAFETY_INVENTORY_HELPER" count "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" 2>/dev/null || true
+    fi
     compgen -G "$DOWNLOAD_DIR/SillyTavern-Launcher-*.zip" >/dev/null || return 0
     ensure_archive_tools
     local file manifest format created items custom secrets version branch launcher_version expanded_bytes entry_count integrity
-    local required_restore_bytes available_restore_bytes character_files chat_files revision
+    local required_restore_bytes available_restore_bytes character_files chat_files revision extension_count
     available_restore_bytes="$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
     available_restore_bytes="$(unsigned_decimal "${available_restore_bytes:-0}" || echo 0)"
     shopt -s nullglob
@@ -2078,17 +2089,18 @@ list_backups() {
         integrity="$(printf '%s\n' "$manifest" | sed -n 's/^integrity=//p' | head -n 1)"
         character_files="$(printf '%s\n' "$manifest" | sed -n 's/^character_files=//p' | head -n 1)"
         chat_files="$(printf '%s\n' "$manifest" | sed -n 's/^chat_files=//p' | head -n 1)"
+        extension_count="$(printf '%s\n' "$manifest" | sed -n 's/^extension_count=//p' | head -n 1)"
         expanded_bytes="$(unsigned_decimal "${expanded_bytes:-0}")" || continue
         entry_count="$(unsigned_decimal "${entry_count:-0}")" || continue
         required_restore_bytes=$((expanded_bytes * 2 + 268435456))
         revision="$(bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" revision "$DOWNLOAD_DIR" "${file##*/}" 2>/dev/null || true)"
-        printf 'backup\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf 'backup\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$(printf '%s' "$(basename "$file")" | base64 -w 0)" "$(stat -c %s "$file" 2>/dev/null || wc -c < "$file")" \
             "$(printf '%s' "$created" | base64 -w 0)" "$(printf '%s' "$items" | base64 -w 0)" \
             "$(printf '%s' "$custom" | base64 -w 0)" "${secrets:-0}" "$(printf '%s' "$version" | base64 -w 0)" \
             "$(printf '%s' "$branch" | base64 -w 0)" "$(printf '%s' "$launcher_version" | base64 -w 0)" \
             "$expanded_bytes" "${entry_count:-0}" "$(printf '%s' "$integrity" | base64 -w 0)" \
-            "$required_restore_bytes" "$available_restore_bytes" "$character_files" "$chat_files" "$revision"
+            "$required_restore_bytes" "$available_restore_bytes" "$character_files" "$chat_files" "$revision" "$extension_count"
     done
 }
 
@@ -4571,7 +4583,7 @@ case "${1:-doctor}" in
     wake-lock-off) set_termux_wake_lock 0 ;;
     backup) backup_st ;;
     backup-select) backup_selected "${2:-}" "${3:-0}" "${4:-}" ;;
-    list-backups) list_backups ;;
+    list-backups) list_backups "${2:-}" ;;
     import-backup) import_backup "${2:-}" ;;
     inspect-install) inspect_install "${2:-}" ;;
     import-install) import_install "${2:-}" "${3:-keep}" "${4:-empty}" ;;
@@ -4605,6 +4617,7 @@ case "${1:-doctor}" in
     version-snapshots) version_snapshots ;;
     change-version) change_version "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
     extensions-list) extensions_list "${2:-0}" ;;
+    reset-summary) bash "$EXTENSIONS_HELPER" reset-summary "$ST_HOME" "$LAUNCHER_HOME" ;;
     extension-update|extension-disable|extension-enable|extension-trash|extension-recover) extension_mutate "${1#extension-}" "${2:-}" "${3:-}" ;;
     repair) repair_st ;;
     reset-installation) reset_installation ;;

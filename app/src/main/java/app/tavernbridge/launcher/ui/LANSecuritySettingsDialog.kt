@@ -45,10 +45,12 @@ fun LANSecuritySettingsDialog(
     busy: Boolean = false,
     onDismiss: () -> Unit,
     onConfirm: (LanSecurityChange) -> Unit,
+    requestedListen: Boolean = current.listen,
+    requestedBasicAuth: Boolean = current.basicAuthEnabled,
 ) {
-    var listen by remember(current) { mutableStateOf(current.listen) }
+    var listen by remember(current, requestedListen) { mutableStateOf(requestedListen) }
     var whitelist by remember(current) { mutableStateOf(current.whitelist.joinToString("\n")) }
-    var basicAuth by remember(current) { mutableStateOf(current.basicAuthEnabled) }
+    var basicAuth by remember(current, requestedBasicAuth) { mutableStateOf(if (current.perUserBasicAuth) current.basicAuthEnabled else requestedBasicAuth) }
     var username by remember(current) { mutableStateOf("") }
     var password by remember(current) { mutableStateOf("") }
     var acknowledged by remember(current) { mutableStateOf(false) }

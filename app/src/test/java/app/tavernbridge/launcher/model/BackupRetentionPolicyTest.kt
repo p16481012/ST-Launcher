@@ -30,12 +30,15 @@ class BackupRetentionPolicyTest {
     }
 
     @Test fun postBackupProposalExcludesFullAndUnidentifiedCheckpointsEvenWhenOverCount() {
-        val entries = (1..8).map { n -> archive("2026-11-0$n").copy(categories = setOf(BackupCategory.USER_DATA), branch = "release") }.toMutableList()
+        val entries = (1..8).map { n -> archive("2026-11-0$n").copy(categories = setOf(BackupCategory.USER_DATA), branch = "release", revision = "a".repeat(64)) }.toMutableList()
         entries[0] = entries[0].copy(categories = setOf(BackupCategory.FULL))
         entries[1] = entries[1].copy(branch = "imported")
-        val notes = mapOf(entries[2].fileName to BackupAnnotation(pinned = true))
+        val notes = entries.associate { it.fileName to BackupAnnotation(pinned = it == entries[2], createdRevision = it.revision) }
         assertNull(BackupRetentionPolicy.afterCreation(entries, notes, BackupKeep.UNLIMITED, now, ZoneOffset.UTC))
         assertEquals(listOf(entries[4], entries[3]), BackupRetentionPolicy.afterCreation(entries, notes, BackupKeep.THREE, now, ZoneOffset.UTC)?.candidates)
+        assertNull(BackupRetentionPolicy.afterCreation(entries, emptyMap(), BackupKeep.THREE, now, ZoneOffset.UTC))
+        val copied = entries[4].copy(revision = "b".repeat(64))
+        assertEquals(listOf(entries[3]), BackupRetentionPolicy.afterCreation(entries.map { if (it == entries[4]) copied else it }, notes, BackupKeep.THREE, now, ZoneOffset.UTC)?.candidates)
     }
 
     @Test fun oldCountAloneCannotDeleteRecentBackup() {

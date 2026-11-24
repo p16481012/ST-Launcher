@@ -77,7 +77,7 @@ fun OperationResultCard(
                 Text(
                     "오류 코드 ${summary.errorCode}",
                     color = content,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono,
                     style = MaterialTheme.typography.labelMedium,
                 )
             }

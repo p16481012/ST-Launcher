@@ -28,6 +28,13 @@ function extension(name, gitRepo = true) {
 let checks = 0;
 try {
     const clean = extension('clean'); assert.strictEqual(row('clean')[9], '1', Buffer.from(row('clean')[10], 'base64').toString()); checks++;
+    // Count only real character/chat files and installed extension manifests; never read file contents.
+    for (const rel of ['data/user-a/characters/a.png', 'data/user-a/chats/A/one.jsonl',
+        'data/user-b/group chats/team.jsonl', 'data/user-b/extensions/off/.st-launcher-disabled-manifest.json',
+        'data/user-a/chats/A/notes.txt', 'public/characters/legacy.PNG', 'data/user-b/extensions/not-installed/readme.md']) {
+        const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, '');
+    }
+    assert.deepStrictEqual(ok(run('reset-summary')).trim().split(/\r?\n/), ['characters=2','chats=2','extensions=2']); checks++;
     assert.strictEqual(Buffer.from(row('clean')[11], 'base64').toString(), 'fixture/extensions');
     assert.strictEqual(Buffer.from(row('clean')[12], 'base64').toString(), 'main'); checks++;
     const original = fs.readFileSync(path.join(clean, 'manifest.json'));

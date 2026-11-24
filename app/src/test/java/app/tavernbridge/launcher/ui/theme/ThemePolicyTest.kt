@@ -3,6 +3,9 @@ package app.tavernbridge.launcher.ui.theme
 import app.tavernbridge.launcher.model.LauncherAccent
 import app.tavernbridge.launcher.model.LauncherTextSize
 import app.tavernbridge.launcher.model.ServerReadiness
+import app.tavernbridge.launcher.model.AppTheme
+import app.tavernbridge.launcher.model.readAccent
+import app.tavernbridge.launcher.model.readBrightness
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -31,19 +34,32 @@ class ThemePolicyTest {
         assertEquals(ServerIndicatorTone.OFFLINE, serverIndicatorTone(ServerReadiness.OFFLINE))
     }
 
-    @Test fun indicatorsKeepAtLeastThreeToOneContrastAcrossEveryBackgroundLuminance() {
-        ServerReadiness.entries.forEach { readiness ->
-            for (step in 0..1000) {
-                val background = step / 1000.0
-                val color = serverIndicatorArgb(readiness, background)
-                assertTrue("$readiness contrast at $background",
-                    statusColorContrast(statusColorLuminance(color), background) >= 3.0)
+    @Test fun allSixteenCombinationsKeepTextLegibleAndStatusIndependentOfAccent() {
+        for (dark in listOf(false, true)) for (highContrast in listOf(false, true)) {
+            val amber = launcherColors(dark, LauncherAccent.AMBER, highContrast)
+            for (accent in LauncherAccent.entries) {
+                val c = launcherColors(dark, accent, highContrast)
+                assertEquals(amber.live, c.indicator(ServerReadiness.READY))
+                assertEquals(amber.danger, c.indicator(ServerReadiness.PORT_CONFLICT))
+                assertEquals(c.accent, c.indicator(ServerReadiness.STARTING))
+                for (background in listOf(c.surface, c.canvas)) {
+                    for (foreground in listOf(c.ink, c.ink2, c.ink3, c.accent, c.live, c.danger, c.disabledInk)) {
+                        assertTrue("$accent on $background (highContrast=$highContrast)", contrastRatio(foreground, background) >= 4.5)
+                    }
+                }
+                assertTrue(contrastRatio(c.onAccentWash, c.accentWash) >= 4.5)
+                assertTrue(contrastRatio(c.danger, c.dangerWash) >= 4.5)
+                assertTrue(contrastRatio(c.onInk, c.ink) >= 4.5)
             }
-            assertNotEquals(serverIndicatorArgb(readiness, 0.0), serverIndicatorArgb(readiness, 1.0))
         }
     }
 
-    @Test fun invalidLuminanceFallsBackToLightSurface() {
-        assertEquals(serverIndicatorArgb(ServerReadiness.READY, 1.0), serverIndicatorArgb(ServerReadiness.READY, Double.NaN))
+    @Test fun oldPaletteMigratesWithoutOverridingAnExplicitAccent() {
+        assertEquals(AppTheme.LIGHT, readBrightness("AVOCADO"))
+        assertEquals(LauncherAccent.GREEN, readAccent(null, "AVOCADO"))
+        assertEquals(LauncherAccent.SLATE, readAccent(null, "BLUEBERRY"))
+        assertEquals(LauncherAccent.WINE, readAccent("WINE", "AVOCADO"))
+        assertEquals(AppTheme.SYSTEM, readBrightness(null))
+        assertEquals(LauncherAccent.AMBER, readAccent(null, null))
     }
 }

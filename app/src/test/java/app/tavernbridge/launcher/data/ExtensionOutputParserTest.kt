@@ -33,6 +33,8 @@ class ExtensionOutputParserTest {
             ExtensionVersionClient.compareUrl(item)?.toString())
         assertNull(ExtensionVersionClient.compareUrl(item.copy(canUpdate = false)))
         assertNull(ExtensionVersionClient.compareUrl(item.copy(gitHubRepository = "../example")))
+        assertEquals("https://api.github.com/repos/owner/example/contents/manifest.json?ref=fix%2Fui", ExtensionVersionClient.manifestUrl(item)?.toString())
+        assertNull(ExtensionVersionClient.manifestUrl(item.copy(gitHubRepository="https://untrusted.invalid/x")))
         assertNull(ExtensionVersionClient.compareUrl(ExtensionOutputParser.parse(header + row()).items.single()))
     }
 

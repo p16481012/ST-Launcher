@@ -1,5 +1,6 @@
 package app.tavernbridge.launcher.ui
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,6 +24,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -31,6 +33,7 @@ import app.tavernbridge.launcher.BuildConfig
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.V2Mono
+import app.tavernbridge.launcher.ui.theme.LocalLauncherColors
 
 internal enum class SettingsPage(val title: String, val icon: ImageVector) {
     DISPLAY("화면", Icons.Outlined.TextFields), SERVER("서버 연결", Icons.Outlined.Language),
@@ -57,28 +60,30 @@ internal fun V2SettingsLayout(state: LauncherUiState, detail: @Composable (Setti
     val colors = MaterialTheme.colorScheme
     BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
         val fontScale = LocalDensity.current.fontScale
-        val wide = maxWidth >= 720.dp && fontScale < 1.6f
+        val wide = chooseLauncherNavigation(LocalConfiguration.current.screenWidthDp.toFloat()) == LauncherNavigationMode.RAIL
         val roomy = wide && maxWidth >= 890.dp && fontScale < 1.3f
         BackHandler(enabled = !wide && open != null) { open = null }
         val selected = open ?: SettingsPage.DISPLAY
         Row(Modifier.fillMaxSize()) {
             if (wide || open == null) {
-                Column((if (wide) Modifier.width(304.dp) else Modifier.fillMaxWidth()).fillMaxHeight()
-                    .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 22.dp)) {
+                Column((if (wide) Modifier.width(if (roomy) 350.dp else (maxWidth * .38f).coerceAtMost(300.dp)) else Modifier.fillMaxWidth()).fillMaxHeight()
+                    .verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 22.dp)) {
                     Text("설정", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
                     Spacer(Modifier.height(24.dp))
                     SettingsGroup {
                         SettingsPage.entries.forEachIndexed { index, page ->
                             val summary = when (page) {
                                 SettingsPage.DISPLAY -> "${state.displayPreferences.textSize.label} · ${settingsThemeName(state.theme)}"
-                                SettingsPage.SERVER -> if (state.environment.externalAccessEnabled) "외부 접속" else "이 기기만"
-                                SettingsPage.BACKGROUND -> if (state.backgroundStatus.termuxBatteryUnrestricted) "제한 없음" else "확인 필요"
+                                SettingsPage.SERVER -> if (state.environment.externalAccessEnabled) "같은 Wi-Fi" else "이 기기만"
+                                SettingsPage.BACKGROUND -> if (needsBackgroundAttention(state, Build.VERSION.SDK_INT)) "확인 필요" else "정상"
                                 SettingsPage.BACKUP -> if (state.backupReminder.enabled) state.backupReminder.interval.label else "꺼짐"
                                 SettingsPage.ABOUT -> BuildConfig.VERSION_NAME
                             }
                             val active = wide && selected == page
                             SettingsRow(page.title, value = summary, icon = page.icon, selected = active,
-                                valueColor = if (page == SettingsPage.BACKGROUND && !state.backgroundStatus.termuxBatteryUnrestricted) colors.error else colors.onSurfaceVariant,
+                                mono = page == SettingsPage.ABOUT,
+                                valueColor = if (page == SettingsPage.BACKGROUND && needsBackgroundAttention(state, Build.VERSION.SDK_INT))
+                                    (if (active) colors.onSecondaryContainer else colors.secondary) else colors.onSurfaceVariant,
                                 onClick = { open = page })
                             if (index != SettingsPage.entries.lastIndex) SettingsDivider(52)
                         }
@@ -87,10 +92,10 @@ internal fun V2SettingsLayout(state: LauncherUiState, detail: @Composable (Setti
             }
             if (wide || open != null) key(selected) {
                 Column(Modifier.weight(1f).fillMaxHeight().background(if (wide) colors.surface else colors.background)
-                    .verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 32.dp else 20.dp, vertical = 12.dp),
+                    .verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (!wide) IconButton(onClick = { open = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "설정 목록으로") }
+                        if (!wide) IconButton(onClick = { open = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로") }
                         Text(selected.title, style = if (wide) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
                             modifier = Modifier.padding(vertical = 12.dp).semantics { heading() })
                     }
@@ -103,7 +108,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, detail: @Composable (Setti
 }
 
 internal fun settingsThemeName(theme: AppTheme): String = when (theme) {
-    AppTheme.SYSTEM -> "시스템"; AppTheme.LIGHT -> "밝게"; AppTheme.DARK -> "어둡게"; else -> theme.label
+    AppTheme.SYSTEM -> "시스템"; AppTheme.LIGHT -> "밝게"; AppTheme.DARK -> "어둡게"
 }
 
 @Composable
@@ -137,13 +142,14 @@ internal fun SettingsRow(title: String, value: String = "", caption: String = ""
         else -> Modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick)
     }
     val stack = LocalDensity.current.fontScale >= 1.3f
-    Row(Modifier.fillMaxWidth().background(if (selected) colors.surfaceVariant else colors.surface)
+    val tokens = LocalLauncherColors.current
+    Row(Modifier.fillMaxWidth().background(if (selected) tokens.accentWash else colors.surface)
         .then(click).heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = colors.onSurfaceVariant)
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge,
-                color = if (enabled) colors.onSurface else colors.onSurfaceVariant)
+                color = if (enabled) colors.onSurface else tokens.disabledInk)
             if (caption.isNotBlank()) SettingsCaption(caption)
             if (stack && value.isNotBlank()) Text(value, color = valueColor, style = MaterialTheme.typography.bodyMedium,
                 fontFamily = if (mono) V2Mono else null)
@@ -151,9 +157,9 @@ internal fun SettingsRow(title: String, value: String = "", caption: String = ""
         if (!stack && value.isNotBlank()) Text(value, modifier = Modifier.widthIn(max = 138.dp),
             textAlign = TextAlign.End, style = MaterialTheme.typography.bodyMedium, color = valueColor, fontFamily = if (mono) V2Mono else null)
         if (checked != null) Switch(checked = checked, onCheckedChange = null, enabled = enabled,
-            colors = SwitchDefaults.colors(checkedTrackColor = colors.primary, checkedThumbColor = colors.onPrimary,
+            colors = SwitchDefaults.colors(checkedTrackColor = colors.secondary, checkedThumbColor = colors.onSecondary,
                 uncheckedTrackColor = colors.surfaceVariant, uncheckedBorderColor = colors.outlineVariant))
-        else if (onClick != null) Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, null, Modifier.size(18.dp), tint = colors.onSurfaceVariant)
+        else if (onClick != null) Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, null, Modifier.size(18.dp), tint = tokens.ink3)
     }
 }
 
@@ -165,12 +171,12 @@ internal fun <T> SettingsSegments(options: List<T>, selected: T, label: (T) -> S
         .padding(3.dp).selectableGroup()) {
         options.forEach { value ->
             val active = value == selected
-            Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (active) colors.surface else Color.Transparent)
+            Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (active && enabled) colors.secondaryContainer else Color.Transparent)
                 .selectable(active, enabled = enabled, role = Role.RadioButton) { onChange(value) }
-                .heightIn(min = 44.dp).padding(horizontal = 2.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
+                .heightIn(min = 48.dp).padding(horizontal = 2.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
                 Text(label(value), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium,
                     fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (active) colors.onSurface else colors.onSurfaceVariant)
+                    color = when { !enabled -> LocalLauncherColors.current.disabledInk; active -> colors.onSecondaryContainer; else -> colors.onSurfaceVariant })
             }
         }
     }

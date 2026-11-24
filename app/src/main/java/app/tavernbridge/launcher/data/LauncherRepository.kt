@@ -303,6 +303,16 @@ class LauncherRepository(private val context: Context) {
     suspend fun resetInstallation(): TermuxCommandResult =
         runManager("reset-installation", timeoutMillis = 30 * 60_000L)
 
+    suspend fun inspectResetImpact(): app.tavernbridge.launcher.model.ResetImpact {
+        val result = runManager("reset-summary", 30_000)
+        check(result.isSuccess && !result.stdoutTruncated) { "설치 폴더의 항목 수를 확인하지 못했어요." }
+        val values = result.stdout.lineSequence().associate { it.substringBefore('=') to it.substringAfter('=') }
+        fun count(key: String) = requireNotNull(values[key]?.toIntOrNull()?.takeIf { it >= 0 })
+        val backups = try { if (backupStorageReady()) listBackups().size else null }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+        return app.tavernbridge.launcher.model.ResetImpact(count("characters"), count("chats"), count("extensions"), backups)
+    }
+
     fun savedBackupRequest(): BackupRequest? = backupRequestStore.load()
 
     suspend fun createBackup(
@@ -328,11 +338,13 @@ class LauncherRepository(private val context: Context) {
         )
     }
 
-    suspend fun listBackups(): List<BackupArchive> {
-        val result = runManager("list-backups", timeoutMillis = 2 * 60_000L)
+    suspend fun listBackups(): List<BackupArchive> = readBackupCatalog(false).first
+
+    suspend fun readBackupCatalog(withSafetyCount: Boolean): Pair<List<BackupArchive>, Int?> {
+        val result = runManager(if (withSafetyCount) "list-backups overview" else "list-backups", timeoutMillis = 2 * 60_000L)
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
         check(!result.stdoutTruncated) { "백업 목록이 통신 중 잘렸습니다. Download 폴더에서 백업을 확인해 주세요." }
-        return BackupOutputParser.parse(result.stdout)
+        return BackupOutputParser.parse(result.stdout) to BackupOutputParser.safetyCopies(result.stdout)
     }
 
     suspend fun listExtensions(cursor: Int = 0): app.tavernbridge.launcher.model.ExtensionInventory {
@@ -1099,6 +1111,12 @@ class LauncherRepository(private val context: Context) {
 
     fun clearPreferredBrowser() {
         preferences.edit().remove("preferred_browser_package").apply()
+    }
+
+    fun savePreferredBrowser(port: Int, packageName: String): Boolean {
+        if (browserOptions(port).none { it.packageName == packageName }) return false
+        preferences.edit().putString("preferred_browser_package", packageName).apply()
+        return true
     }
 
     fun openBrowser(port: Int, packageName: String? = null, rememberChoice: Boolean = false): Boolean {

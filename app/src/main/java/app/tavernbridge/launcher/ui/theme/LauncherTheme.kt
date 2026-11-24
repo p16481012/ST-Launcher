@@ -6,28 +6,79 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.DisplayPreferences
+import app.tavernbridge.launcher.model.LauncherAccent
 
+/** Source of every semantic role, including roles Material does not have slots for. */
+@Immutable
+data class LauncherColors internal constructor(
+    val dark: Boolean, val highContrast: Boolean,
+    val canvas: Color, val surface: Color, val sunken: Color,
+    val ink: Color, val onInk: Color, val ink2: Color, val ink3: Color, val hairline: Color,
+    val accent: Color, val accentWash: Color, val onAccentWash: Color,
+    val live: Color, val liveWash: Color, val danger: Color, val dangerWash: Color,
+    val disabledInk: Color,
+)
+
+internal fun launcherColors(dark: Boolean, accent: LauncherAccent, highContrast: Boolean): LauncherColors {
+    fun pair(light: Long, night: Long) = Color(if (dark) night else light)
+    val ink = pair(0xFF17191C, 0xFFF1F2F4)
+    val ink2 = if (highContrast) ink else pair(0xFF59606A, 0xFFA9AFB7)
+    val ink3 = if (highContrast) pair(0xFF414750, 0xFFCFD4DB) else pair(0xFF6A717B, 0xFF8E949C)
+    val accentColor = pair(accent.lightArgb, accent.darkArgb)
+    val wash = pair(accent.lightWash, accent.darkWash)
+    // Use ink when the exact swatch fails 4.5:1 on its own wash (notably green).
+    val onWash = if (contrastRatio(accentColor, wash) >= 4.5) accentColor else ink
+    return LauncherColors(dark, highContrast,
+        canvas = pair(0xFFF4F5F7, 0xFF111214), surface = pair(0xFFFFFFFF, 0xFF1A1C1F),
+        sunken = pair(0xFFECEEF1, 0xFF24272B), ink = ink, onInk = pair(0xFFFFFFFF, 0xFF17191C),
+        ink2 = ink2, ink3 = ink3,
+        hairline = if (highContrast) pair(0xFF68707A, 0xFF858D98) else pair(0xFFE4E7EB, 0xFF2D3035),
+        accent = accentColor, accentWash = wash, onAccentWash = onWash,
+        live = pair(0xFF157A4C, 0xFF4CC98C), liveWash = pair(0xFFE6F4EC, 0xFF163328),
+        danger = pair(0xFFC9372C, 0xFFFF7468), dangerWash = pair(0xFFFDECEF, 0xFF41242A),
+        disabledInk = if (highContrast) ink else ink2)
+}
+
+internal fun contrastRatio(a: Color, b: Color): Double =
+    statusColorContrast(a.luminance().toDouble(), b.luminance().toDouble())
+
+val LocalLauncherColors = staticCompositionLocalOf { launcherColors(false, LauncherAccent.AMBER, false) }
 val LocalV2ReducedMotion = staticCompositionLocalOf { false }
+
+private fun LauncherColors.materialScheme() = (if (dark) darkColorScheme() else lightColorScheme()).copy(
+    primary = ink, onPrimary = onInk, primaryContainer = sunken, onPrimaryContainer = ink,
+    secondary = accent, onSecondary = onInk, secondaryContainer = accentWash, onSecondaryContainer = onAccentWash,
+    tertiary = accent, onTertiary = onInk, tertiaryContainer = accentWash, onTertiaryContainer = onAccentWash,
+    background = canvas, onBackground = ink, surface = surface, onSurface = ink,
+    surfaceTint = surface, surfaceBright = surface, surfaceDim = sunken, surfaceVariant = sunken,
+    onSurfaceVariant = ink2, surfaceContainerLowest = surface, surfaceContainerLow = canvas,
+    surfaceContainer = sunken, surfaceContainerHigh = sunken, surfaceContainerHighest = sunken,
+    outline = ink3, outlineVariant = hairline, error = danger, onError = onInk,
+    errorContainer = dangerWash, onErrorContainer = danger,
+    inverseSurface = ink, inverseOnSurface = onInk, inversePrimary = onInk, scrim = Color(0xFF0B0C0E),
+    primaryFixed = sunken, primaryFixedDim = hairline, onPrimaryFixed = ink, onPrimaryFixedVariant = ink2,
+    secondaryFixed = accentWash, secondaryFixedDim = accentWash, onSecondaryFixed = onAccentWash, onSecondaryFixedVariant = onAccentWash,
+    tertiaryFixed = accentWash, tertiaryFixedDim = accentWash, onTertiaryFixed = onAccentWash, onTertiaryFixedVariant = onAccentWash,
+)
+
+private val shapes = Shapes(extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(14.dp),
+    medium = RoundedCornerShape(14.dp), large = RoundedCornerShape(20.dp), extraLarge = RoundedCornerShape(24.dp))
 
 @Composable
 private fun systemMotionReduced(): Boolean {
@@ -45,231 +96,24 @@ private fun systemMotionReduced(): Boolean {
     return reduced
 }
 
-private val LightColors = lightColorScheme(
-    primary = Color(0xFF4E6073),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFDCE3EA),
-    onPrimaryContainer = Color(0xFF273646),
-    secondary = Color(0xFF6D747C),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE2E5E8),
-    onSecondaryContainer = Color(0xFF393F45),
-    tertiary = Color(0xFF64717D),
-    onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFE0E5EA),
-    onTertiaryContainer = Color(0xFF35414C),
-    background = Color(0xFFF5F4F0),
-    onBackground = Color(0xFF222524),
-    surface = Color(0xFFFBFAF7),
-    onSurface = Color(0xFF222524),
-    surfaceDim = Color(0xFFE1E1DE),
-    surfaceBright = Color(0xFFFCFBF8),
-    surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFF7F6F3),
-    surfaceContainer = Color(0xFFF1F0ED),
-    surfaceContainerHigh = Color(0xFFEBEAE7),
-    surfaceContainerHighest = Color(0xFFE5E4E1),
-    surfaceVariant = Color(0xFFE9E8E3),
-    onSurfaceVariant = Color(0xFF4A4E4C),
-    outline = Color(0xFF858A87),
-    outlineVariant = Color(0xFFC9CCCA),
-    inverseSurface = Color(0xFF303331),
-    inverseOnSurface = Color(0xFFF3F2EE),
-    inversePrimary = Color(0xFFBCCBDD),
-)
-
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFFD1D4D8),
-    onPrimary = Color(0xFF25282C),
-    primaryContainer = Color(0xFF373B40),
-    onPrimaryContainer = Color(0xFFF0F1F3),
-    secondary = Color(0xFFBEC2C7),
-    onSecondary = Color(0xFF292C30),
-    secondaryContainer = Color(0xFF393D42),
-    onSecondaryContainer = Color(0xFFE2E4E7),
-    tertiary = Color(0xFFAEB3B9),
-    onTertiary = Color(0xFF282C30),
-    tertiaryContainer = Color(0xFF3A3E43),
-    onTertiaryContainer = Color(0xFFDEE1E5),
-    background = Color(0xFF111315),
-    onBackground = Color(0xFFE4E5E7),
-    surface = Color(0xFF181A1D),
-    onSurface = Color(0xFFE4E5E7),
-    surfaceDim = Color(0xFF101214),
-    surfaceBright = Color(0xFF34373B),
-    surfaceContainerLowest = Color(0xFF0D0F11),
-    surfaceContainerLow = Color(0xFF17191C),
-    surfaceContainer = Color(0xFF1D1F22),
-    surfaceContainerHigh = Color(0xFF26292C),
-    surfaceContainerHighest = Color(0xFF303337),
-    surfaceVariant = Color(0xFF292C30),
-    onSurfaceVariant = Color(0xFFC5C8CC),
-    outline = Color(0xFF898E94),
-    outlineVariant = Color(0xFF44484D),
-    inverseSurface = Color(0xFFE4E5E7),
-    inverseOnSurface = Color(0xFF2B2E32),
-    inversePrimary = Color(0xFF555D66),
-)
-
-private val PastelColors = lightColorScheme(
-    primary = Color(0xFF76536F),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFEBD6E5),
-    onPrimaryContainer = Color(0xFF452B40),
-    secondary = Color(0xFF86606C),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFF0D9DF),
-    onSecondaryContainer = Color(0xFF4D3038),
-    tertiary = Color(0xFF6D617D),
-    onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFE6DCEF),
-    onTertiaryContainer = Color(0xFF3B3048),
-    background = Color(0xFFF8F1F5),
-    onBackground = Color(0xFF282326),
-    surface = Color(0xFFFEF8FB),
-    onSurface = Color(0xFF282326),
-    surfaceDim = Color(0xFFE3DDE0),
-    surfaceBright = Color(0xFFFFFBFC),
-    surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFF8F4F6),
-    surfaceContainer = Color(0xFFF4EAF0),
-    surfaceContainerHigh = Color(0xFFEEE3E9),
-    surfaceContainerHighest = Color(0xFFE8DCE3),
-    surfaceVariant = Color(0xFFEEDFE7),
-    onSurfaceVariant = Color(0xFF584650),
-    outline = Color(0xFF927B87),
-    outlineVariant = Color(0xFFD5BEC9),
-    inverseSurface = Color(0xFF342F32),
-    inverseOnSurface = Color(0xFFF7F0F4),
-    inversePrimary = Color(0xFFD8C5E0),
-)
-
-private val AvocadoColors = lightColorScheme(
-    primary = Color(0xFF4E674E),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFD2E2C8),
-    onPrimaryContainer = Color(0xFF203722),
-    secondary = Color(0xFF617159),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFDDE6D2),
-    onSecondaryContainer = Color(0xFF2E3D2A),
-    tertiary = Color(0xFF746548),
-    onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFEEE2BD),
-    onTertiaryContainer = Color(0xFF3B321E),
-    background = Color(0xFFF5F0DE),
-    onBackground = Color(0xFF23271F),
-    surface = Color(0xFFFFF9E9),
-    onSurface = Color(0xFF23271F),
-    surfaceDim = Color(0xFFDEDACB),
-    surfaceBright = Color(0xFFFFFCF2),
-    surfaceContainerLowest = Color(0xFFFFFFF8),
-    surfaceContainerLow = Color(0xFFFAF5E5),
-    surfaceContainer = Color(0xFFF0F0E1),
-    surfaceContainerHigh = Color(0xFFE6EADB),
-    surfaceContainerHighest = Color(0xFFDDE4D4),
-    surfaceVariant = Color(0xFFE3E9D9),
-    onSurfaceVariant = Color(0xFF465143),
-    outline = Color(0xFF7A8575),
-    outlineVariant = Color(0xFFBDC7B5),
-    inverseSurface = Color(0xFF2D332A),
-    inverseOnSurface = Color(0xFFF2F5EB),
-    inversePrimary = Color(0xFFAFC7A6),
-)
-
-private val BananaColors = lightColorScheme(
-    primary = Color(0xFF806221), onPrimary = Color.White,
-    primaryContainer = Color(0xFFF2DB91), onPrimaryContainer = Color(0xFF43330C),
-    secondary = Color(0xFF826E3B), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFF0E1B7), onSecondaryContainer = Color(0xFF443A1D),
-    tertiary = Color(0xFF775D42), onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFEAD8C5), onTertiaryContainer = Color(0xFF402F20),
-    background = Color(0xFFFAF4E2), onBackground = Color(0xFF29251A),
-    surface = Color(0xFFFFFAEC), onSurface = Color(0xFF29251A),
-    surfaceDim = Color(0xFFE2DDCF), surfaceBright = Color(0xFFFFFCF2),
-    surfaceContainerLowest = Color(0xFFFFFFFF), surfaceContainerLow = Color(0xFFF8F4E8),
-    surfaceContainer = Color(0xFFF5ECD5), surfaceContainerHigh = Color(0xFFEFE5CC),
-    surfaceContainerHighest = Color(0xFFE9DEC4), surfaceVariant = Color(0xFFF0E2BC),
-    onSurfaceVariant = Color(0xFF554B34), outline = Color(0xFF8D8163),
-    outlineVariant = Color(0xFFD2C29C), inverseSurface = Color(0xFF363126),
-    inverseOnSurface = Color(0xFFFAF1DC), inversePrimary = Color(0xFFE6C45F),
-)
-
-private val BlueberryColors = lightColorScheme(
-    primary = Color(0xFF475982), onPrimary = Color.White,
-    primaryContainer = Color(0xFFCFD9F1), onPrimaryContainer = Color(0xFF243250),
-    secondary = Color(0xFF625C82), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFDDD8EF), onSecondaryContainer = Color(0xFF35304F),
-    tertiary = Color(0xFF765970), onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFE9D5E4), onTertiaryContainer = Color(0xFF432E40),
-    background = Color(0xFFF1F2F8), onBackground = Color(0xFF22242E),
-    surface = Color(0xFFF8F8FC), onSurface = Color(0xFF22242E),
-    surfaceDim = Color(0xFFDDE0E6), surfaceBright = Color(0xFFFCFCFE),
-    surfaceContainerLowest = Color(0xFFFFFFFF), surfaceContainerLow = Color(0xFFF5F6F9),
-    surfaceContainer = Color(0xFFEDEEF6), surfaceContainerHigh = Color(0xFFE6E7F1),
-    surfaceContainerHighest = Color(0xFFDEE0EC), surfaceVariant = Color(0xFFE1E3F0),
-    onSurfaceVariant = Color(0xFF464A5D), outline = Color(0xFF7C8296),
-    outlineVariant = Color(0xFFBEC3D5), inverseSurface = Color(0xFF2D303E),
-    inverseOnSurface = Color(0xFFF0F1F8), inversePrimary = Color(0xFFAFC0EB),
-)
-
 @Composable
-fun SillyTavernLauncherTheme(
-    appTheme: AppTheme,
-    preferences: DisplayPreferences = DisplayPreferences(),
-    content: @Composable () -> Unit,
-) {
-    val systemDark = isSystemInDarkTheme()
-    val base = when (appTheme) {
-        AppTheme.SYSTEM -> if (systemDark) DarkColors else LightColors
-        AppTheme.LIGHT -> LightColors
-        AppTheme.DARK -> DarkColors
-        AppTheme.PASTEL -> PastelColors
-        AppTheme.AVOCADO -> AvocadoColors
-        AppTheme.BANANA -> BananaColors
-        AppTheme.BLUEBERRY -> BlueberryColors
-    }
-    val useDarkIcons = when (appTheme) {
-        AppTheme.DARK -> false
-        AppTheme.SYSTEM -> !systemDark
-        else -> true
-    }
-    val dark = !useDarkIcons
-    val neutral = appTheme in setOf(AppTheme.SYSTEM, AppTheme.DARK, AppTheme.LIGHT)
-    val ink = if (dark) Color(0xFFF1F2F4) else Color(0xFF17191C)
-    val paper = if (dark) Color(0xFF1A1C1F) else Color.White
-    val secondaryInk = if (dark) Color(0xFFA9AFB7) else Color(0xFF59606A)
-    val rule = if (dark) Color(0xFF2D3035) else Color(0xFFE4E7EB)
-    val accent = Color(if (dark) preferences.accent.darkArgb else preferences.accent.lightArgb)
-    val sheet = if (neutral) base.copy(
-        primary = ink, onPrimary = if (dark) Color(0xFF17191C) else paper, primaryContainer = if (dark) Color(0xFF343941) else Color(0xFFECEEF1),
-        onPrimaryContainer = ink, secondary = secondaryInk, onSecondary = paper,
-        background = if (dark) Color(0xFF111214) else Color(0xFFF4F5F7), onBackground = ink,
-        surface = paper, onSurface = ink, surfaceContainerLowest = paper,
-        surfaceContainer = if (dark) Color(0xFF292D33) else Color(0xFFECEEF1),
-        surfaceVariant = if (dark) Color(0xFF30343B) else Color(0xFFECEEF1),
-        onSurfaceVariant = secondaryInk, outlineVariant = rule,
-    ) else base
-    val colors = sheet.copy(
-        tertiary = accent, onTertiary = if (dark) Color(0xFF17191C) else Color.White,
-        onSurfaceVariant = if (preferences.highContrast) sheet.onSurface else sheet.onSurfaceVariant,
-        outline = if (preferences.highContrast) sheet.onSurface else sheet.outline,
-        outlineVariant = if (preferences.highContrast) sheet.onSurfaceVariant else sheet.outlineVariant,
-    )
+fun SillyTavernLauncherTheme(appTheme: AppTheme, preferences: DisplayPreferences = DisplayPreferences(), content: @Composable () -> Unit) {
+    val dark = when (appTheme) { AppTheme.DARK -> true; AppTheme.LIGHT -> false; AppTheme.SYSTEM -> isSystemInDarkTheme() }
+    val tokens = remember(dark, preferences.accent, preferences.highContrast) { launcherColors(dark, preferences.accent, preferences.highContrast) }
+    val colors = remember(tokens) { tokens.materialScheme() }
     val density = LocalDensity.current
     val scaled = remember(density, preferences.textSize) { Density(density.density, preferences.textSize.applyTo(density.fontScale)) }
-    val reduceMotion = preferences.reducedMotion ?: systemMotionReduced()
-
+    val reducedMotion = preferences.reducedMotion ?: systemMotionReduced()
     val view = LocalView.current
-    if (!view.isInEditMode) {
-        SideEffect {
-            val window = (view.context as Activity).window
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = useDarkIcons
-            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = useDarkIcons
+    if (!view.isInEditMode) SideEffect {
+        (view.context as? Activity)?.let {
+            WindowCompat.getInsetsController(it.window, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
         }
     }
-
-    CompositionLocalProvider(LocalDensity provides scaled, LocalV2ReducedMotion provides reduceMotion) {
-        MaterialTheme(colorScheme = colors, typography = LauncherTypography, content = content)
+    CompositionLocalProvider(LocalDensity provides scaled, LocalLauncherColors provides tokens, LocalV2ReducedMotion provides reducedMotion) {
+        MaterialTheme(colorScheme = colors, typography = LauncherTypography, shapes = shapes, content = content)
     }
 }

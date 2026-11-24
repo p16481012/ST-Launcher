@@ -6,11 +6,11 @@ enum class LauncherTextSize(val label: String, val scale: Float) {
     fun applyTo(systemScale: Float): Float = (systemScale * scale).coerceAtMost(2f)
 }
 
-enum class LauncherAccent(val label: String, val lightArgb: Long, val darkArgb: Long) {
-    AMBER("엠버", 0xFFC2410C, 0xFFFFAA79),
-    GREEN("초록", 0xFF17794D, 0xFF72D7A1),
-    WINE("와인", 0xFFA42D4A, 0xFFFFA0B2),
-    SLATE("슬레이트", 0xFF5B6371, 0xFFBBC5D3),
+enum class LauncherAccent(val label: String, val lightArgb: Long, val darkArgb: Long, val lightWash: Long, val darkWash: Long) {
+    AMBER("엠버", 0xFFC2410C, 0xFFFF8A4C, 0xFFFFEDE3, 0xFF3E291F),
+    GREEN("초록", 0xFF1A7F51, 0xFF72D7A1, 0xFFE7F5ED, 0xFF1A3328),
+    WINE("와인", 0xFF9E2E45, 0xFFFFA0B2, 0xFFFBEAF0, 0xFF3B242C),
+    SLATE("슬레이트", 0xFF5C636E, 0xFFBBC5D3, 0xFFEBEDF0, 0xFF2B3038),
 }
 
 enum class BackupKeep(val label: String, val count: Int?) {
@@ -23,6 +23,20 @@ data class DisplayPreferences(
     val highContrast: Boolean = false,
     /** Null follows Android's animator duration scale; an explicit choice survives process death. */
     val reducedMotion: Boolean? = null,
-    val keepBackups: BackupKeep = BackupKeep.UNLIMITED,
+    val keepBackups: BackupKeep = BackupKeep.TEN,
     val includeSecretsByDefault: Boolean = false,
 )
+
+internal fun readBrightness(name: String?): AppTheme = when (name) {
+    "DARK" -> AppTheme.DARK
+    "LIGHT", "PASTEL", "AVOCADO", "BANANA", "BLUEBERRY" -> AppTheme.LIGHT
+    else -> AppTheme.SYSTEM
+}
+
+internal fun readAccent(stored: String?, oldTheme: String?): LauncherAccent =
+    LauncherAccent.entries.firstOrNull { it.name == stored } ?: when (oldTheme) {
+        "AVOCADO" -> LauncherAccent.GREEN
+        "PASTEL" -> LauncherAccent.WINE
+        "BLUEBERRY" -> LauncherAccent.SLATE
+        else -> LauncherAccent.AMBER
+    }

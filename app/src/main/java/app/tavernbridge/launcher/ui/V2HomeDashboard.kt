@@ -36,6 +36,8 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
     onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit, onSnooze: () -> Unit) {
     val env = state.environment
     var info by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedResult by remember { mutableStateOf<OperationResultSummary?>(null) }
+    var historicResult by rememberSaveable { mutableStateOf<String?>(null) }
     val hero: @Composable () -> Unit = {
         HomeServer(state, onOpen, onStart, onStop, onRestart, onBackups, onLogs, { info = "서버 정보" })
     }
@@ -61,22 +63,26 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
         }
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        if (maxWidth >= 720.dp && LocalDensity.current.fontScale < 1.6f) {
-            LaunchedEffect(state.isWorking, env.managerConnected) {
-                if (!state.isWorking && env.managerConnected) onReadHistory()
+        if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 && maxWidth >= 720.dp && LocalDensity.current.fontScale < 1.6f) {
+            LaunchedEffect(state.isWorking, state.lastOperationResult, env.managerConnected) {
+                if (!state.isWorking) onReadHistory()
             }
             val heroWidth = (maxWidth * .34f).coerceIn(280.dp, 380.dp)
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.width(heroWidth).fillMaxHeight().verticalScroll(rememberScrollState()).padding(24.dp)) { hero() }
                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.surface)
-                    .verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 36.dp),
+                    .verticalScroll(rememberScrollState()).padding(horizontal = 40.dp, vertical = 36.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     status()
                     Spacer(Modifier.height(10.dp))
                     BoxWithConstraints {
                         val recentBackups: @Composable () -> Unit = {
-                            Text("최근 백업", style = MaterialTheme.typography.titleMedium)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("최근 백업", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                                TextButton(onClick = onBackups) { Text(if (state.backupsLoaded) "전체 ${state.backups.size}개" else "전체",
+                                    color = MaterialTheme.colorScheme.secondary) }
+                            }
                             val list = state.backups.sortedByDescending { it.createdAt }.take(2)
                             if (list.isEmpty()) HomeRow(Icons.Outlined.FileDownload, if (state.backupsLoaded) "백업 없음" else "백업 목록 보기", "", onBackups)
                             else list.forEach { HomeRow(Icons.Outlined.FileDownload, it.createdAt.ifBlank { it.fileName }, formatBackupBytes(it.sizeBytes), onBackups) }
@@ -84,8 +90,11 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
                         val activities: @Composable () -> Unit = {
                             Text("최근 활동", style = MaterialTheme.typography.titleMedium)
                             val recent = remember(state.operationHistory) { v2RecentActivity(state.operationHistory) }
-                            if (recent.isEmpty()) HomeRow(Icons.Outlined.History, state.lastOperationResult?.title ?: "작업 기록 보기", "", onHistory)
-                            else recent.forEach { (time, label) -> HomeRow(null, label, time, onHistory) }
+                            if (state.recentResults.isNotEmpty()) state.recentResults.forEach { result ->
+                                HomeRow(null, result.title + if (result.succeeded) " 완료" else " 실패",
+                                    result.completedAt.substringAfter(' ').take(5), { selectedResult = result })
+                            } else if (recent.isEmpty()) HomeRow(Icons.Outlined.History, "작업 기록 보기", "", onHistory)
+                            else recent.forEach { (time, label) -> HomeRow(null, label, time, { historicResult = "$time · $label" }) }
                         }
                         if (maxWidth >= 560.dp) Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                             Column(Modifier.weight(1f)) { recentBackups() }
@@ -105,9 +114,17 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
         V2Explanation(title, if (title == "외부 접속")
             "다른 기기가 이 서버에 연결할 수 있는지는 네트워크와 허용 목록 설정에 따라 달라요. 설정 › 서버 연결에서 접속 범위를 확인할 수 있어요."
         else listOfNotNull(env.branch?.label, env.sillyTavernVersion.takeIf(String::isNotBlank), env.commit.take(8).takeIf(String::isNotBlank)).joinToString(" · ") +
-            "\n이 주소로 이 기기의 SillyTavern을 열어요. 서버 상태는 다시 확인할 수 있어요.",
-            onDismiss = { info = null }, secondary = if (title == "서버 정보") onRefresh else null)
+            "\n이 주소로 이 기기의 SillyTavern을 열어요.",
+            onDismiss = { info = null })
     }
+    selectedResult?.let { result -> V2BottomSheet({ selectedResult = null }) {
+        Text(result.title, style = MaterialTheme.typography.titleLarge)
+        Text(listOf(result.completedAt, "${result.durationSeconds}초", if (result.succeeded) "완료" else "실패").joinToString(" · "), fontFamily = V2Mono)
+        if (result.errorCode.isNotBlank()) Text(result.errorCode, fontFamily = V2Mono, color = MaterialTheme.colorScheme.error)
+        Text(result.detail)
+        Button(onClick = { selectedResult = null }) { Text("확인") }
+    } }
+    historicResult?.let { V2Explanation("작업 결과", it, { historicResult = null }) }
 }
 
 @Composable
@@ -129,7 +146,7 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
         Text(when (ready) {
             ServerReadiness.READY -> "실행 중"; ServerReadiness.STARTING -> "시작 중"; ServerReadiness.OFFLINE -> "서버 꺼짐"
             ServerReadiness.UNRESPONSIVE -> "응답 없음"; ServerReadiness.PORT_CONFLICT -> "포트 충돌"
-        }, style = MaterialTheme.typography.labelMedium, color = cs.onSurface)
+        }, style = MaterialTheme.typography.labelMedium, color = color)
         if (env.processRunning && env.sessionStartedEpoch > 0) {
             var now by remember(env.sessionStartedEpoch) { mutableLongStateOf(System.currentTimeMillis() / 1000) }
             LaunchedEffect(env.sessionStartedEpoch) { while (true) { now = System.currentTimeMillis() / 1000; delay(1000) } }
@@ -190,17 +207,17 @@ private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: (
             if (LocalDensity.current.fontScale >= 1.3f && value.isNotBlank()) Text(value, style = MaterialTheme.typography.bodyMedium) }
         if (value.isNotBlank() && LocalDensity.current.fontScale < 1.3f)
             Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-        Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(if (label == "외부 접속") Icons.Outlined.Info else Icons.Outlined.ChevronRight,
+            if (label == "외부 접속") "외부 접속 설명" else null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun V2Explanation(title: String, detail: String, onDismiss: () -> Unit, secondary: (() -> Unit)? = null) {
+internal fun V2Explanation(title: String, detail: String, onDismiss: () -> Unit) {
     V2BottomSheet(onClose = onDismiss) {
             Text(title, style = MaterialTheme.typography.titleLarge)
             Text(detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (secondary != null) TextButton(onClick = { onDismiss(); secondary() }) { Text("서버 상태 새로고침") }
             Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text("확인") }
     }
 }

@@ -5,7 +5,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.ResolverStyle
 
-data class BackupAnnotation(val pinned: Boolean = false, val memo: String = "", val trusted: Boolean = true)
+data class BackupAnnotation(val pinned: Boolean = false, val memo: String = "", val trusted: Boolean = true,
+    val createdRevision: String = "")
 data class BackupRetentionOptions(val keepLatest: Int = 3, val olderThanDays: Int = 30)
 data class BackupRetentionPreview(
     val candidates: List<BackupArchive>,
@@ -30,7 +31,8 @@ object BackupRetentionPolicy {
     fun afterCreation(backups: List<BackupArchive>, annotations: Map<String, BackupAnnotation>,
         keep: BackupKeep, nowMillis: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): BackupRetentionPreview? {
         val count = keep.count ?: return null
-        val eligible = backups.filter { it.branch in setOf("release", "staging") && it.categories.isNotEmpty() &&
+        val eligible = backups.filter { it.revision.isNotEmpty() && it.revision == annotations[it.fileName]?.createdRevision &&
+            it.branch in setOf("release", "staging") && it.categories.isNotEmpty() &&
             BackupCategory.FULL !in it.categories }
         if (eligible.size <= count) return null
         val proposal = preview(eligible, annotations, BackupRetentionOptions(count, 0), nowMillis, zone)

@@ -1,6 +1,10 @@
 <resources>
+    <color name="launcher_window_canvas">#111214</color>
+    <color name="launcher_window_accent">#FF8A4C</color>
     <style name="Theme.SillyTavernLauncher" parent="android:style/Theme.Material.NoActionBar">
-        <item name="android:fontFamily">sans</item>
+        <item name="android:fontFamily">@font/plex_kr_regular</item>
+        <item name="android:windowBackground">@color/launcher_window_canvas</item>
+        <item name="android:colorAccent">@color/launcher_window_accent</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

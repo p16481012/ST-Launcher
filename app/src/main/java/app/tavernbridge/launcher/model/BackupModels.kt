@@ -67,6 +67,7 @@ data class BackupArchive(
     val characterFiles: Int? = null,
     val chatFiles: Int? = null,
     val revision: String = "",
+    val extensionCount: Int? = null,
 ) {
     val restoreSpaceReady: Boolean
         get() = requiredRestoreBytes <= 0 || availableRestoreBytes >= requiredRestoreBytes

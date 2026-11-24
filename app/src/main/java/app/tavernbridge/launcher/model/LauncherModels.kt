@@ -4,10 +4,6 @@ enum class AppTheme(val label: String) {
     SYSTEM("시스템 설정"),
     LIGHT("라이트"),
     DARK("다크"),
-    PASTEL("자두"),
-    AVOCADO("아보카도"),
-    BANANA("바나나"),
-    BLUEBERRY("블루베리"),
 }
 
 enum class SillyBranch(val value: String, val label: String, val description: String) {
@@ -136,6 +132,7 @@ data class LauncherUiState(
     val pendingEntry: app.tavernbridge.launcher.entry.LauncherEntryRequest? = null,
     val encryptedBackup: EncryptedBackupState? = null,
     val lastOperationResult: OperationResultSummary? = null,
+    val recentResults: List<OperationResultSummary> = emptyList(),
     val logs: String = "아직 불러온 로그가 없습니다.",
     val previousServerLogs: String = "아직 보관된 이전 서버 로그가 없습니다.",
     val operationHistory: String = "아직 불러온 작업 기록이 없습니다.",
@@ -151,6 +148,7 @@ data class LauncherUiState(
     val backupTransfer: BackupTransferState? = null,
     val backupFolders: List<CustomBackupFolder> = emptyList(),
     val backupStorageReady: Boolean? = null,
+    val safetyCopyCount: Int? = null,
     val safetyInventory: SafetyInventoryUiState = SafetyInventoryUiState(),
     val extensionManagerOpen: Boolean = false,
     val extensionInventory: ExtensionInventory? = null,

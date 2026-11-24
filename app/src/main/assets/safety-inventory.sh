@@ -188,7 +188,7 @@ function discover() {
             } finally { closeDirectory(nested); }
         } else protectedEntries++;
     }
-    const trash = optionalDirectory(root, 'file-trash');
+    const trash = action === 'count' ? null : optionalDirectory(root, 'file-trash');
     if (trash) for (const name of names(trash)) {
         if (TRASH.test(name)) candidates.push(`file-trash/${name}`); else protectedEntries++;
     }
@@ -347,12 +347,19 @@ function deleteItem(item) {
     console.log(`deleted_id_b64=${b64(item.relative)}`);
 }
 async function main() { try {
-    if (!['list', 'export', 'delete', 'validate-trash'].includes(action) || !launcherArgument || !installationArgument) fail('SAFETY_ITEM_UNSUPPORTED', '지원하지 않는 보관 파일 작업입니다.');
+    if (!['list', 'count', 'export', 'delete', 'validate-trash'].includes(action) || !launcherArgument || !installationArgument) fail('SAFETY_ITEM_UNSUPPORTED', '지원하지 않는 보관 파일 작업입니다.');
     if (stat(launcherArgument).isSymbolicLink()) fail('SAFETY_PATH_UNSAFE', '런처 보관 폴더가 심볼릭 링크입니다.');
     rootPath = fs.realpathSync(launcherArgument); root = openDirectory(rootPath);
     installPath = exists(installationArgument) ? fs.realpathSync(installationArgument) : path.resolve(installationArgument);
     const discovery = discover(), baseline = handles.length;
-    if (action === 'list') {
+    if (action === 'count') {
+        let count = 0;
+        for (const candidate of discovery.candidates) {
+            try { entry(candidate); count++; } catch (_) { /* also excluded by the inventory list */ }
+            finally { releaseAfter(baseline); }
+        }
+        if (!scanTruncated) console.log(`safety_copies=${count}`);
+    } else if (action === 'list') {
         if (!/^(0|[1-9][0-9]{0,7})$/.test(selected || '0')) fail('SAFETY_ITEM_UNSUPPORTED', '목록 페이지가 올바르지 않습니다.');
         let cursor = Number(selected || '0'), output = '', skipped = 0;
         if (cursor > discovery.candidates.length) fail('SAFETY_ITEM_CHANGED', '보관 목록이 변경되었습니다. 처음부터 다시 열어 주세요.');

@@ -28,13 +28,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import app.tavernbridge.launcher.ui.theme.V2Mono
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.LauncherUiState
@@ -43,6 +42,7 @@ import app.tavernbridge.launcher.model.TermuxSetupStatus
 /** An in-app example, not an overlay on Termux or an interactive terminal. */
 @Composable
 internal fun TermuxPasteIllustration() {
+    val colors = MaterialTheme.colorScheme
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             "Termux 화면 예시",
@@ -55,8 +55,8 @@ internal fun TermuxPasteIllustration() {
                 .clearAndSetSemantics {
                     contentDescription = "Termux 화면 예시: 검은 화면을 길게 눌러 붙여넣기를 선택하고, 키보드의 Enter 키를 누릅니다."
                 },
-            color = Color(0xFF17191D),
-            contentColor = Color(0xFFF2F4F8),
+            color = colors.inverseSurface,
+            contentColor = colors.inverseOnSurface,
             shape = RoundedCornerShape(16.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -64,7 +64,7 @@ internal fun TermuxPasteIllustration() {
                     modifier = Modifier.padding(start = 16.dp, top = 14.dp, end = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text("$ ▌", fontFamily = FontFamily.Monospace, color = Color(0xFFF2F4F8))
+                    Text("$ ▌", fontFamily = V2Mono, color = colors.inverseOnSurface)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -72,20 +72,20 @@ internal fun TermuxPasteIllustration() {
                         Box(Modifier.size(62.dp), contentAlignment = Alignment.Center) {
                             Box(
                                 Modifier.size(60.dp)
-                                    .border(1.dp, Color(0xFFAFC8FF).copy(alpha = .4f), CircleShape),
+                                    .border(1.dp, colors.inverseOnSurface.copy(alpha = .55f), CircleShape),
                             )
                             Box(
                                 Modifier.size(44.dp)
-                                    .background(Color(0xFFAFC8FF).copy(alpha = .16f), CircleShape)
-                                    .border(1.dp, Color(0xFFAFC8FF), CircleShape),
+                                    .background(colors.inverseOnSurface.copy(alpha = .16f), CircleShape)
+                                    .border(1.dp, colors.inverseOnSurface, CircleShape),
                             )
-                            Icon(Icons.Outlined.TouchApp, null, Modifier.size(30.dp), tint = Color(0xFFF2F4F8))
+                            Icon(Icons.Outlined.TouchApp, null, Modifier.size(30.dp), tint = colors.inverseOnSurface)
                         }
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFFF0F1F4),
-                                contentColor = Color(0xFF1B1D22),
+                                color = colors.inverseOnSurface,
+                                contentColor = colors.inverseSurface,
                             ) {
                                 Text(
                                     "붙여넣기",
@@ -96,7 +96,7 @@ internal fun TermuxPasteIllustration() {
                             }
                             Text(
                                 "빈 곳을 길게 눌러요",
-                                color = Color(0xFFD8DCE5),
+                                color = colors.inverseOnSurface,
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -105,7 +105,7 @@ internal fun TermuxPasteIllustration() {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF30343D))
+                        .background(colors.surfaceContainer),
                         .padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -113,7 +113,7 @@ internal fun TermuxPasteIllustration() {
                     Text(
                         "키보드",
                         modifier = Modifier.weight(1f),
-                        color = Color(0xFFD8DCE5),
+                        color = colors.onSurfaceVariant,
                         style = MaterialTheme.typography.labelMedium,
                     )
                     Surface(

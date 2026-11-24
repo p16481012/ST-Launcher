@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.sp
 import app.tavernbridge.launcher.model.searchLog
 import app.tavernbridge.launcher.model.visibleLogLines
 import app.tavernbridge.launcher.model.isProblemLog
+import app.tavernbridge.launcher.model.logTimestampLength
+import app.tavernbridge.launcher.ui.theme.V2Mono
 import app.tavernbridge.launcher.security.redactSensitiveText
 import app.tavernbridge.launcher.ui.components.FollowLogTail
 
@@ -58,15 +60,17 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
     val lines = remember(log, query, problemsOnly) { visibleLogLines(log, query, problemsOnly) }
     val visible = remember(lines) { lines.joinToString("\n") }
     val matches = remember(visible, query) { searchLog(visible, query) }
-    val highlight = MaterialTheme.colorScheme.tertiaryContainer
-    val highlightText = MaterialTheme.colorScheme.onTertiaryContainer
+    val highlight = MaterialTheme.colorScheme.secondaryContainer
+    val highlightText = MaterialTheme.colorScheme.onSecondaryContainer
+    val timestampColor = MaterialTheme.colorScheme.outline
     val error = MaterialTheme.colorScheme.error
     val errorBg = MaterialTheme.colorScheme.errorContainer
-    val annotated = remember(visible, lines, matches, highlight, highlightText, error, errorBg) {
+    val annotated = remember(visible, lines, matches, highlight, highlightText, error, errorBg, timestampColor) {
         AnnotatedString.Builder(visible).apply {
             var pos = 0
             lines.forEach { line ->
                 if (isProblemLog(line) && line.isNotEmpty()) addStyle(SpanStyle(color = error, background = errorBg), pos, pos + line.length)
+                else logTimestampLength(line).takeIf { it > 0 }?.let { addStyle(SpanStyle(color = timestampColor), pos, pos + it) }
                 pos += line.length + 1
             }
             matches.ranges.forEach { addStyle(SpanStyle(background = highlight, color = highlightText), it.first, it.last + 1) }
@@ -82,10 +86,10 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
         Surface(Modifier.fillMaxWidth().weight(1f), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
             SelectionContainer {
                 Text(if (visible.isNotBlank()) annotated else AnnotatedString(if (log.isBlank()) "표시할 로그가 없습니다." else "조건에 맞는 로그가 없습니다."),
-                    Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp), fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
+                    Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp), fontFamily = V2Mono, fontSize = 12.sp, lineHeight = 18.sp)
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        V2BottomActions { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             IconToggleButton(checked = follow, onCheckedChange = { follow = it }) {
                 Icon(Icons.Outlined.VerticalAlignBottom, if (follow) "로그 자동 따라가기 끄기" else "로그 자동 따라가기 켜기")
             }
@@ -98,6 +102,6 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                     context.startActivity(Intent.createChooser(intent, "로그 공유"))
                 }.isFailure
             }, modifier = Modifier.weight(1f).heightIn(min = 48.dp), enabled = visible.isNotBlank(), shape = RoundedCornerShape(14.dp)) { Text("공유") }
-        }
+        } }
     }
 }

@@ -18,7 +18,22 @@ data class ManagedExtension(
     val gitHubRepository: String = "",
     val gitBranch: String = "",
     val remoteAhead: Int? = null,
+    val remoteVersion: String? = null,
 )
+
+internal data class ExtensionUpdateMetadata(val ahead: Int, val version: String? = null)
+
+internal fun extensionDisplayOrder(items: List<ManagedExtension>): List<ManagedExtension> =
+    items.sortedWith(compareBy<ManagedExtension> {
+        when { it.canUpdate && (it.remoteAhead ?: 0) > 0 -> 0; !it.disabled -> 1; else -> 2 }
+    }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }.thenBy { it.id })
+
+internal fun extensionVersionLabel(item: ManagedExtension): String = when {
+    (item.remoteAhead ?: 0) <= 0 -> item.version
+    item.remoteVersion != null && item.remoteVersion != item.version ->
+        listOf(item.version, item.remoteVersion).filter { it.isNotBlank() }.joinToString(" → ")
+    else -> listOf(item.version, "새 커밋 ${item.remoteAhead}개").filter { it.isNotBlank() }.joinToString(" · ")
+}
 
 data class ExtensionInventory(
     val items: List<ManagedExtension>, val nextCursor: Int?, val skipped: Int,

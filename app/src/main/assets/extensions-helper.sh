@@ -367,6 +367,40 @@ function recover(emit = true) {
     }
     if (emit) console.log('extension_recovery=none\nextension_recovery_message_b64=');
 }
+// This preflight only enumerates names in the user-content folders. Never read
+// chats, manifests, or secrets. Do not follow links or scan the application tree.
+function resetSummary() {
+    const sums = { characters: 0, chats: 0, extensions: 0 };
+    let visited = 0;
+    const deadline = Date.now() + 10000;
+    function entries(parent, visit) {
+        if (++visited > 150000 || Date.now() > deadline) throw Error('scan limit');
+        if (!exists(parent)) return;
+        const s = stat(parent);
+        if (!s.isDirectory() || s.isSymbolicLink() || fs.realpathSync(parent) !== parent) throw Error('unsupported directory');
+        const handle = fs.opendirSync(parent);
+        try { for (let entry; (entry = handle.readSync()) !== null;) {
+            if (++visited > 150000 || Date.now() > deadline) throw Error('scan limit');
+            if (safeName(entry.name) && !entry.isSymbolicLink()) visit(entry, path.join(parent, entry.name));
+        } } finally { handle.closeSync(); }
+    }
+    function cards(user) { entries(path.join(user, 'characters'), e => { if (e.isFile() && /\.png$/i.test(e.name)) sums.characters++; }); }
+    function chats(dir, nested) { entries(dir, (e, child) => {
+        if (e.isFile() && /\.jsonl$/i.test(e.name)) sums.chats++;
+        else if (nested && e.isDirectory()) chats(child, false);
+    }); }
+    function extensions(dir) { entries(dir, (e, child) => {
+        if (e.isDirectory() && ['manifest.json', DISABLED].some(name => {
+            const file = path.join(child, name); return exists(file) && stat(file).isFile();
+        })) sums.extensions++;
+    }); }
+    function content(user) { cards(user); chats(path.join(user,'chats'),true); chats(path.join(user,'group chats'),true); }
+    const users = path.join(root, 'data');
+    entries(users, (e, user) => { if (e.isDirectory()) { content(user); extensions(path.join(user, 'extensions')); } });
+    content(path.join(root, 'public'));
+    extensions(path.join(root, 'public/scripts/extensions/third-party'));
+    for (const [name, count] of Object.entries(sums)) console.log(name + '=' + count);
+}
 function list() {
     const r = recoveryState(), candidates = []; let skipped = 0;
     function children(parent, prefix) {
@@ -463,6 +497,7 @@ async function update(item) {
     if (action === 'inspect-recovery') emitRecovery(recoveryState());
     else if (action === 'recover') recover();
     else if (action === 'list') list();
+    else if (action === 'reset-summary') resetSummary();
     else {
         if (recoveryState().status !== 'none') fail('EXTENSION_RECOVERY_PENDING', '중단된 확장 교체부터 점검·복구하세요.');
         checkpoint(); const item = selected();

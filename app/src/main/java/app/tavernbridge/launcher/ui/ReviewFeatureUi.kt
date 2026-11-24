@@ -84,7 +84,7 @@ internal fun UpdateChangesPreview(report: UpdatePreflight) {
                         report.changes.forEach { change ->
                             Column {
                                 Text(change.subject, style = MaterialTheme.typography.bodyMedium)
-                                Text(change.commit.take(7), fontFamily = FontFamily.Monospace,
+                                Text(change.commit.take(7), fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }

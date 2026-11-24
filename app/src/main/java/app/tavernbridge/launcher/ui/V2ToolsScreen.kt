@@ -33,12 +33,13 @@ import androidx.compose.ui.unit.dp
 import android.text.format.Formatter
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
+import app.tavernbridge.launcher.ui.theme.V2Mono
 
 @Composable
 internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
     onUpdate: () -> Unit, onRepair: () -> Unit, onReset: (Boolean) -> Unit, onOpenInstallation: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 720.dp
+        val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 && maxWidth >= 720.dp
         val masterWidth = (maxWidth * .32f).coerceIn(238.dp, 360.dp)
         val twoFileColumns = wide && (maxWidth - masterWidth).value / LocalDensity.current.fontScale.coerceAtLeast(1f) >= 560f
         val selected = state.toolPage
@@ -48,9 +49,9 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
         Row(Modifier.fillMaxSize()) {
             if (wide || selected == ToolPage.INDEX) {
                 Column((if (wide) Modifier.width(masterWidth) else Modifier.weight(1f))
-                    .fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 28.dp else 20.dp, vertical = 24.dp),
+                    .fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                    Text("도구", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.semantics { heading() })
+                    Text("도구", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
                     val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.EXTENSIONS, ToolPage.FILES),
                         "문제 해결" to listOf(ToolPage.DIAGNOSTICS, ToolPage.LOGS, ToolPage.REPAIR), "주의" to listOf(ToolPage.RESET))
                     groups.forEach { (label, pages) ->
@@ -75,15 +76,15 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                 Column(Modifier.weight(1f).fillMaxHeight().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
                     if (displayed != ToolPage.FILES && !wide) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "도구 목록") }
-                        Text(displayed.label, style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+                        IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
+                        Text(displayed.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                     }
-                    val detailMod = Modifier.fillMaxSize().padding(horizontal = if (wide) 36.dp else 20.dp, vertical = if (wide) 24.dp else 8.dp)
+                    val detailMod = Modifier.fillMaxSize().padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 8.dp)
                     when (displayed) {
                         ToolPage.UPDATE -> UpdateDetail(state, viewModel, onUpdate, onOpenInstallation, detailMod)
                         ToolPage.DIAGNOSTICS -> DiagnosticDetail(state, viewModel, detailMod)
                         ToolPage.LOGS -> ToolLogs(state, viewModel, detailMod)
-                        ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(displayed, state, onRepair, onReset, detailMod)
+                        ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(displayed, state, viewModel, onRepair, onReset, detailMod)
                         ToolPage.EXTENSIONS -> ExtensionManagerDialog(
                             state.extensionInventory, state.extensionLoading, state.isWorking, state.environment.managerConnected &&
                                 !state.environment.processRunning && !state.environment.recoveryPending, state.extensionError,
@@ -114,7 +115,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (title.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            if (action != null) TextButton(onClick = onAction) { Text(action) }
+            if (action != null) TextButton(onClick = onAction, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text(action) }
         }
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Column(content = content)
@@ -123,7 +124,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
 }
 
 @Composable internal fun ToolRow(label: String, note: String = "", trailing: String = "", icon: ImageVector? = null,
-    danger: Boolean = false, current: Boolean = false, accent: Boolean = false, onClick: (() -> Unit)? = null) {
+    danger: Boolean = false, current: Boolean = false, accent: Boolean = false, singleLine: Boolean = false,
+    dataNote: Boolean = false, onClick: (() -> Unit)? = null) {
     val cs = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().background(if (current) cs.surfaceContainerHigh else Color.Transparent)
         .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
@@ -131,10 +133,12 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         icon?.let { Icon(it, null, Modifier.size(20.dp), tint = if (danger) cs.error else cs.onSurfaceVariant) }
         Column(Modifier.weight(1f)) {
-            Text(label, color = if (danger) cs.error else cs.onSurface, style = MaterialTheme.typography.bodyLarge)
-            if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Text(label, color = if (danger) cs.error else cs.onSurface, style = MaterialTheme.typography.bodyLarge,
+                maxLines = if (singleLine) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
+            if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, fontFamily = if (dataNote) V2Mono else null)
         }
-        if (trailing.isNotBlank()) Text(trailing, style = MaterialTheme.typography.bodySmall, color = if (accent) cs.tertiary else cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (trailing.isNotBlank()) Text(trailing, style = MaterialTheme.typography.bodySmall, fontFamily = if (trailing.any(Char::isDigit)) V2Mono else null,
+            color = if (accent) cs.secondary else cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         if (onClick != null) Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp), tint = cs.onSurfaceVariant)
     }
 }
@@ -153,7 +157,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp), content = content)
-        Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), content = footer)
+        V2BottomActions { Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), content = footer) }
     }
 }
 
@@ -178,7 +182,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         if (r != null && r.updateAvailable) {
             ToolGroup("바뀐 내용", if (r.changes.size > 3) if (all) "접기" else "${r.changes.size}개 모두" else null, { all = !all }) {
                 val changes = if (all) r.changes else r.changes.take(3)
-                changes.forEachIndexed { index, c -> ToolRow(c.subject, c.commit.take(7)); if (index != changes.lastIndex) ToolDivider() }
+                changes.forEachIndexed { index, c -> ToolRow(c.subject, c.commit.take(7), dataNote = true); if (index != changes.lastIndex) ToolDivider() }
                 if (changes.isEmpty()) ToolRow("커밋 목록을 확인하지 못했어요.")
                 if (all && r.changesTruncated) ToolRow("일부 변경 사항만 표시합니다.")
             }
@@ -226,8 +230,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                 ToolRow(item.title, item.value, "해결", Icons.Outlined.ErrorOutline, danger = true, onClick = { itemId = item.id })
                 if (index < issues.lastIndex) ToolDivider()
             } }
-            if (normal.isNotEmpty()) ToolGroup("정상", if (normal.size > 3) if (all) "접기" else "${normal.size}개 모두" else null, { all = !all }) {
-                (if (all) normal else normal.take(3)).forEachIndexed { index, item ->
+            if (normal.isNotEmpty()) ToolGroup("정상", if (all) "접기" else "${normal.size}개 모두", { all = !all }) {
+                if (all) normal.forEachIndexed { index, item ->
                     if (index != 0) ToolDivider(); ToolRow(item.title, trailing = item.value, onClick = { itemId = item.id })
                 }
             }
@@ -236,8 +240,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         TermuxProcessHelpCard(Build.VERSION.SDK_INT, vm::openTermuxAppSettings, vm::openBatteryOptimizationSettings) { runCatching { uriHandler.openUri(it) } }
     }
     report?.items?.firstOrNull { it.id == itemId }?.let { item ->
-        ModalBottomSheet(onDismissRequest = { itemId = null }) {
-            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        V2BottomSheet(onClose = { itemId = null }) {
                 Lead(item.title, item.value)
                 if (item.detail.isNotBlank()) Text(item.detail)
                 if (item.recommendation.isNotBlank()) Text(item.recommendation)
@@ -245,17 +248,19 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                     "battery" -> Button(onClick = vm::openBatteryOptimizationSettings) { Text("배터리 설정 열기") }
                     "download_storage" -> Button(onClick = { clipboard.setText(AnnotatedString(vm.storageSetupCommand)); vm.openTermux() }) { Text("연결 명령 복사·Termux 열기") }
                 }
-                TextButton(onClick = { itemId = null }) { Text("닫기") }
-            }
+                TextButton(onClick = { itemId = null }) { Text("확인") }
         }
     }
 }
 
-@Composable private fun MaintenanceDetail(page: ToolPage, state: LauncherUiState, repair: () -> Unit, reset: (Boolean) -> Unit, mod: Modifier) {
+@Composable private fun MaintenanceDetail(page: ToolPage, state: LauncherUiState, vm: LauncherViewModel, repair: () -> Unit, reset: (Boolean) -> Unit, mod: Modifier) {
     val resetMode = page == ToolPage.RESET
     val env = state.environment
     var protect by rememberSaveable { mutableStateOf(true) }
     val ready = env.managerConnected && !state.isWorking && !env.processRunning && !env.operationActive && (env.sillyTavernInstalled || (!resetMode && env.recoveryPending))
+    val impact by produceState<ResetImpact?>(null, resetMode, ready, state.lastOperationResult) {
+        value = if (resetMode && ready) vm.inspectResetImpact() else null
+    }
     DetailLayout(mod, footer = {
         Button({ if (resetMode) reset(protect) else repair() }, Modifier.weight(1f).heightIn(min = 52.dp), enabled = ready,
             colors = if (resetMode) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
@@ -263,13 +268,15 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     }) {
         if (resetMode) {
             Lead("처음 설치한 상태로 되돌려요", "되돌릴 수 없어요. 같은 브랜치를 새로 설치해요.")
-            ToolGroup("지워지는 것") { listOf("캐릭터", "채팅", "확장 프로그램", "설정·API 키").forEachIndexed { index, label ->
-                if (index != 0) ToolDivider(); ToolRow(label, icon = Icons.Outlined.RemoveCircleOutline, danger = true)
+            ToolGroup("지워지는 것") { listOf("캐릭터" to impact?.characters, "채팅" to impact?.chats, "확장 프로그램" to impact?.extensions,
+                "설정·API 키" to null).forEachIndexed { index, (label, count) ->
+                if (index != 0) ToolDivider(); ToolRow(label, trailing = count?.let { "${it}개" } ?: if (index < 3) "미확인" else "",
+                    icon = Icons.Outlined.RemoveCircleOutline, danger = true)
             } }
-            ToolGroup("남는 것") { ToolRow("Download의 백업 파일", trailing = if (state.backupsLoaded) "${state.backups.size}개" else "", icon = Icons.Outlined.Check) }
+            ToolGroup("남는 것") { ToolRow("Download의 백업 파일", trailing = impact?.backups?.let { "${it}개" } ?: if (state.backupsLoaded) "${state.backups.size}개" else "미확인", icon = Icons.Outlined.Check) }
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(protect, { protect = it }); Text("초기화 전에 전체 백업하기") }
         } else {
-            Lead("실행 파일만 다시 맞춰요", "인터넷 필요 · 기기에 따라 걸리는 시간이 달라요")
+            Lead("실행 파일만 다시 맞춰요", "약 3–5분 · 인터넷 필요 (기기·네트워크에 따라 더 걸릴 수 있어요)")
             Text("✓  캐릭터·채팅·설정은 건드리지 않아요")
             ToolGroup("진행 순서") {
                 ToolRow("①   Termux 패키지 확인", "오래된 패키지를 최신으로 맞춰요"); ToolDivider()
@@ -317,9 +324,9 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     val folder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { it?.let(vm::importSillyTavernFolder) }
     TavernFileManagerDialog(state, vm::loadSillyTavernFolder, vm::openSillyTavernFile, vm::openSillyTavernDirectory,
         vm::readSillyTavernTextFile, vm::saveSillyTavernTextFile, vm::closeTextEditor, vm::createSillyTavernFolder,
-        vm::createSillyTavernFile, vm::renameSillyTavernEntry, vm::trashSillyTavernEntry, vm::undoLastTrashedEntry,
+        vm::createSillyTavernFile, vm::renameSillyTavernEntry, vm::trashSillyTavernEntry,
         { runCatching { file.launch(arrayOf("*/*")) }.onFailure { vm.showMessage("파일 선택 화면을 열 수 없습니다.") } },
         { runCatching { folder.launch(null) }.onFailure { vm.showMessage("폴더 선택 화면을 열 수 없습니다.") } }, back,
-        vm::cancelCurrentOperation, vm::trashSillyTavernEntries, vm::previewSillyTavernFile, state.filePreview, vm::closeFilePreview,
+        vm::trashSillyTavernEntries, vm::previewSillyTavernFile, state.filePreview, vm::closeFilePreview,
         embedded = true, sideBySide = twoColumns)
 }

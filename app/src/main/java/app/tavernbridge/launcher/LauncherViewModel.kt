@@ -133,6 +133,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             backupReminderNowMillis = System.currentTimeMillis(),
             backgroundStatus = repository.backgroundStatus(),
             lastOperationResult = savedOperationResult,
+            recentResults = operationResultStore.recent(),
             lastTrashedEntryId = repository.lastTrashedEntryId(),
         ),
     )
@@ -144,6 +145,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val environmentRefreshGate = EnvironmentRefreshGate()
     private val progressLogHistory = ProgressLogHistory()
     private var fileBrowserJob: Job? = null
+    private var filePreviewJob: Job? = null
     @Volatile private var operationCancellationRequested = false
     private var activeOperationControl: OperationCancellationControl? = null
     private var cancellationRequestJob: Job? = null
@@ -183,8 +185,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun selectSection(section: MainSection) {
         if (state.value.section == MainSection.LOGS && state.value.toolPage == ToolPage.FILES) {
-            if (state.value.fileBrowserMutating) return
-            closeSillyTavernFolder()
+            leaveFileTools()
         }
         if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
         if (section == MainSection.SETUP && state.value.setupDeferred) return resumeSetup()
@@ -194,17 +195,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun selectTool(page: ToolPage) {
         if (state.value.toolPage == ToolPage.EXTENSIONS && page != ToolPage.EXTENSIONS) closeExtensions()
         if (state.value.toolPage == ToolPage.FILES && page != ToolPage.FILES) {
-            if (state.value.fileBrowserMutating) return
-            closeSillyTavernFolder()
+            leaveFileTools()
         }
         if (page == ToolPage.LOGS) { openDiagnostics(DiagnosticPanel.SERVER_LOG); return }
         mutableState.update { it.copy(section = MainSection.LOGS, toolPage = page, diagnosticPanel = DiagnosticPanel.OVERVIEW) }
+        if (page == ToolPage.FILES && state.value.fileBrowserMutating) mutableState.update { it.copy(fileBrowserOpen = true) }
         if (!state.value.environment.managerConnected || state.value.isWorking) return
         when (page) {
             ToolPage.EXTENSIONS -> loadExtensions()
             ToolPage.FILES -> openSillyTavernFolder()
             else -> Unit
         }
+    }
+
+    suspend fun inspectResetImpact(): app.tavernbridge.launcher.model.ResetImpact? {
+        val ui = state.value
+        if (!ui.environment.managerConnected || !ui.environment.sillyTavernInstalled || ui.isWorking) return null
+        return try { repository.inspectResetImpact() }
+        catch (cancel: CancellationException) { throw cancel }
+        catch (_: Exception) { null }
     }
 
     fun selectManagementPanel(panel: ManagementPanel) {
@@ -217,8 +226,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun openDiagnostics(panel: DiagnosticPanel) {
         if (state.value.toolPage == ToolPage.FILES) {
-            if (state.value.fileBrowserMutating) return
-            closeSillyTavernFolder()
+            leaveFileTools()
         }
         if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
         mutableState.update { it.copy(section = MainSection.LOGS, diagnosticPanel = panel,
@@ -1427,7 +1435,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             mutableState.update { it.copy(backupsLoaded = false) }
             try {
                 val storageReady = repository.backupStorageReady()
-                val backups = repository.listBackups()
+                val (backups, safetyCount) = repository.readBackupCatalog(true)
                 val reminder = backupReminderStore.observeArchives(backups)
                 val folders = repository.listUserBackupFolders()
                 val updateRecord = repository.lastUpdateRecord()
@@ -1440,6 +1448,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         backupFolders = folders,
                         backupsLoaded = true,
                         backupStorageReady = storageReady,
+                        safetyCopyCount = safetyCount,
                         lastUpdateRecord = updateRecord,
                     )
                 }
@@ -1590,6 +1599,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             maintainServer {
                 repository.createBackup(request).also { result ->
                     result.requireSuccess()
+                    if (!result.stdoutTruncated) backupMetadataStore.rememberCreated(result.stdout)
                     rememberSuccessfulBackup(request)
                     refreshBackupListAfterOperation(suggestCleanup = true)
                 }
@@ -1641,12 +1651,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         try {
             // This read follows a committed backup/restore. Do not relabel that
             // completed operation as cancelled while merely refreshing its list.
-            val backups = withoutOperationCancellation { repository.listBackups() }
+            val (backups, safetyCount) = withoutOperationCancellation { repository.readBackupCatalog(true) }
             val reminder = backupReminderStore.observeArchives(backups)
             val annotations = backupMetadataStore.loadAll(backups.map { archive -> archive.fileName })
             val proposal = if (suggestCleanup) app.tavernbridge.launcher.model.BackupRetentionPolicy.afterCreation(
                 backups, annotations, state.value.displayPreferences.keepBackups) else null
-            mutableState.update { it.copy(backups = backups, backupsLoaded = true,
+            mutableState.update { it.copy(backups = backups, backupsLoaded = true, safetyCopyCount = safetyCount,
                 backupAnnotations = annotations, backupCleanupPreview = proposal ?: it.backupCleanupPreview,
                 backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
         } catch (cancelled: CancellationException) {
@@ -1788,17 +1798,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         mutableState.update { it.copy(extensionLoading = true, extensionError = "") }
         viewModelScope.launch {
             try {
-                val results = mutableMapOf<Pair<String, String>, Int?>()
+                val results = mutableMapOf<Pair<String, String>, app.tavernbridge.launcher.model.ExtensionUpdateMetadata?>()
                 for (batch in entries.chunked(4)) {
                     if (generation != extensionListGeneration) return@launch
                     results += coroutineScope { batch.map { item -> async {
-                        (item.id to item.revision) to app.tavernbridge.launcher.data.ExtensionVersionClient.ahead(item)
+                        (item.id to item.revision) to app.tavernbridge.launcher.data.ExtensionVersionClient.inspect(item)
                     } }.awaitAll() }
                 }
                 mutableState.update { ui ->
                     if (generation != extensionListGeneration) ui else ui.copy(extensionInventory = ui.extensionInventory?.let { list ->
                         list.copy(items = list.items.map { item -> if (results.containsKey(item.id to item.revision))
-                            item.copy(remoteAhead = results[item.id to item.revision]) else item })
+                            results[item.id to item.revision].let { item.copy(remoteAhead = it?.ahead, remoteVersion = it?.version) } else item })
                     }, extensionError = if (results.values.any { it == null } || entries.size < supported.size)
                         "확인된 ${results.values.count { it != null }}개만 표시해요. 미확인 항목은 최신으로 간주하지 않아요. 한 번에 최대 40개까지 확인해요." else "")
                 }
@@ -1923,7 +1933,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun loadOperationHistory() = loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = true)
 
-    fun refreshHistorySilently() = loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = false)
+    fun refreshHistorySilently() {
+        val recent = operationResultStore.recent()
+        mutableState.update { it.copy(recentResults = recent) }
+        if (recent.isEmpty() && state.value.environment.managerConnected && !state.value.isWorking)
+            loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = false)
+    }
 
     private fun loadDiagnosticText(panel: DiagnosticPanel, reportErrors: Boolean) {
         if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true || !state.value.termuxSetup.verified) return
@@ -2071,6 +2086,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun preferredBrowser() = repository.preferredBrowser(state.value.environment.port)
 
+    fun savePreferredBrowser(packageName: String) {
+        val saved = repository.savePreferredBrowser(state.value.environment.port, packageName)
+        showMessage(if (saved) "열 앱을 저장했어요." else "앱을 찾을 수 없어요. 다시 선택해 주세요.")
+    }
+
     fun openBrowser(packageName: String? = null, rememberChoice: Boolean = false) {
         if (!repository.openBrowser(state.value.environment.port, packageName, rememberChoice)) {
             mutableState.update { it.copy(error = "선택한 브라우저를 열 수 없습니다. 다른 브라우저를 선택해 주세요.") }
@@ -2101,11 +2121,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openSillyTavernFolder() {
+        if (state.value.fileBrowserMutating) return
+        // Settings and Tools share the same destination. A second full-screen dialog
+        // would obscure the app's bottom notice and the task mini bar.
+        mutableState.update { it.copy(section = MainSection.LOGS, toolPage = ToolPage.FILES) }
         loadSillyTavernFolder("")
     }
 
     fun loadSillyTavernFolder(relativePath: String) {
         if (state.value.fileBrowserMutating || commandEntryBlocked(allowWhileWorking = true)) return
+        closeFilePreview()
         fileBrowserJob?.cancel()
         fileBrowserJob = viewModelScope.launch {
             mutableState.update {
@@ -2134,9 +2159,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun closeSillyTavernFolder() {
         if (state.value.fileBrowserMutating) return
+        closeFilePreview()
         fileBrowserJob?.cancel()
         mutableState.update { it.copy(fileBrowserOpen = false, fileBrowserEntries = emptyList(),
             fileBrowserLoading = false, fileBrowserError = "", fileBrowserNotice = "", editingFile = null, filePreview = null) }
+    }
+
+    private fun leaveFileTools() {
+        if (state.value.fileBrowserMutating) {
+            // Hide the UI only. Preserve the active request and its path for the global progress sheet.
+            mutableState.update { it.copy(fileBrowserOpen = false) }
+        } else closeSillyTavernFolder()
     }
 
     fun openSillyTavernDirectory() {
@@ -2254,17 +2287,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun previewSillyTavernFile(path: String) {
         if (commandEntryBlocked(allowWhileWorking = true) || state.value.fileBrowserLoading) return
         mutableState.update { it.copy(fileBrowserLoading = true, fileBrowserError = "", filePreview = null) }
-        viewModelScope.launch {
+        val parent = state.value.fileBrowserPath
+        filePreviewJob = viewModelScope.launch {
             try {
                 val preview = repository.previewSillyTavernFile(path)
-                mutableState.update { if (it.fileBrowserOpen) it.copy(filePreview = preview) else it }
+                mutableState.update { if (it.fileBrowserOpen && it.fileBrowserPath == parent) it.copy(filePreview = preview) else it }
             } catch (cancelled: CancellationException) { throw cancelled
             } catch (error: Exception) { mutableState.update { it.copy(fileBrowserError = error.userMessage()) } }
-            finally { mutableState.update { it.copy(fileBrowserLoading = false) } }
+            finally { if (kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
+                filePreviewJob = null
+                mutableState.update { it.copy(fileBrowserLoading = false) }
+            } }
         }
     }
 
-    fun closeFilePreview() { mutableState.update { it.copy(filePreview = null) } }
+    fun closeFilePreview() {
+        val pending = filePreviewJob != null
+        filePreviewJob?.cancel(); filePreviewJob = null
+        mutableState.update { it.copy(filePreview = null, fileBrowserLoading = if (pending) false else it.fileBrowserLoading) }
+    }
 
     fun importSillyTavernFile(uri: Uri) {
         val parent = state.value.fileBrowserPath
