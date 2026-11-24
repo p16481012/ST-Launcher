@@ -51,6 +51,15 @@ class RuntimeLibraryRepairSheetTest {
         ui.runOnIdle { assertEquals(listOf(at), syncs); assertEquals(0, retries) }
     }
 
+    @Test fun dismissingTheConfirmationClosesTheSheetWithoutDispatching() {
+        show()
+        ui.onNodeWithText("Termux 패키지 갱신 옵션").performClick()
+        ui.onNodeWithContentDescription("시트 닫기").performClick()
+        ui.onNodeWithText("동의하고 갱신·재검사").assertDoesNotExist()
+        ui.onNodeWithText("Termux 패키지 갱신 옵션").assertDoesNotExist()
+        ui.runOnIdle { assertEquals(emptyList<Long>(), syncs); assertEquals(0, retries) }
+    }
+
     @Test fun ordinaryRetryNeverEnablesThePackageUpgradeMode() {
         show()
         ui.onNodeWithText("전체 갱신 없이 다시 시도").performClick()

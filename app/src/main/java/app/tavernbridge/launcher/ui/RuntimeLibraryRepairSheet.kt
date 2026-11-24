@@ -25,7 +25,7 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
     // Leaving this sheet or recreating the Activity always discards the confirmation.
     var confirming by remember(failureAt) { mutableStateOf(false) }
     var submitted by remember(failureAt) { mutableStateOf(false) }
-    V2BottomSheet(onClose = { if (confirming) confirming = false else onDismiss() }, footer = {
+    V2BottomSheet(onClose = onDismiss, footer = {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (confirming) {
                 V2SheetPrimaryButton("동의하고 갱신·재검사", enabled = !submitted) {
