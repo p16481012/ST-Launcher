@@ -140,7 +140,7 @@ internal fun V2BackupScreen(
                         if (state.environment.processRunning) Text("백업을 가져오려면 서버를 먼저 종료해 주세요.",
                             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            if (dual) TextButton(onClick = { pane = BackupPane.ALL }) { Text("전체 관리") }
+                            if (dual) TextButton(onClick = { pane = BackupPane.ALL }) { Text("전체 관리", color = MaterialTheme.colorScheme.secondary) }
                             IconButton(onClick = onRefresh, enabled = !busy) { Icon(Icons.Outlined.Refresh, "백업 목록 새로고침") }
                             IconButton(onClick = { pane = BackupPane.MORE }) { Icon(Icons.Outlined.MoreHoriz, "암호화·백업 추가 설정") }
                         }
@@ -224,7 +224,7 @@ private fun BackupEntry(icon: ImageVector, label: String, suffix: String = "", e
     val stack = LocalDensity.current.fontScale >= 1.3f
     Row(Modifier.fillMaxWidth().clickable(enabled, role = Role.Button, onClick = click).heightIn(min = 56.dp).padding(horizontal = 18.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        val color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else .48f)
+        val color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.disabledInk
         Icon(icon, null, Modifier.size(20.dp), tint = color)
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyLarge, color = if (enabled) MaterialTheme.colorScheme.onSurface else color)
@@ -240,7 +240,7 @@ private fun BackupArchiveRow(archive: BackupArchive, first: Boolean, last: Boole
     val top = if (first) 18.dp else 0.dp
     val bottom = if (last) 18.dp else 0.dp
     Column(Modifier.clip(RoundedCornerShape(top, top, bottom, bottom))
-        .background(if (selected) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface)) {
+        .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)) {
         BackupEntry(Icons.Outlined.FileDownload, archiveHeading(archive), formatBackupBytes(archive.sizeBytes), click = click)
         if (!last) HorizontalDivider(Modifier.padding(start = 52.dp, end = 18.dp), color = MaterialTheme.colorScheme.outlineVariant)
     }

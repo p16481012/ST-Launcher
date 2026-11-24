@@ -130,11 +130,11 @@ internal fun InstallationImportConfirmation(
 }
 
 @Composable
-internal fun ReplacementBackupChoice(checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun ReplacementBackupChoice(checked: Boolean, label: String = "현재 설치를 먼저 ZIP으로 백업", onChange: (Boolean) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }, verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = checked, onCheckedChange = onChange)
-            Text("현재 설치를 먼저 ZIP으로 백업", modifier = Modifier.weight(1f))
+            Text(label, modifier = Modifier.weight(1f))
         }
         Text(if (checked) "Download에 전체 백업을 만듭니다. 데이터 크기만큼 시간·공간이 추가되며, 백업 실패 시 교체하지 않습니다. API 키 등 비밀 설정도 포함되며 암호화되지 않습니다."
             else "교체가 완료되면 기존 데이터의 임시 보호 사본은 삭제됩니다. 별도 백업이 없으면 이전 상태로 되돌릴 수 없습니다.",

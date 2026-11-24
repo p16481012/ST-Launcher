@@ -162,7 +162,7 @@ internal fun SetupScreen(
                             val current = index + 1 == step && !completed
                             Row(Modifier.heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                if (completed) Icon(Icons.Outlined.Check, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.tertiary)
+                                if (completed) Icon(Icons.Outlined.Check, null, Modifier.size(20.dp), tint = app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.live)
                                 else Surface(Modifier.size(24.dp), shape = CircleShape, border = if (current) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                     color = if (current) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.background,
                                     contentColor = if (current) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurfaceVariant) {

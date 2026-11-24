@@ -17,10 +17,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
             'data/user/chats/card/first.jsonl' 'data/user/group chats/group.jsonl' \
             'data/other/chats/card/second.JSONL' 'public/chats/legacy/chat.jsonl' \
             'data/user/chats/not-conversation.json' 'data/user/groups/group.json' \
-            'data/user/backgrounds/card.png' 'data/user/chats/'
+            'data/user/backgrounds/card.png' 'data/user/chats/' \
+            'data/user/extensions/example/manifest.json' 'public/scripts/extensions/third-party/global/manifest.json' \
+            'public/scripts/extensions/third-party/global/tests/manifest.json'
     }
     counts="$(archive_content_counts fixture.zip)"
-    [[ "$counts" == $'entry_count=14\ncharacter_files=4\nchat_files=4' ]] || fail "wrong counts: $counts"
+    [[ "$counts" == $'entry_count=17\ncharacter_files=4\nchat_files=4\nextension_count=2' ]] || fail "wrong counts: $counts"
     [[ "$(wc -c < "$TEST_ROOT/scans")" == 1 ]] || fail 'counting added an archive scan'
 )
 base=$'format=st-launcher-backup-v1\nitems=user_data\nsecrets=0\nexpanded_bytes=12\nentry_count=2'
@@ -28,10 +30,11 @@ backup_metadata_valid "$base" || fail 'old metadata rejected'
 backup_metadata_valid "$base"$'\ncharacter_files=0\nchat_files=2' || fail 'valid counts rejected'
 for bad in '-1' '500001' '99999999999999999999999999999999999' 'text' '1+1'; do
     if backup_metadata_valid "$base"$'\ncharacter_files='"$bad"; then fail 'unsafe count accepted'; fi
+    if backup_metadata_valid "$base"$'\nextension_count='"$bad"; then fail 'unsafe extension count accepted'; fi
 done
 if backup_metadata_valid "$base"$'\nchat_files=1\nchat_files=2'; then fail 'duplicate counts accepted'; fi
 (
     unzip() { return 9; }
     if archive_content_counts broken.zip >/dev/null; then fail 'failed ZIP listing counted as empty'; fi
 )
-echo 'PASS: single-pass character/chat file metadata, old backups, invalid counts and scan failure'
+echo 'PASS: single-pass character/chat/extension metadata, old backups, invalid counts and scan failure'

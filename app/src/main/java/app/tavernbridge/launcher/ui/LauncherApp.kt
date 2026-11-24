@@ -380,7 +380,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(pending.description)
-                    if (pending.allowBackup) ReplacementBackupChoice(pending.backupBefore) {
+                    if (pending.allowBackup) ReplacementBackupChoice(pending.backupBefore,
+                        label = if (pending.action == ConfirmationAction.RESET) "초기화 전에 전체 백업하기" else "현재 설치를 먼저 ZIP으로 백업") {
                         confirmation = pending.copy(backupBefore = it)
                     }
                 }
