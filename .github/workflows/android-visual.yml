@@ -91,7 +91,7 @@ jobs:
           mkdir -p visual-results
           if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then cp "$RUNNER_TEMP/emulator.log" visual-results/emulator.log; fi
           if adb get-state 2>/dev/null | grep -q device; then
-            names=(home setup-step-3 settings-index settings-display)
+            names=(home setup-step-3 settings-index settings-display modal-confirm modal-long modal-backup modal-info modal-app-management)
             for screen in home settings backups; do for mode in light dark; do for contrast in normal high; do for accent in amber green wine slate; do
               names+=("palette-$screen-$mode-$contrast-$accent")
             done; done; done; done
@@ -101,12 +101,13 @@ jobs:
                 adb exec-out run-as app.tavernbridge.stlauncher.debug cat "$path" > "visual-results/$name.png"
               fi
             done
+            adb exec-out run-as app.tavernbridge.stlauncher.debug cat files/v2-visual/modal-geometry.tsv > visual-results/modal-geometry.tsv
           fi
       - name: Verify PNG capture set
         env:
           FORM: ${{ matrix.form }}
         run: |
-          expected=(home setup-step-3 settings-display)
+          expected=(home setup-step-3 settings-display modal-confirm modal-long modal-backup modal-info modal-app-management)
           if [[ "$FORM" == phone ]]; then expected+=(settings-index); fi
           for name in "${expected[@]}"; do
             test -s "visual-results/$name.png"

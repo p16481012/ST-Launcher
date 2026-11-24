@@ -63,17 +63,17 @@ class V2VisualTest {
         compose.onNodeWithText("지금 백업").assertIsDisplayed().assertIsEnabled().performClick()
         // A dialog has its own Android Compose root. Wait for attachment, not an arbitrary delay.
         try {
-            compose.waitUntil(5_000) { compose.onAllNodesWithText("전체 설치").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("전체 백업").fetchSemanticsNodes().isNotEmpty() }
         } catch (failure: Throwable) {
             val roots = compose.onAllNodes(isRoot(), useUnmergedTree = true).printToString(maxDepth = 18)
             throw AssertionError("백업 범위 시트 미표시: 탭 전달 횟수=$openRequests, 실제 백업 요청=$requests\n$roots", failure)
         }
         compose.runOnIdle { assertEquals(1, openRequests); assertEquals(0, requests) }
-        val full = compose.onNodeWithText("전체 설치")
+        val full = compose.onNodeWithText("전체 백업")
         full.performScrollTo().performClick()
         full.assertIsSelected()
         compose.runOnIdle { assertEquals(0, requests) }
-        compose.onNodeWithText("백업 시작").performScrollTo().performClick()
+        compose.onNodeWithText("백업 시작").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(1, requests); assertEquals(setOf(BackupCategory.FULL), chosen) }
     }
 

@@ -71,7 +71,7 @@ internal fun ExistingInstallationImportCard(
             Text("서버를 종료한 뒤 진행하세요. 검사 후 원본 유지 또는 이동을 선택합니다.", style = MaterialTheme.typography.bodySmall)
         }
     }
-    if (pathPrompt) AlertDialog(
+    if (pathPrompt) V2AlertDialog(
         onDismissRequest = { pathPrompt = false },
         title = { Text("기존 설치 폴더 경로") },
         text = {
@@ -81,11 +81,11 @@ internal fun ExistingInstallationImportCard(
                     label = { Text("Termux에서 접근 가능한 경로") }, modifier = Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { Button(enabled = path.isNotBlank(), onClick = {
+        confirmButton = { V2DialogAction(enabled = path.isNotBlank(), onClick = {
             pathPrompt = false
             onInspectPath(path)
         }) { Text("검사") } },
-        dismissButton = { TextButton(onClick = { pathPrompt = false }) { Text("취소") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { pathPrompt = false }) { Text("취소") } },
     )
 }
 
@@ -98,11 +98,11 @@ internal fun InstallationImportConfirmation(
 ) {
     var moveSource by rememberSaveable(installation.sourcePath) { mutableStateOf(false) }
     var backupExisting by rememberSaveable(installation.sourcePath) { mutableStateOf(true) }
-    AlertDialog(
+    V2AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (installation.sameInstallation) "현재 설치를 사용할까요?" else "이 설치를 가져올까요?") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("원본: ${installation.sourcePath}", fontFamily = V2Mono)
                 Text("버전: ${installation.version.ifBlank { "알 수 없음" }}")
                 Text("파일 용량: ${fileBytes(installation.sizeBytes)}")
@@ -129,7 +129,7 @@ internal fun InstallationImportConfirmation(
                 }
             }
         },
-        confirmButton = { Button(onClick = {
+        confirmButton = { V2DialogAction(tone = if (moveSource || destinationExists && !installation.sameInstallation) V2DialogTone.Danger else V2DialogTone.Primary, onClick = {
             onConfirm(if (moveSource) InstallationImportMode.MOVE else InstallationImportMode.COPY,
                 destinationExists && !installation.sameInstallation && backupExisting)
         }) { Text(when {
@@ -138,7 +138,7 @@ internal fun InstallationImportConfirmation(
             moveSource -> "검증 후 이동"
             else -> "검증 후 가져오기"
         }) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onDismiss) { Text("취소") } },
     )
 }
 
@@ -480,10 +480,10 @@ internal fun TavernFileManagerDialog(
             }
         }
         externalFile?.let { entry ->
-            AlertDialog(onDismissRequest = { externalFile = null }, title = { Text("다른 앱으로 열까요?") },
+            V2AlertDialog(onDismissRequest = { externalFile = null }, title = { Text("다른 앱으로 열까요?") },
                 text = { Text("${entry.name} 파일에 읽기 권한을 부여합니다. API 키나 인증 정보가 포함될 수 있으므로 신뢰하는 앱을 선택하세요.") },
-                confirmButton = { Button(onClick = { externalFile = null; onOpenFile(entry.relativePath) }) { Text("앱 선택") } },
-                dismissButton = { TextButton(onClick = { externalFile = null }) { Text("취소") } })
+                confirmButton = { V2DialogAction(onClick = { externalFile = null; onOpenFile(entry.relativePath) }) { Text("앱 선택") } },
+                dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { externalFile = null }) { Text("취소") } })
         }
         if (newFolder) EntryNameDialog("새 폴더", "", onDismiss = { newFolder = false }) {
             newFolder = false; onCreateFolder(it)
@@ -495,21 +495,21 @@ internal fun TavernFileManagerDialog(
             renameTarget = null; onRename(entry.relativePath, it)
         } }
         trashTarget?.let { entry ->
-            AlertDialog(onDismissRequest = { trashTarget = null }, title = { Text("휴지통으로 옮길까요?") },
+            V2AlertDialog(onDismissRequest = { trashTarget = null }, title = { Text("휴지통으로 옮길까요?") },
                 text = { Text("${entry.name}${if (entry.isDirectory) " 폴더와 내부의 모든 항목을" else " 파일을"} 설치 폴더에서 분리합니다. 영구 삭제하지 않고 Termux의 런처 휴지통에 보관하며 복구할 수 있습니다.") },
-                confirmButton = { Button(enabled = canModify, onClick = { trashTarget = null; onTrash(entry.relativePath) }) { Text("휴지통으로 이동") } },
-                dismissButton = { TextButton(onClick = { trashTarget = null }) { Text("취소") } })
+                confirmButton = { V2DialogAction(tone = V2DialogTone.Danger, enabled = canModify, onClick = { trashTarget = null; onTrash(entry.relativePath) }) { Text("휴지통으로 이동") } },
+                dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { trashTarget = null }) { Text("취소") } })
         }
         batchConfirmation?.let { entries ->
-            AlertDialog(onDismissRequest = { batchConfirmation = null }, title = { Text("${entries.size}개 항목을 휴지통으로 옮길까요?") },
-                text = { Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            V2AlertDialog(onDismissRequest = { batchConfirmation = null }, title = { Text("${entries.size}개 항목을 휴지통으로 옮길까요?") },
+                text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("아래 항목만 순서대로 옮깁니다. 폴더 안의 내용도 포함됩니다. 실패하면 이미 옮긴 항목은 휴지통에 남으며 성공·실패 내역을 표시합니다.")
                     entries.forEach { Text("• ${it.name}${if (it.isDirectory) " (폴더)" else ""}") }
                 } },
-                confirmButton = { Button(enabled = canModify, onClick = {
+                confirmButton = { V2DialogAction(tone = V2DialogTone.Danger, enabled = canModify, onClick = {
                     batchConfirmation = null; selectionMode = false; selectedPaths = emptySet(); onTrashMany(entries)
                 }) { Text("선택 항목 이동") } },
-                dismissButton = { TextButton(onClick = { batchConfirmation = null }) { Text("취소") } })
+                dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { batchConfirmation = null }) { Text("취소") } })
         }
         if (sortSheet) FileSortSheet(sort, onSelect = { sort = it; sortSheet = false }, onClose = { sortSheet = false })
         state.editingFile?.let { file -> TavernTextEditor(file, state, onSave, onCloseEditor) }
@@ -575,11 +575,11 @@ private fun InlineFilePreview(preview: TavernFilePreview) {
 private fun EntryNameDialog(title: String, initial: String, onDismiss: () -> Unit, nameHint: String? = null,
     onConfirm: (String) -> Unit) {
     var name by remember(initial) { mutableStateOf(initial) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
-        OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("이름") },
+    V2AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
+        OutlinedTextField(value = name, onValueChange = { name = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("이름") },
             placeholder = { nameHint?.let { Text(it) } })
-    }, confirmButton = { Button(onClick = { onConfirm(name) }, enabled = validTavernEntryName(name)) { Text("확인") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } })
+    }, confirmButton = { V2DialogAction(onClick = { onConfirm(name) }, enabled = validTavernEntryName(name)) { Text("확인") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onDismiss) { Text("취소") } })
 }
 
 @Composable
@@ -610,10 +610,10 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
                 }
             }
         }
-        if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text("수정을 취소할까요?") },
+        if (discard) V2AlertDialog(onDismissRequest = { discard = false }, title = { Text("수정을 취소할까요?") },
             text = { Text("저장하지 않은 변경 내용은 사라집니다.") },
-            confirmButton = { TextButton(onClick = { discard = false; onClose() }) { Text("변경 버리기") } },
-            dismissButton = { TextButton(onClick = { discard = false }) { Text("계속 수정") } })
+            confirmButton = { V2DialogAction(tone = V2DialogTone.Danger, onClick = { discard = false; onClose() }) { Text("변경 버리기") } },
+            dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { discard = false }) { Text("계속 수정") } })
     }
 }
 

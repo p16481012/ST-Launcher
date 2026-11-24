@@ -275,15 +275,23 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         }
     }
     report?.items?.firstOrNull { it.id == itemId }?.let { item ->
-        V2BottomSheet(onClose = { itemId = null }) {
-                Lead(item.title, item.value)
-                if (item.detail.isNotBlank()) Text(item.detail)
-                if (item.recommendation.isNotBlank()) Text(item.recommendation)
+        V2BottomSheet(onClose = { itemId = null }, footer = {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val close = LocalV2SheetDismiss.current ?: { itemId = null }
                 when (item.id) {
-                    "battery" -> Button(onClick = vm::openBatteryOptimizationSettings) { Text("배터리 설정 열기") }
-                    "download_storage" -> Button(onClick = { clipboard.setText(AnnotatedString(vm.storageSetupCommand)); vm.openTermux() }) { Text("연결 명령 복사·Termux 열기") }
+                    "battery" -> V2SheetPrimaryButton("배터리 설정 열기", onClick = vm::openBatteryOptimizationSettings)
+                    "download_storage" -> V2SheetPrimaryButton("연결 명령 복사·Termux 열기") {
+                        clipboard.setText(AnnotatedString(vm.storageSetupCommand)); vm.openTermux()
+                    }
+                    else -> V2SheetPrimaryButton("확인", onClick = close)
                 }
-                TextButton(onClick = { itemId = null }) { Text("확인") }
+                if (item.id == "battery" || item.id == "download_storage")
+                    TextButton(onClick = close, modifier = Modifier.fillMaxWidth()) { Text("확인") }
+            }
+        }) {
+            Lead(item.title, item.value)
+            if (item.detail.isNotBlank()) Text(item.detail)
+            if (item.recommendation.isNotBlank()) Text(item.recommendation)
         }
     }
 }

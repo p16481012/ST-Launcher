@@ -7,8 +7,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import app.tavernbridge.launcher.ui.V2AlertDialog
+import app.tavernbridge.launcher.ui.V2DialogAction
+import app.tavernbridge.launcher.ui.V2DialogTone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,17 +56,17 @@ internal fun OperationCancelControl(
         } else "중단", maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     if (confirming && !pending) {
-        AlertDialog(
+        V2AlertDialog(
             onDismissRequest = { confirming = false },
             title = { Text("진행 중인 작업을 중단할까요?") },
             text = {
                 Text("파일 적용·패키지 설치 중에는 안전한 단계까지 처리한 뒤 중단합니다. 이미 완료된 작업은 되돌리지 않습니다.")
             },
             confirmButton = {
-                Button(onClick = { confirming = false; onCancel() }) { Text("중단 요청") }
+                V2DialogAction(tone = V2DialogTone.Danger, onClick = { confirming = false; onCancel() }) { Text("중단 요청") }
             },
             dismissButton = {
-                TextButton(onClick = { confirming = false }) { Text("계속 진행") }
+                V2DialogAction(tone = V2DialogTone.Quiet, onClick = { confirming = false }) { Text("계속 진행") }
             },
         )
     }

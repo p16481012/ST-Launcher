@@ -32,9 +32,9 @@ internal fun PreviousVersionDialog(
     val snapshots = state.snapshots?.snapshots.orEmpty().filter { it.commit == selected }
     val snapshot = snapshots.find { it.filename == snapshotName }
     val ready = canChange && !state.loading && state.error.isBlank() && target != null && (!restoreData || snapshot != null)
-    AlertDialog(onDismissRequest = onClose,
+    V2AlertDialog(onDismissRequest = onClose, scrollBody = false,
         title = { Text(if (confirming) "이전 버전으로 변경할까요?" else "이전 SillyTavern 버전") },
-        text = { LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        text = { LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (confirming) {
                 item { Text("${page?.currentCommit?.take(7)} → ${target?.commit?.take(7)}\n${target?.subject.orEmpty()}") }
                 item { Text("현재 설치 전체를 비밀 설정·API 키가 포함된 ZIP으로 먼저 백업하고 Download에 보관합니다. 암호화되지 않은 백업이므로 외부 공유에 주의하세요.", color = MaterialTheme.colorScheme.error) }
@@ -83,10 +83,10 @@ internal fun PreviousVersionDialog(
             }
             if (!canChange) item { Text("서버와 다른 작업을 종료한 뒤 변경할 수 있습니다.", color = MaterialTheme.colorScheme.error) }
         } },
-        confirmButton = { TextButton(onClick = {
+        confirmButton = { V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = {
             if (confirming) target?.let { onChange(it, if (restoreData) snapshot else null) } else confirming = true
         }, enabled = ready && (!confirming || acknowledged)) { Text(if (confirming) "전체 백업 후 변경" else "변경 내용 확인") } },
-        dismissButton = { TextButton(onClick = { if (confirming) confirming = false else onClose() }) { Text(if (confirming) "이전" else "닫기") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { if (confirming) confirming = false else onClose() }) { Text(if (confirming) "이전" else "닫기") } },
     )
 }
 

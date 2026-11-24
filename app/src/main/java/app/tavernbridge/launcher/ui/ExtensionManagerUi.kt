@@ -3,8 +3,6 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Extension
@@ -116,31 +114,31 @@ fun ExtensionManagerDialog(
         if (info) V2Explanation("확장 프로그램", "공개 GitHub 원본에서 버전이나 새 커밋 수만 확인해요. 확장을 변경하려면 서버를 먼저 종료해 주세요.", { info = false })
         bulkRevisions?.let { expected ->
             val targets = outdated.filter { expected[it.id] == it.revision }
-            AlertDialog(onDismissRequest = { bulkRevisions = null }, title = { Text("확장 ${expected.size}개를 업데이트할까요?") },
-                text = { Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+            V2AlertDialog(onDismissRequest = { bulkRevisions = null }, title = { Text("확장 ${expected.size}개를 업데이트할까요?") },
+                text = { Column {
                     Text("각 확장을 순서대로 검사하고 교체해요. 오류나 중단이 발생하면 이미 완료한 확장은 유지하고 나머지는 진행하지 않아요.")
                     targets.forEach { Text("· ${it.name}") }
-                } }, confirmButton = { Button(onClick = { bulkRevisions = null; onUpdateAll?.invoke(targets) },
+                } }, confirmButton = { V2DialogAction(onClick = { bulkRevisions = null; onUpdateAll?.invoke(targets) },
                     enabled = canChange && targets.size == expected.size) { Text("업데이트") } },
-                dismissButton = { TextButton({ bulkRevisions = null }) { Text("취소") } })
+                dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { bulkRevisions = null }) { Text("취소") } })
         }
         if (selectedId != null) {
             val item = inventory?.items?.singleOrNull { it.id == selectedId && it.revision == selectedRevision }
             val action = ExtensionAction.entries.firstOrNull { it.name == selectedAction }
-            AlertDialog(onDismissRequest = clearSelection, title = { Text("${action?.label ?: "확장 변경"}할까요?") },
-                text = { Text(if (item != null && action != null) extensionActionExplanation(item, action) else "선택한 항목이 변경되었거나 목록을 다시 확인해야 합니다. 닫은 뒤 새로고침하세요.", Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) },
-                confirmButton = { Button(enabled = canChange && item != null && action != null && (action != ExtensionAction.UPDATE || item.canUpdate), onClick = {
+            V2AlertDialog(onDismissRequest = clearSelection, title = { Text("${action?.label ?: "확장 변경"}할까요?") },
+                text = { Text(if (item != null && action != null) extensionActionExplanation(item, action) else "선택한 항목이 변경되었거나 목록을 다시 확인해야 합니다. 닫은 뒤 새로고침하세요.") },
+                confirmButton = { V2DialogAction(tone = if (action == ExtensionAction.TRASH) V2DialogTone.Danger else V2DialogTone.Primary, enabled = canChange && item != null && action != null && (action != ExtensionAction.UPDATE || item.canUpdate), onClick = {
                     if (item != null && action != null) { clearSelection(); onAction(item, action) }
                 }) { Text(action?.label ?: "확인") } },
-                dismissButton = { TextButton(onClick = clearSelection) { Text("취소") } })
+                dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = clearSelection) { Text("취소") } })
         }
         if (recoverConfirmation) {
-            AlertDialog(onDismissRequest = { recoverConfirmation = false }, title = { Text("중단된 확장 교체를 복구할까요?") },
+            V2AlertDialog(onDismissRequest = { recoverConfirmation = false }, title = { Text("중단된 확장 교체를 복구할까요?") },
                 text = { Text("기록된 폴더와 현재 파일이 일치할 때만 원래 확장을 되돌리거나 완료된 교체를 확정합니다. 일치하지 않으면 원본을 보존하고 중단합니다.") },
-                confirmButton = { Button(enabled = canModify && !busy && !loading && inventory?.recoveryStatus == "pending", onClick = {
+                confirmButton = { V2DialogAction(enabled = canModify && !busy && !loading && inventory?.recoveryStatus == "pending", onClick = {
                     recoverConfirmation = false; onRecover()
                 }) { Text("점검·복구") } },
-                dismissButton = { TextButton(onClick = { recoverConfirmation = false }) { Text("취소") } })
+                dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { recoverConfirmation = false }) { Text("취소") } })
         }
     }
 }

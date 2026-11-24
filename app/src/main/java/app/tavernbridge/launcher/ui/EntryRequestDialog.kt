@@ -8,7 +8,7 @@ import app.tavernbridge.launcher.entry.*
 internal fun EntryRequestDialog(request: LauncherEntryRequest?, gate: LauncherEntryGate?, onConfirm: () -> Unit, onClose: () -> Unit) {
     if (request == null || gate == null) return
     val allowed = gate in setOf(LauncherEntryGate.CONFIRM_START, LauncherEntryGate.CONFIRM_STOP, LauncherEntryGate.CONFIRM_OPEN)
-    AlertDialog(onDismissRequest = onClose,
+    V2AlertDialog(onDismissRequest = onClose,
         title = { Text(if (request.action == LauncherEntryAction.STOP) "서버를 종료할까요?" else "서버를 시작할까요?") },
         text = { Text(when(gate) {
             LauncherEntryGate.CONFIRM_START -> "바로가기에서 요청한 SillyTavern 시작을 실행합니다."
@@ -20,6 +20,6 @@ internal fun EntryRequestDialog(request: LauncherEntryRequest?, gate: LauncherEn
             LauncherEntryGate.ALREADY_STOPPED -> "서버가 이미 종료되어 있습니다."
             else -> "런처 화면에서 상태를 확인해 주세요."
         }) },
-        confirmButton = { if (allowed) TextButton(onClick = onConfirm) { Text("확인 후 실행") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("닫기") } })
+        confirmButton = { if (allowed) V2DialogAction(onClick = onConfirm) { Text("확인 후 실행") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") } })
 }

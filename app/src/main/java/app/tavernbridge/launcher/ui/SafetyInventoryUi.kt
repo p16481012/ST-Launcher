@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -12,7 +11,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Restore
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -51,11 +49,12 @@ internal fun SafetyInventoryDialog(
         pendingRevision = item.revision
         pendingAction = action
     }
-    AlertDialog(
+    V2AlertDialog(
         onDismissRequest = onClose,
+        scrollBody = false,
         title = { Text("안전 사본·휴지통") },
         text = {
-            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item {
                     Text("업데이트 보호 사본과 삭제한 항목입니다. ZIP 백업 목록과는 다르며, 복구에 필요한 자료는 정리 대상에서 제외합니다.")
                 }
@@ -99,11 +98,11 @@ internal fun SafetyInventoryDialog(
                 if (state.truncated) item { Text("목록 조사 한도에 도달했습니다. 모든 항목이 표시된 것은 아닙니다.", style = MaterialTheme.typography.bodySmall) }
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("닫기") } },
-        dismissButton = { TextButton(onClick = onRefresh, enabled = !state.loading) { Text("새로고침") } },
+        confirmButton = { V2DialogAction(onClick = onClose) { Text("닫기") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onRefresh, enabled = !state.loading) { Text("새로고침") } },
     )
     state.items.firstOrNull { it.id == pendingId && it.revision == pendingRevision }?.let { selected ->
-        AlertDialog(
+        V2AlertDialog(
             onDismissRequest = { pendingId = "" },
             title = { Text(when (pendingAction) { "delete" -> "영구 삭제할까요?"; "export" -> "사본을 내보낼까요?"; else -> "원래 위치로 복원할까요?" }) },
             text = { Text(selected.displayName + "\n\n" + when (pendingAction) {
@@ -111,9 +110,9 @@ internal fun SafetyInventoryDialog(
                 "export" -> "Download에 암호화하지 않은 사본을 만듭니다. API 키·대화 등 개인정보가 포함될 수 있으므로 공유에 주의하세요. 원본은 유지합니다."
                 else -> "휴지통 항목을 원래 위치로 되돌립니다. 같은 이름의 파일이나 폴더가 있으면 덮어쓰지 않고 중단합니다."
             }) },
-            confirmButton = { TextButton(onClick = { val action = pendingAction; pendingId = ""; onAction(action, selected) },
+            confirmButton = { V2DialogAction(tone = if (pendingAction == "delete") V2DialogTone.Danger else V2DialogTone.Primary, onClick = { val action = pendingAction; pendingId = ""; onAction(action, selected) },
                 enabled = !state.loading && !state.mutationBlocked) { Text(when (pendingAction) { "delete" -> "영구 삭제"; "export" -> "내보내기"; else -> "복원" }) } },
-            dismissButton = { TextButton(onClick = { pendingId = "" }) { Text("취소") } },
+            dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { pendingId = "" }) { Text("취소") } },
         )
     }
 }

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -187,7 +186,7 @@ internal fun LanSecuritySettingsPage(
                     Text(stringResource(R.string.lan_cancel))
                 }
             }
-    if (summary) AlertDialog(onDismissRequest = { summary = false },
+    if (summary) V2AlertDialog(onDismissRequest = { summary = false },
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         title = { Text("바뀌는 내용 확인") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("같은 Wi-Fi에서 접속: " + if (listen) "허용" else "차단")
@@ -195,8 +194,8 @@ internal fun LanSecuritySettingsPage(
             Text("로그인 요구: " + if (basicAuth) "켬" else "끔")
             if (running) Text("서버를 잠시 끄고 다시 켜요.") else Text("다음 서버 시작부터 적용해요.")
         } },
-        dismissButton = { TextButton(onClick = { summary = false }) { Text("돌아가기") } },
-        confirmButton = { TextButton(enabled = canSubmit, onClick = {
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { summary = false }) { Text("돌아가기") } },
+        confirmButton = { V2DialogAction(enabled = canSubmit, onClick = {
                         summary = false
                         if (canSubmit) {
                             val credentials = if (needsCredentials) EphemeralBasicAuthCredentials.create(username, password) else null

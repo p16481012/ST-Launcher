@@ -3,8 +3,6 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -63,23 +61,23 @@ internal fun BackupAnnotationControl(archive: BackupArchive, annotation: BackupA
         Text(if (annotation.pinned) "고정됨 · 메모 편집" else if (annotation.memo.isNotBlank()) "메모 편집" else "고정·메모")
     }
     if (annotation.memo.isNotBlank()) Text(annotation.memo, style = MaterialTheme.typography.bodySmall)
-    if (open) AlertDialog(onDismissRequest = { open = false }, title = { Text("백업 고정·메모") },
-        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (open) V2AlertDialog(onDismissRequest = { open = false }, title = { Text("백업 고정·메모") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(archive.createdAt.ifBlank { archive.fileName })
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(pinned, { pinned = it }); Text("정리·선택 삭제에서 보호") }
             if (!annotation.trusted) Text("기존 보호 설정을 읽지 못해 고정 상태로 보호했습니다. 직접 저장하면 다시 설정됩니다.")
             OutlinedTextField(memo, { memo = it.take(500) }, label = { Text("메모 · 최대 500자") }, modifier = Modifier.fillMaxWidth())
             Text("메모는 이 런처 안에만 저장됩니다. 비밀번호·API 키는 적지 마세요.", style = MaterialTheme.typography.bodySmall)
-        } }, confirmButton = { TextButton(onClick = { onSave(pinned, memo); open = false }) { Text("저장") } },
-        dismissButton = { TextButton(onClick = { open = false }) { Text("취소") } })
+        } }, confirmButton = { V2DialogAction(onClick = { onSave(pinned, memo); open = false }) { Text("저장") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { open = false }) { Text("취소") } })
 }
 
 @Composable
 internal fun BackupCleanupDialog(preview: BackupRetentionPreview, onClose: () -> Unit, onDelete: (Set<String>) -> Unit) {
     var selected by rememberSaveable(preview) { mutableStateOf(emptyList<String>()) }
     var confirm by rememberSaveable(preview) { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = onClose, title = { Text("백업 정리 미리보기") },
-        text = { LazyColumn(Modifier.fillMaxWidth().heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    V2AlertDialog(onDismissRequest = onClose, title = { Text("백업 정리 미리보기") }, scrollBody = false,
+        text = { LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item {
                 Text("후보 ${preview.candidates.size}개 · 최대 ${storageSize(preview.reclaimableBytes)}\n보호 ${preview.protectedCount}개 · 날짜 미확인 ${preview.unknownDateCount}개")
                 Text("기본 선택은 없습니다. 최대 200개를 직접 선택하세요. 백업만 삭제하며 설치 데이터는 변경하지 않습니다.", style = MaterialTheme.typography.bodySmall)
@@ -94,10 +92,10 @@ internal fun BackupCleanupDialog(preview: BackupRetentionPreview, onClose: () ->
                     }
                 }
             }
-        } }, confirmButton = { TextButton(onClick = { confirm = true }, enabled = selected.isNotEmpty()) { Text("선택한 ${selected.size}개 삭제") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("닫기") } })
-    if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("선택한 백업을 영구 삭제할까요?") },
+        } }, confirmButton = { V2DialogAction(onClick = { confirm = true }, enabled = selected.isNotEmpty()) { Text("선택한 ${selected.size}개 삭제") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") } })
+    if (confirm) V2AlertDialog(onDismissRequest = { confirm = false }, title = { Text("선택한 백업을 영구 삭제할까요?") },
         text = { Text("${selected.size}개 ZIP은 복구할 수 없습니다. 삭제 직전에 고정 상태와 파일 변경 여부를 다시 확인합니다.") },
-        confirmButton = { TextButton(onClick = { confirm = false; onDelete(selected.toSet()) }) { Text("영구 삭제") } },
-        dismissButton = { TextButton(onClick = { confirm = false }) { Text("취소") } })
+        confirmButton = { V2DialogAction(tone = V2DialogTone.Danger, onClick = { confirm = false; onDelete(selected.toSet()) }) { Text("영구 삭제") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { confirm = false }) { Text("취소") } })
 }

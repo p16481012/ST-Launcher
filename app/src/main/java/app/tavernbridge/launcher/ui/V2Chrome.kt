@@ -11,6 +11,7 @@ import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.window.DialogWindowProvider
 import kotlinx.coroutines.launch
@@ -43,7 +44,13 @@ import app.tavernbridge.launcher.model.launcherTabs
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 
 @Composable
-internal fun V2BottomSheet(onClose: () -> Unit, handleLabel: String = "시트 닫기", content: @Composable ColumnScope.() -> Unit) {
+internal fun V2BottomSheet(
+    onClose: () -> Unit,
+    handleLabel: String = "시트 닫기",
+    footer: (@Composable () -> Unit)? = null,
+    animateSize: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     val reduced = LocalV2ReducedMotion.current
     val latestClose by rememberUpdatedState(onClose)
     val scope = rememberCoroutineScope()
@@ -84,11 +91,19 @@ internal fun V2BottomSheet(onClose: () -> Unit, handleLabel: String = "시트 �
     val scrollRest by rememberUpdatedState(rest)
     val nested = remember(scroll) { object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            if (closing || source != NestedScrollSource.UserInput || available.y == 0f ||
-                (drag == 0f && (scroll.value > 0 || available.y < 0))) return Offset.Zero
+            if (closing || source != NestedScrollSource.UserInput || available.y == 0f || drag == 0f) return Offset.Zero
             startDrag()
             val before = drag
             drag = (drag + available.y).coerceIn(0f, height.toFloat())
+            return Offset(0f, drag - before)
+        }
+        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+            // A scrollable child (for example an expanded log) gets to use the
+            // downward drag first. Fold the sheet only after it reaches the top.
+            if (closing || source != NestedScrollSource.UserInput || available.y <= 0f || scroll.value > 0) return Offset.Zero
+            startDrag()
+            val before = drag
+            drag = (drag + available.y).coerceAtMost(height.toFloat())
             return Offset(0f, drag - before)
         }
         override suspend fun onPreFling(available: Velocity): Velocity {
@@ -111,22 +126,38 @@ internal fun V2BottomSheet(onClose: () -> Unit, handleLabel: String = "시트 �
             Spacer(Modifier.matchParentSize().background(Color.Black.copy(alpha = .40f * visible))
                 .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                     indication = null, onClickLabel = handleLabel, onClick = dismiss))
-            Surface(Modifier.statusBarsPadding().imePadding().widthIn(max = 640.dp).fillMaxWidth()
-                .onSizeChanged { height = it.height }.graphicsLayer {
-                    translationY = if (reduced) 0f else (1f - visible) * size.height
-                }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.surface) {
-                Column(Modifier.navigationBarsPadding()) {
-                    Box(Modifier.fillMaxWidth().height(48.dp)
-                        .draggable(rememberDraggableState { delta -> if (!closing) drag = (drag + delta).coerceIn(0f, height.toFloat()) },
-                            Orientation.Vertical, onDragStarted = { startDrag() }, onDragStopped = { rest(it) })
-                        .clickable(role = Role.Button, onClick = dismiss)
-                        .semantics { contentDescription = handleLabel }, contentAlignment = Alignment.Center) {
-                        Spacer(Modifier.size(36.dp, 4.dp).background(MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp)))
-                    }
-                    CompositionLocalProvider(LocalV2SheetDismiss provides dismiss) {
-                    Column(Modifier.fillMaxWidth().nestedScroll(nested).verticalScroll(scroll)
-                        .padding(start = 24.dp, end = 24.dp, bottom = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+            // Keep the sheet flush with the bottom; let it hug short content. Only a
+            // very tall sheet should need scrolling, with room for tapping the scrim.
+            BoxWithConstraints(Modifier.align(Alignment.BottomCenter)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
+                .imePadding().widthIn(max = 640.dp).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+                val topGap = if (maxHeight < 480.dp) 24.dp else 40.dp
+                Surface(Modifier.fillMaxWidth().heightIn(max = (maxHeight - topGap).coerceAtLeast(1.dp))
+                    .testTag("v2-sheet-surface")
+                    .onSizeChanged { height = it.height }.graphicsLayer {
+                        translationY = if (reduced) 0f else (1f - visible) * size.height
+                    }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.surface) {
+                    Column(Modifier.navigationBarsPadding().then(if (animateSize)
+                        Modifier.animateContentSize(tween(if (reduced) 0 else 200)) else Modifier)) {
+                        // The visual handle is 36×4, 12dp from both neighbours. Clickable
+                        // extends small touch targets; the entire surface can also be dragged.
+                        Box(Modifier.fillMaxWidth().height(28.dp)
+                            .draggable(rememberDraggableState { delta -> if (!closing) drag = (drag + delta).coerceIn(0f, height.toFloat()) },
+                                Orientation.Vertical, onDragStarted = { startDrag() }, onDragStopped = { rest(it) })
+                            .clickable(role = Role.Button, onClick = dismiss)
+                            .semantics { contentDescription = handleLabel }, contentAlignment = Alignment.Center) {
+                            Spacer(Modifier.size(36.dp, 4.dp).background(MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp)))
+                        }
+                        CompositionLocalProvider(LocalV2SheetDismiss provides dismiss) {
+                            Column(Modifier.weight(1f, fill = false).fillMaxWidth().testTag("v2-sheet-body")
+                                .nestedScroll(nested).verticalScroll(scroll)
+                                .padding(start = 24.dp, end = 24.dp, bottom = if (footer == null) 24.dp else 0.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+                            footer?.let {
+                                Box(Modifier.fillMaxWidth().testTag("v2-sheet-footer")
+                                    .padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 24.dp)) { it() }
+                            }
+                        }
                     }
                 }
             }
@@ -154,6 +185,12 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
             }
         }
     }
+}
+
+@Composable
+internal fun V2SheetPrimaryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Button(onClick = onClick, enabled = enabled,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text(label) }
 }
 
 internal val LocalV2NoticeHost = staticCompositionLocalOf<SnackbarHostState?> { null }

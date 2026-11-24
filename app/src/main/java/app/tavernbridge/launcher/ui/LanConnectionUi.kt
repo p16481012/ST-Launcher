@@ -3,14 +3,14 @@ package app.tavernbridge.launcher.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.stringResource
@@ -75,12 +76,13 @@ fun LanConnectionCard(
 
 @Composable
 private fun LanQrDialog(endpoint: LanEndpoint, onDismiss: () -> Unit) {
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(stringResource(R.string.lan_show_qr)) },
-        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(endpoint.url)
-            LanQrImage(endpoint)
-        } },
-        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.lan_close)) } })
+    V2BottomSheet(onClose = onDismiss) {
+        Text(stringResource(R.string.lan_show_qr), style = MaterialTheme.typography.titleLarge)
+        Text(endpoint.url)
+        LanQrImage(endpoint)
+        Button(onClick = LocalV2SheetDismiss.current ?: onDismiss, modifier = Modifier.fillMaxWidth(),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp)) { Text(stringResource(R.string.lan_close)) }
+    }
 }
 
 @Composable
@@ -95,12 +97,13 @@ internal fun LanQrImage(endpoint: LanEndpoint) {
             Result.failure(failure)
         }
     }
-                val bitmap = rendered?.getOrNull()
-                if (bitmap != null) {
-                    Image(
-                        bitmap.asImageBitmap(), contentDescription = stringResource(R.string.lan_qr_description),
-                        modifier = Modifier.fillMaxWidth().sizeIn(maxWidth = 320.dp, maxHeight = 320.dp),
-                    )
-                } else Text(stringResource(if (rendered == null) R.string.lan_qr_loading else R.string.lan_qr_failed))
-                Text(stringResource(R.string.lan_qr_notice))
+    val bitmap = rendered?.getOrNull()
+    if (bitmap != null) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Image(bitmap.asImageBitmap(), contentDescription = stringResource(R.string.lan_qr_description),
+                modifier = Modifier.sizeIn(maxWidth = 224.dp).fillMaxWidth().aspectRatio(1f),
+                filterQuality = androidx.compose.ui.graphics.FilterQuality.None)
+        }
+    } else Text(stringResource(if (rendered == null) R.string.lan_qr_loading else R.string.lan_qr_failed))
+    Text(stringResource(R.string.lan_qr_notice), style = MaterialTheme.typography.bodySmall)
 }

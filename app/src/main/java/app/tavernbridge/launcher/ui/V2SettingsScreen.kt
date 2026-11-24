@@ -56,24 +56,34 @@ internal enum class SettingsPage(val title: String, val icon: ImageVector) {
 
 @Composable
 internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewModel) {
-    var editor by remember { mutableStateOf<String?>(null) }
+    // Save only the destination, never the contents of a security form.
+    var editor by rememberSaveable { mutableStateOf<String?>(null) }
     V2SettingsLayout(state, editor, { editor = null }, { mode ->
-        val env = state.environment
-        LanSecuritySettingsPage(LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
-            state.isWorking || env.operationActive, { editor = null }, viewModel::saveLanSecurity,
-            requestedListen = mode == "toggle-listen" || env.externalAccessEnabled,
-            requestedBasicAuth = if (mode == "toggle-auth") !env.basicAuthEnabled else env.basicAuthEnabled,
-            running = env.processRunning, result = state.lastOperationResult)
+        when (mode) {
+            ABOUT_MANAGEMENT -> V2AppManagementSettings(state, viewModel)
+            ABOUT_UPDATE -> UpdateInformationCard(state, viewModel::checkUpdateInformation)
+            else -> {
+                val env = state.environment
+                LanSecuritySettingsPage(LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
+                    state.isWorking || env.operationActive, { editor = null }, viewModel::saveLanSecurity,
+                    requestedListen = mode == "toggle-listen" || env.externalAccessEnabled,
+                    requestedBasicAuth = if (mode == "toggle-auth") !env.basicAuthEnabled else env.basicAuthEnabled,
+                    running = env.processRunning, result = state.lastOperationResult)
+            }
+        }
     }) { page, roomy ->
         when (page) {
             SettingsPage.DISPLAY -> V2DisplaySettings(state, viewModel::selectTheme, viewModel::setDisplayPreferences, roomy)
             SettingsPage.SERVER -> V2ServerSettings(state, viewModel) { editor = it }
             SettingsPage.BACKGROUND -> V2BackgroundSettings(state, viewModel)
             SettingsPage.BACKUP -> V2BackupPreferences(state, viewModel)
-            SettingsPage.ABOUT -> V2AboutSettings(state, viewModel)
+            SettingsPage.ABOUT -> V2AboutSettings(state, viewModel) { editor = it }
         }
     }
 }
+
+internal const val ABOUT_MANAGEMENT = "about-management"
+internal const val ABOUT_UPDATE = "about-update"
 
 @Composable
 internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, closeNested: () -> Unit = {},
@@ -138,7 +148,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                 }).using(null)
             }, label = "settings destination") { (page, child) ->
                 if (page == null) holder.SaveableStateProvider("settings-index") { index(Modifier.fillMaxWidth()) }
-                else holder.SaveableStateProvider(if (child == null) "detail-" + page.name else "lan-" + child) {
+                else holder.SaveableStateProvider(if (child == null) "detail-" + page.name else "child-" + child) {
                 Column(Modifier.fillMaxSize().background(if (wide) colors.surface else colors.background)
                     .verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -148,7 +158,12 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                             IconButton(onClick = back, modifier = Modifier.focusRequester(requester)) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로") }
                             LaunchedEffect(page, child) { requester.requestFocus() }
                         }
-                        Text(if (child != null) "외부 접속·인증 설정" else page.title, style = if (wide) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                        Text(when (child) {
+                            null -> page.title
+                            ABOUT_MANAGEMENT -> "바로가기 · 앱 관리"
+                            ABOUT_UPDATE -> "업데이트 정보"
+                            else -> "외부 접속·인증 설정"
+                        }, style = if (wide) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
                             modifier = Modifier.padding(vertical = 12.dp).semantics { heading() })
                     }
                     if (child == null) detail(page, roomy) else nestedDetail(child)

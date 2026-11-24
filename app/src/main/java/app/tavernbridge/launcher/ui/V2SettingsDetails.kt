@@ -3,8 +3,6 @@ package app.tavernbridge.launcher.ui
 import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
@@ -13,14 +11,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
@@ -35,7 +31,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -48,8 +43,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.BuildConfig
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.R
@@ -159,10 +152,10 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
     if (retention) SettingsChoice(cleanupTitle, BackupKeep.entries, prefs.keepBackups, { it.label },
         { vm.setDisplayPreferences(prefs.copy(keepBackups = it)); retention = false },
         hint = stringResource(R.string.backup_cleanup_exempt)) { retention = false }
-    if (secretsConfirm) AlertDialog(onDismissRequest = { secretsConfirm = false }, title = { Text("수동 백업에 API 키를 포함할까요?") },
+    if (secretsConfirm) V2AlertDialog(onDismissRequest = { secretsConfirm = false }, title = { Text("수동 백업에 API 키를 포함할까요?") },
         text = { Text("사용자 데이터 또는 전체 설치를 직접 백업하면 비밀 설정이 암호화되지 않은 ZIP에 포함될 수 있어요. 백업할 때마다 변경할 수 있어요.") },
-        confirmButton = { TextButton(onClick = { secretsConfirm = false; vm.setDisplayPreferences(prefs.copy(includeSecretsByDefault = true)) }) { Text("포함") } },
-        dismissButton = { TextButton(onClick = { secretsConfirm = false }) { Text("취소") } })
+        confirmButton = { V2DialogAction(onClick = { secretsConfirm = false; vm.setDisplayPreferences(prefs.copy(includeSecretsByDefault = true)) }) { Text("포함") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { secretsConfirm = false }) { Text("취소") } })
 }
 
 @Composable
@@ -295,21 +288,9 @@ internal fun ServerPortDialog(port: Int, configPort: Int?, running: Boolean, ena
     fun submit() {
         if (value == null) validate() else if (enabled && value != port) save(value)
     }
-    val reduced = LocalV2ReducedMotion.current
-    val entrance = remember { Animatable(if (reduced) 1f else 0f) }
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        LaunchedEffect(reduced) { if (reduced) entrance.snapTo(1f) else entrance.animateTo(1f, tween(180, easing = LinearOutSlowInEasing)) }
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Spacer(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() },
-                indication = null, onClickLabel = "포트 입력 닫기", onClick = close))
-            // Live IME insets follow the device's keyboard animation (including floating keyboards);
-            // centering within the remaining space also works in landscape and split-screen.
-            Surface(Modifier.safeDrawingPadding().imePadding().padding(20.dp).widthIn(max = 420.dp).fillMaxWidth()
-                .graphicsLayer { alpha = entrance.value; scaleX = .96f + .04f * entrance.value; scaleY = scaleX },
-                shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    V2AlertDialog(onDismissRequest = close, title = { Text("포트 번호") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val keyboard = LocalSoftwareKeyboardController.current
-            Text("포트 번호", style = MaterialTheme.typography.titleLarge)
             OutlinedTextField(field, {
                 if (it.text.length <= 8 && it.text.all { digit -> digit in '0'..'9' }) { field = it; showError = false }
             }, Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged {
@@ -317,23 +298,19 @@ internal fun ServerPortDialog(port: Int, configPort: Int?, running: Boolean, ena
                 focused = it.isFocused
             }, singleLine = true, label = { Text("포트") }, isError = showError,
                 shape = RoundedCornerShape(12.dp), colors = settingsInputColors(),
-                supportingText = { if (showError) Text("1024–65535 사이로 입력해 주세요.") },
+                supportingText = if (showError) { { Text("1024–65535 사이로 입력해 주세요.") } } else null,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { submit() }))
             if (value != null && configPort != null && configPort != value)
                 Text("config.yaml은 ${configPort}이에요. 런처로 시작하면 이 포트를 써요.", style = MaterialTheme.typography.bodySmall)
             Text(if (running) "저장하면 실행 중인 서버를 잠시 멈추고 다시 시작해요." else "다음 서버 시작부터 적용해요.")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = close) { Text("취소") }
-                TextButton(enabled = enabled && value != null && value != port, onClick = ::submit) {
-                    Text(if (running) "저장하고 재시작" else "저장")
-                }
-            }
             LaunchedEffect(Unit) { focus.requestFocus(); keyboard?.show() }
-        }
-            }
-        }
-    }
+        } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = close) { Text("취소") } },
+        confirmButton = { V2DialogAction(enabled = enabled && value != null && value != port, onClick = ::submit) {
+            Text(if (running) "저장하고 재시작" else "저장")
+        } },
+    )
 }
 
 @Composable
@@ -394,7 +371,7 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
 }
 
 @Composable
-internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel) {
+internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, openDetail: (String) -> Unit) {
     val context = LocalContext.current
     val uri = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
@@ -437,23 +414,28 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel) {
     SettingsGroup {
         SettingsRow("처음 설정 · 설치 확인", onClick = { vm.selectSection(MainSection.SETUP) })
         SettingsDivider()
-        SettingsRow("업데이트 정보", onClick = { dialog = "update" })
+        SettingsRow("업데이트 정보", onClick = { openDetail(ABOUT_UPDATE) })
         SettingsDivider()
-        SettingsRow("바로가기 · 앱 관리", onClick = { dialog = "advanced" })
+        SettingsRow("바로가기 · 앱 관리", onClick = { openDetail(ABOUT_MANAGEMENT) })
     }
-    if (dialog == "update" || dialog == "advanced") AlertDialog(onDismissRequest = { dialog = "" },
-        title = { Text(if (dialog == "update") "업데이트 정보" else "바로가기 · 앱 관리") },
-        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (dialog == "update") UpdateInformationCard(state, vm::checkUpdateInformation) else {
-                LauncherEntrySettingsCard()
-                SettingsRow("SillyTavern 폴더 관리", enabled = state.environment.sillyTavernInstalled, onClick = { dialog = ""; vm.openSillyTavernFolder() })
-                SettingsRow("확장 프로그램 관리", enabled = state.environment.sillyTavernInstalled && !state.isWorking,
-                    onClick = { dialog = ""; vm.selectTool(app.tavernbridge.launcher.model.ToolPage.EXTENSIONS) })
-                SettingsRow("런처 앱 상세 설정 열기", onClick = vm::openLauncherAppSettings)
-            }
-        } }, confirmButton = { TextButton(onClick = { dialog = "" }) { Text("닫기") } })
     if (dialog == "licenses") LicenseDialog { dialog = "" }
     SettingsCaption("깡통 커뮤니티에서 만든 비공식 런처예요. SillyTavern·Termux 공식 프로젝트와는 관련이 없어요.")
+}
+
+@Composable
+internal fun V2AppManagementSettings(state: LauncherUiState, vm: LauncherViewModel) {
+    LauncherEntrySettings()
+    SettingsHeading("앱 관리")
+    SettingsGroup {
+        SettingsRow("SillyTavern 폴더 관리", enabled = state.environment.sillyTavernInstalled, onClick = vm::openSillyTavernFolder)
+        SettingsDivider()
+        SettingsRow("확장 프로그램 관리", enabled = state.environment.sillyTavernInstalled && !state.isWorking,
+            onClick = { vm.selectTool(app.tavernbridge.launcher.model.ToolPage.EXTENSIONS) })
+        SettingsDivider()
+        SettingsRow("런처 앱 상세 설정 열기", onClick = vm::openLauncherAppSettings)
+    }
+    if (!state.environment.sillyTavernInstalled) SettingsCaption("폴더와 확장 프로그램은 SillyTavern 설치 후에 열 수 있어요.")
+    else if (state.isWorking) SettingsCaption("진행 중인 작업이 끝나면 확장 프로그램을 관리할 수 있어요.")
 }
 
 @Composable
@@ -487,12 +469,12 @@ private fun SettingsInfo(title: String, body: String, close: () -> Unit) {
 @Composable
 private fun <T> SettingsChoice(title: String, choices: List<T>, selected: T, label: (T) -> String, select: (T) -> Unit,
     hint: String = "", close: () -> Unit) {
-    AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
-        Column(Modifier.verticalScroll(rememberScrollState()).selectableGroup()) {
+    V2AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
+        Column(Modifier.selectableGroup()) {
             if (hint.isNotEmpty()) SettingsCaption(hint)
             choices.forEach { item -> Row(Modifier.fillMaxWidth().selectable(item == selected, role = Role.RadioButton) { select(item) }
                 .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 RadioButton(selected = item == selected, onClick = null); Text(label(item))
             } }
-        } }, confirmButton = { TextButton(onClick = close) { Text("닫기") } })
+        } }, confirmButton = { V2DialogAction(onClick = close) { Text("닫기") } })
 }

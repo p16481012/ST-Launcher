@@ -6,9 +6,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -83,14 +81,14 @@ internal fun WorkProgressLog(logText: String, initiallyExpanded: Boolean = true,
         }
         if (expanded) {
             Surface(
-                modifier = Modifier.fillMaxWidth().height(210.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 210.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(14.dp),
             ) {
                 SelectionContainer {
                     Text(
                         logText.ifBlank { "아직 출력된 상세 로그가 없습니다." },
-                        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(12.dp),
+                        modifier = Modifier.fillMaxWidth().verticalScroll(scrollState).padding(12.dp),
                         fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono,
                         fontSize = 11.sp,
                         lineHeight = 16.sp,

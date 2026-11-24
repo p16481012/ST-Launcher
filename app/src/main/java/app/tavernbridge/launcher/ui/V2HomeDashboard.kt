@@ -132,12 +132,13 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
             "\n이 주소로 이 기기의 SillyTavern을 열어요.",
             onDismiss = { info = null })
     }
-    selectedResult?.let { result -> V2BottomSheet({ selectedResult = null }) {
+    selectedResult?.let { result -> V2BottomSheet({ selectedResult = null }, footer = {
+        V2SheetPrimaryButton("확인", onClick = LocalV2SheetDismiss.current ?: { selectedResult = null })
+    }) {
         Text(result.title, style = MaterialTheme.typography.titleLarge)
         Text(listOf(result.completedAt, "${result.durationSeconds}초", if (result.succeeded) "완료" else "실패").joinToString(" · "), fontFamily = V2Mono)
         if (result.errorCode.isNotBlank()) Text(result.errorCode, fontFamily = V2Mono, color = MaterialTheme.colorScheme.error)
         Text(result.detail)
-        Button(onClick = { selectedResult = null }) { Text("확인") }
     } }
     historicResult?.let { V2Explanation("작업 결과", it, { historicResult = null }) }
 }
@@ -268,9 +269,10 @@ private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: (
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun V2Explanation(title: String, detail: String, onDismiss: () -> Unit) {
-    V2BottomSheet(onClose = onDismiss) {
-            Text(title, style = MaterialTheme.typography.titleLarge)
-            Text(detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(onClick = LocalV2SheetDismiss.current ?: onDismiss, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text("확인") }
+    V2BottomSheet(onClose = onDismiss, footer = {
+        V2SheetPrimaryButton("확인", onClick = LocalV2SheetDismiss.current ?: onDismiss)
+    }) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Text(detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
