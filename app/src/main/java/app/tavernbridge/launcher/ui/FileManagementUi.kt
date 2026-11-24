@@ -294,15 +294,22 @@ internal fun TavernFileManagerDialog(
                     }
                 }
                 }
-                if (state.environment.processRunning || state.environment.operationActive) Text(
-                    "서버·작업 실행 중에는 탐색만 가능합니다.",
-                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
-                if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError,
-                    Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                if (state.fileBrowserNotice.isNotBlank()) Text(state.fileBrowserNotice,
-                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
-                    if (state.fileBrowserLoading) V2BusyIndicator(Modifier.fillMaxWidth())
-                    Row(Modifier.weight(1f).fillMaxWidth()) {
+                if (state.environment.processRunning || state.environment.operationActive) {
+                    Text("서버·작업 실행 중에는 탐색만 가능합니다.",
+                        Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.fileBrowserError.isNotBlank()) {
+                    Text(state.fileBrowserError, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.fileBrowserNotice.isNotBlank()) {
+                    Text(state.fileBrowserNotice, Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.fileBrowserLoading) {
+                    V2BusyIndicator(Modifier.fillMaxWidth())
+                }
+                Row(Modifier.weight(1f).fillMaxWidth()) {
                     LazyColumn(Modifier.weight(if (sideBySide && !selectionMode) 1.3f else 1f).fillMaxHeight(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                         if (visibleEntries.isEmpty() && !state.fileBrowserLoading) item { Text(if (query.isBlank()) "표시할 항목이 없습니다." else "이 폴더에 일치하는 항목이 없습니다.") }
                         items(visibleEntries, key = { it.relativePath }) { entry ->
@@ -506,10 +513,12 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
                 Text(file.relativePath, style = MaterialTheme.typography.titleMedium)
                 Text("다른 곳에서 파일이 바뀌면 저장을 중단합니다. 수정 내용을 복사한 뒤 파일을 다시 열어 주세요.",
                     style = MaterialTheme.typography.bodySmall)
-                if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
-                    OutlinedTextField(value = content, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 65_536) content = it },
-                        modifier = Modifier.fillMaxWidth().weight(1f), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = V2Mono),
-                        readOnly = !state.canModifyTavernFiles())
+                if (state.fileBrowserError.isNotBlank()) {
+                    Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
+                }
+                OutlinedTextField(value = content, onValueChange = { if (it.toByteArray(Charsets.UTF_8).size <= 65_536) content = it },
+                    modifier = Modifier.fillMaxWidth().weight(1f), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = V2Mono),
+                    readOnly = !state.canModifyTavernFiles())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = { close() }, enabled = !state.fileBrowserMutating) { Text("닫기") }
                     Button(onClick = { onSave(content) }, enabled = state.canModifyTavernFiles() && content != file.content) { Text("저장") }
