@@ -3,7 +3,6 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -16,7 +15,6 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,10 +22,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.BackupReminderNotice
 import app.tavernbridge.launcher.model.UpdatePreflight
@@ -46,18 +42,6 @@ internal fun BackupReminderCard(notice: BackupReminderNotice, onOpen: () -> Unit
                 TextButton(onClick = onSnooze) { Text("7일 뒤에 알림") }
             }
         }
-    }
-}
-
-@Composable
-internal fun BackupReminderSetting(enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("백업 알림", fontWeight = FontWeight.SemiBold)
-            Text("사용자 데이터 백업 기록이 없거나 설정한 주기가 지나면 홈에서 안내합니다. 자동 백업은 실행하지 않습니다.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Switch(checked = enabled, onCheckedChange = onChange)
     }
 }
 

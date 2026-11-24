@@ -18,22 +18,6 @@ import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
 
 @Composable
-internal fun EncryptedBackupCard(enabled: Boolean, onBegin: (EncryptedBackupMode) -> Unit, initiallyExpanded: Boolean = false) {
-    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) { Text("암호화 백업 ${if (expanded) "접기" else "보기"}") }
-            if (expanded) {
-                Text("기존 ZIP을 암호화해 다른 파일로 저장합니다. 원본 ZIP은 암호화되지 않은 채 남으므로 별도로 보관·정리하세요.", style = MaterialTheme.typography.bodySmall)
-                OutlinedButton(onClick = { onBegin(EncryptedBackupMode.EXPORT) }, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("ZIP 선택 후 암호화 저장") }
-                OutlinedButton(onClick = { onBegin(EncryptedBackupMode.RESTORE) }, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("암호화 백업 열기·복원") }
-                Text("원본 ZIP 8 GiB까지 지원합니다. .stbackup 전용 형식으로 일반 ZIP 앱에서 열 수 없으며 암호를 잊으면 복구할 수 없습니다.", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
 internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherViewModel) {
     val transfer = state.encryptedBackup
     var sourceId by rememberSaveable { mutableStateOf<String?>(null) }

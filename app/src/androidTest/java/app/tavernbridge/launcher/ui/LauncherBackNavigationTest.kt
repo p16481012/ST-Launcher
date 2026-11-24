@@ -51,7 +51,7 @@ class LauncherBackNavigationTest {
 
     @Test fun aboutReportHasVisibleBackAndInstallationShortcutIgnoresPreviousBackupPanel() {
         val vm = launchExistingInstallation(readyBackupStorage = true)
-        compose.runOnIdle { vm.selectManagementPanel(ManagementPanel.BACKUP) }
+        compose.runOnIdle { vm.openBackups() }
         compose.onNode(hasText("설정") and hasClickAction()).performClick()
         compose.onNode(hasText("앱 정보") and hasClickAction()).performScrollTo().performClick()
         compose.onNodeWithText("진단 보고서 만들기").performScrollTo().performClick()
@@ -60,11 +60,33 @@ class LauncherBackNavigationTest {
         compose.onNodeWithContentDescription("뒤로").performClick()
         compose.onNodeWithText("설치 정보 확인").performScrollTo().performClick()
         compose.runOnIdle {
-            assertEquals(MainSection.SETUP, vm.state.value.section)
-            assertEquals(ManagementPanel.INSTALL, vm.state.value.managementPanel)
+            assertEquals(MainSection.LOGS, vm.state.value.section)
+            assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage)
         }
         compose.onNodeWithContentDescription("뒤로").performClick()
         compose.onNodeWithText("설치 정보 확인").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun installedManagementActionsAreRealDestinationsAndBackReturnsToTheirOrigin() {
+        val vm = launchExistingInstallation(readyBackupStorage = true)
+        compose.onNode(hasText("도구") and hasClickAction()).performClick()
+        fun openTool(label: String) = compose.onNode(hasText(label) and hasClickAction() and
+            hasAnyAncestor(hasTestTag("tools-index"))).performScrollTo().performClick()
+        openTool("설치 관리")
+        compose.onNodeWithText("내부 저장소 폴더 선택").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("백업·복원").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage) }
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        openTool("업데이트")
+        compose.onNodeWithText("설치 정보·가져오기·브랜치").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage) }
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { assertEquals(ToolPage.UPDATE, vm.state.value.toolPage) }
+        compose.onNodeWithText("이전 버전 선택·복귀").performScrollTo().assertIsNotEnabled()
+        compose.onNode(hasText("백업") and hasClickAction()).performClick()
+        compose.onNodeWithText("지금 백업").assertIsDisplayed()
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { assertEquals(ToolPage.UPDATE, vm.state.value.toolPage) }
     }
 
     @Test fun homeLogReturnsHomeAndToolsLogReturnsTools() {

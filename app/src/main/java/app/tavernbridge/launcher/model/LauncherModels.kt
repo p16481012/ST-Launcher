@@ -27,12 +27,6 @@ enum class MainSection(val label: String) {
 
 val launcherTabs = listOf(MainSection.HOME, MainSection.BACKUPS, MainSection.LOGS, MainSection.SETTINGS)
 
-enum class ManagementPanel(val label: String) {
-    INSTALL("설치"),
-    UPDATE("업데이트"),
-    BACKUP("백업·복원"),
-}
-
 enum class SettingsPanel(val label: String) {
     GENERAL("앱 정보"),
     SERVER("서버 연결"),
@@ -111,7 +105,6 @@ data class LauncherUiState(
     val section: MainSection = MainSection.HOME,
     val navigation: LauncherNavigation = LauncherNavigation(),
     val setupDeferred: Boolean = false,
-    val managementPanel: ManagementPanel = ManagementPanel.INSTALL,
     val settingsPanel: SettingsPanel = SettingsPanel.GENERAL,
     val theme: AppTheme = AppTheme.SYSTEM,
     val displayPreferences: DisplayPreferences = DisplayPreferences(),

@@ -31,7 +31,7 @@ class DiagnosticsFeedbackUiTest {
         compose.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT) {
                 V2ToolsScreen(LauncherUiState(toolPage = ToolPage.DIAGNOSTICS, diagnosticReport = report),
-                    vm, {}, {}, {}, {})
+                    vm, {}, {}, {}, {}, {}, {})
             }
         }
         compose.onNodeWithText("검사 결과 2개").assertIsDisplayed()

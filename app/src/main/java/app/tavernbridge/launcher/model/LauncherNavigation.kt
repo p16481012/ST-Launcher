@@ -6,7 +6,6 @@ data class LauncherVisit(
     val section: MainSection,
     val tool: ToolPage,
     val diagnostic: DiagnosticPanel,
-    val management: ManagementPanel,
     val folderPath: String,
 )
 
@@ -17,7 +16,7 @@ data class LauncherNavigation(
 )
 
 private fun LauncherUiState.visitSnapshot() = LauncherVisit(navigation.entryId, section, toolPage, diagnosticPanel,
-    managementPanel, if (section == MainSection.LOGS && toolPage == ToolPage.FILES) fileBrowserPath else "")
+    if (section == MainSection.LOGS && toolPage == ToolPage.FILES) fileBrowserPath else "")
 
 internal fun LauncherUiState.visit(
     destination: MainSection,
@@ -39,7 +38,6 @@ internal fun LauncherUiState.visit(
 internal fun LauncherUiState.previousScreen(): LauncherUiState {
     val target = navigation.previous.lastOrNull() ?: return this
     return copy(section = target.section, toolPage = target.tool, diagnosticPanel = target.diagnostic,
-        managementPanel = target.management,
         fileBrowserPath = if (target.tool == ToolPage.FILES) target.folderPath else fileBrowserPath,
         navigation = navigation.copy(entryId = target.id, previous = navigation.previous.dropLast(1)))
 }

@@ -403,7 +403,7 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
         val installed = state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected
         SettingsRow(if (installed) "설치 정보 확인" else "처음 설정 · 설치 확인",
             caption = if (installed) "현재 버전과 설치 위치를 확인해요. 다시 설치하지 않아요." else "Termux 연결과 SillyTavern 설치 상태를 확인해요.",
-            onClick = vm::openInstallationFromAbout)
+            onClick = { vm.openInstallationFromAbout(installed) })
         SettingsDivider()
         SettingsRow("업데이트 정보", onClick = { openDetail(ABOUT_UPDATE) })
         SettingsDivider()

@@ -69,7 +69,6 @@ import app.tavernbridge.launcher.model.indicatesExistingInstallation
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
-import app.tavernbridge.launcher.model.ManagementPanel
 import app.tavernbridge.launcher.model.SettingsPanel
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.WorkProgress
@@ -201,6 +200,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         mutableState.update { it.visit(MainSection.SETUP).copy(setupDeferred = false) }
     }
 
+    // An in-flight setup check may discover an existing installation. Replace this route
+    // in place: Back must return to the caller, not reopen the obsolete setup visit.
+    fun settleInstalledSetup() = mutableState.update {
+        if (it.section == MainSection.SETUP && it.environmentChecked && it.environment.sillyTavernInstalled &&
+            it.termuxSetup.verified && it.environment.managerConnected && !it.environment.recoveryPending)
+            it.copy(section = MainSection.LOGS, toolPage = ToolPage.INSTALLATION)
+        else it
+    }
+
     fun finishSetup() = mutableState.update { it.visit(MainSection.HOME, reset = true) }
 
     fun navigateBack() {
@@ -282,19 +290,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         catch (_: Exception) { null }
     }
 
-    fun selectManagementPanel(panel: ManagementPanel) {
-        mutableState.update { it.copy(managementPanel = panel) }
-    }
-
     fun selectSettingsPanel(panel: SettingsPanel) {
         mutableState.update { it.copy(settingsPanel = panel) }
     }
 
-    fun openInstallationFromAbout() {
-        // Capture the originating settings visit first, then choose the installation panel
-        // explicitly. A previously opened backup tab must never decide this shortcut.
-        selectSection(MainSection.SETUP)
-        selectManagementPanel(ManagementPanel.INSTALL)
+    fun openInstallationFromAbout(verifiedInstallationShown: Boolean) {
+        if (verifiedInstallationShown)
+            selectTool(ToolPage.INSTALLATION)
+        else selectSection(MainSection.SETUP)
     }
 
     fun openDiagnostics(panel: DiagnosticPanel) {
@@ -348,14 +351,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun openBackups() {
         selectSection(MainSection.BACKUPS)
-        selectManagementPanel(ManagementPanel.BACKUP)
     }
 
     fun reselectTab(tab: MainSection) {
         if (state.value.toolPage == ToolPage.FILES) leaveFileTools()
         if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
         mutableState.update { it.reselectRoot(tab) }
-        if (tab == MainSection.BACKUPS) selectManagementPanel(ManagementPanel.BACKUP)
     }
 
     fun beginBackupTransfer(archive: BackupArchive, action: BackupTransferAction) {
@@ -2771,7 +2772,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             RetryAction.BACKUP -> {
                 val request = state.value.lastOperationResult?.backupRequest
                 if (request == null) {
-                    mutableState.update { it.visit(MainSection.BACKUPS).copy(managementPanel = ManagementPanel.BACKUP,
+                    mutableState.update { it.visit(MainSection.BACKUPS).copy(
                         error = null, message = "이전 백업의 선택 정보가 없습니다. 백업할 항목을 다시 선택해 주세요.") }
                     loadBackups()
                 } else createBackup(request.categories, request.includeSecrets, request.customFolders)

@@ -28,7 +28,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,38 +39,26 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.HealthAndSafety
-import androidx.compose.material.icons.outlined.InstallMobile
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material.icons.outlined.Build
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.FileDownload
-import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -80,7 +67,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
@@ -102,8 +88,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
@@ -121,13 +105,11 @@ import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.backupRestoreWarnings
 import app.tavernbridge.launcher.model.BackupCategory
-import app.tavernbridge.launcher.model.BackupTransferAction
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.canOfferRuntimeSync
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.ToolPage
-import app.tavernbridge.launcher.model.ManagementPanel
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.hasInstallationHistory
@@ -712,37 +694,19 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
                         }
                     } else if (!showWelcome && state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
-                        ManagementScreen(
-                            state = state,
-                            onBack = if (state.navigation.previous.lastOrNull()?.section == MainSection.SETTINGS) viewModel::navigateBack else null,
-                            panel = if (section == MainSection.BACKUPS) ManagementPanel.BACKUP else state.managementPanel,
-                            requestedArchive = requestedArchive,
-                            archiveReturnToOrigin = archiveReturnToOrigin,
-                            onArchiveOpened = { requestedArchive = null },
-                            onArchiveShortcutBack = { viewModel.navigateBack() },
-                            onSelectPanel = viewModel::selectManagementPanel,
-                            onCheckUpdate = viewModel::checkForUpdates,
-                            onAutoBackupChange = viewModel::setAutoBackupBeforeUpdate,
-                            onUpdate = requestUpdate,
-                            onCreateBackup = viewModel::createBackup,
-                            onRefreshBackups = viewModel::loadBackups,
-                            onBackupReminderChange = viewModel::setBackupReminderEnabled,
-                            onTransferBackup = viewModel::beginBackupTransfer,
-                            onOpenBackupFolder = viewModel::openDownloadsFolder,
-                            onOpenSafetyInventory = viewModel::openSafetyInventory,
-                            onInspectStorage = viewModel::inspectStorageUsage,
-                            onPreviewCleanup = viewModel::previewBackupCleanup,
-                            onSaveBackupAnnotation = viewModel::saveBackupAnnotation,
-                            onEncryptedBackup = viewModel::beginEncryptedBackup,
-                            onSelectiveRestore = viewModel::openSelectiveRestore,
-                            onPreviousVersions = viewModel::openPreviousVersions,
-                            onImportBackup = pickBackup,
-                            onPickInstallation = pickInstallation,
-                            onInspectInstallation = viewModel::inspectExistingInstallation,
-                            storageSetupCommand = viewModel.storageSetupCommand,
-                            onOpenTermux = viewModel::openTermux,
-                            onStorageCommandCopied = {},
-                            onRestoreBackup = { backup ->
+                        if (section == MainSection.SETUP) {
+                            LaunchedEffect(Unit) { viewModel.settleInstalledSetup() }
+                        } else V2BackupScreen(
+                            state = state, onCreateBackup = viewModel::createBackup, onRefresh = viewModel::loadBackups,
+                            onReminderChange = viewModel::setBackupReminderEnabled, onTransfer = viewModel::beginBackupTransfer,
+                            onOpenFolder = viewModel::openDownloadsFolder, onSafety = viewModel::openSafetyInventory,
+                            onScan = viewModel::inspectStorageUsage, onPreviewCleanup = viewModel::previewBackupCleanup,
+                            onSaveAnnotation = viewModel::saveBackupAnnotation, onEncrypted = viewModel::beginEncryptedBackup,
+                            onSelective = viewModel::openSelectiveRestore, onImport = pickBackup,
+                            storageSetupCommand = viewModel.storageSetupCommand, onTermux = viewModel::openTermux, onCopied = {},
+                            requestedArchive = requestedArchive, archiveReturnToOrigin = archiveReturnToOrigin,
+                            onArchiveOpened = { requestedArchive = null }, onArchiveShortcutBack = viewModel::navigateBack,
+                            onRestore = { backup ->
                                 confirmation = Confirmation(
                                     title = "이 백업으로 복원할까요?",
                                     description = backupRestorePreview(backup, state.environment.sillyTavernVersion),
@@ -752,7 +716,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     allowBackup = state.environment.sillyTavernInstalled,
                                 )
                             },
-                            onDeleteBackups = { backups ->
+                            onDelete = { backups ->
                                 confirmation = Confirmation(
                                     title = "선택한 백업 ${backups.size}개를 삭제할까요?",
                                     description = "총 ${formatBackupBytes(backups.sumOf { it.sizeBytes })}의 ZIP을 휴대폰 Download 폴더에서 삭제합니다. 삭제한 파일은 앱에서 복구할 수 없습니다.",
@@ -761,9 +725,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     arguments = backups.map(app.tavernbridge.launcher.model.BackupDeleteSelection::key),
                                 )
                             },
-                            onSwitchBranch = requestBranchSwitch,
-                            onRepair = requestRepair,
-                            onResetInstallation = { requestReset(true) },
                         )
                     } else {
                         SetupScreen(
@@ -802,10 +763,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     }
                     MainSection.LOGS -> V2ToolsScreen(state, viewModel,
                         onUpdate = requestUpdate, onRepair = requestRepair, onReset = requestReset,
-                        onOpenInstallation = {
-                            viewModel.selectManagementPanel(ManagementPanel.INSTALL)
-                            viewModel.selectSection(MainSection.SETUP)
-                        })
+                        onOpenInstallation = { viewModel.selectTool(ToolPage.INSTALLATION) },
+                        onPickInstallation = pickInstallation, onSwitchBranch = requestBranchSwitch)
                     MainSection.SETTINGS -> V2SettingsScreen(state, viewModel)
                 }
             }
@@ -1083,11 +1042,6 @@ private fun EmptyHomeCard(deferred: Boolean, onSetup: () -> Unit, onRefresh: () 
 }
 
 @Composable
-private fun InfoRow(label: String, value: String, monospace: Boolean = false) {
-    AdaptiveInfoRow(label, value, monospace)
-}
-
-@Composable
 internal fun V2BackupFlowSheet(state: LauncherUiState, choosingScope: Boolean,
     onCreate: (Set<BackupCategory>, Boolean, Set<String>) -> Unit, onCancel: () -> Unit, onClose: () -> Unit) {
     BackupScopeSheet(state, choosingScope, onCreate, onClose) {
@@ -1192,299 +1146,6 @@ internal fun formatBackupBytes(bytes: Long): String = when {
     bytes >= 1024L -> String.format(Locale.KOREA, "%.0f KB", bytes / 1024.0)
     else -> "$bytes B"
 }
-
-@Composable
-private fun ManagementScreen(
-    state: LauncherUiState,
-    onBack: (() -> Unit)?,
-    onSelectPanel: (ManagementPanel) -> Unit,
-    onCheckUpdate: () -> Unit,
-    onAutoBackupChange: (Boolean) -> Unit,
-    onUpdate: () -> Unit,
-    onCreateBackup: (Set<BackupCategory>, Boolean, Set<String>) -> Unit,
-    onRefreshBackups: () -> Unit,
-    onBackupReminderChange: (Boolean) -> Unit,
-    onTransferBackup: (BackupArchive, BackupTransferAction) -> Unit,
-    onOpenBackupFolder: () -> Unit,
-    onOpenSafetyInventory: () -> Unit,
-    onInspectStorage: () -> Unit,
-    onPreviewCleanup: (Int, Int) -> Unit,
-    onSaveBackupAnnotation: (String, Boolean, String) -> Unit,
-    onEncryptedBackup: (app.tavernbridge.launcher.model.EncryptedBackupMode) -> Unit,
-    onSelectiveRestore: (BackupArchive) -> Unit,
-    onPreviousVersions: () -> Unit,
-    onImportBackup: () -> Unit,
-    onPickInstallation: () -> Unit,
-    onInspectInstallation: (String) -> Unit,
-    storageSetupCommand: String,
-    onOpenTermux: () -> Unit,
-    onStorageCommandCopied: () -> Unit,
-    onRestoreBackup: (BackupArchive) -> Unit,
-    onDeleteBackups: (List<BackupArchive>) -> Unit,
-    onSwitchBranch: (SillyBranch) -> Unit,
-    onRepair: () -> Unit,
-    onResetInstallation: () -> Unit,
-    panel: ManagementPanel = state.managementPanel,
-    requestedArchive: String?,
-    archiveReturnToOrigin: Boolean,
-    onArchiveOpened: () -> Unit,
-    onArchiveShortcutBack: () -> Unit,
-) {
-    if (panel == ManagementPanel.BACKUP) {
-        V2BackupScreen(
-            state, onCreateBackup, onRefreshBackups, onBackupReminderChange, onTransferBackup,
-            onOpenBackupFolder, onOpenSafetyInventory, onInspectStorage, onPreviewCleanup,
-            onSaveBackupAnnotation, onEncryptedBackup, onSelectiveRestore, onImportBackup,
-            storageSetupCommand, onOpenTermux, onStorageCommandCopied, onRestoreBackup, onDeleteBackups,
-            requestedArchive, onArchiveOpened, onArchiveShortcutBack, archiveReturnToOrigin,
-        )
-        return
-    }
-    val environment = state.environment
-    val updateReport = state.updatePreflight
-    val updateReady = updateReport != null && updateReport.updateAvailable &&
-        updateReport.nodeCompatible && updateReport.spaceReady &&
-        (!state.autoBackupBeforeUpdate || updateReport.backupStorageReady)
-    val selectedPanel = panel
-    Column(Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로") }
-                Text("관리", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-            }
-            SectionTabs(ManagementPanel.entries, selectedPanel, onSelectPanel) { it.label }
-        }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(20.dp, 0.dp, 20.dp, 28.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            if (selectedPanel == ManagementPanel.INSTALL) {
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                shape = RoundedCornerShape(24.dp),
-            ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.CheckCircle, null, modifier = Modifier.size(26.dp))
-                        Spacer(Modifier.width(10.dp))
-                        Text("설치 정보", style = MaterialTheme.typography.titleLarge)
-                    }
-                    InfoRow("버전", environment.sillyTavernVersion.ifBlank { "알 수 없음" })
-                    InfoRow("브랜치", environment.branch?.label ?: "알 수 없음")
-                    InfoRow("설치 위치", "~/SillyTavern", monospace = true)
-                    InfoRow("Node.js", environment.nodeVersion.ifBlank { "확인 필요" }, monospace = true)
-                    InfoRow("커밋", environment.commit.ifBlank { "알 수 없음" }, monospace = true)
-                }
-            }
-        }
-        item {
-            ExistingInstallationImportCard(
-                enabled = !state.isWorking && !environment.processRunning && !environment.operationActive,
-                onPickFolder = onPickInstallation,
-                onInspectPath = onInspectInstallation,
-            )
-        }
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("설치 유지관리", style = MaterialTheme.typography.titleLarge)
-                    BranchChangeButtons(environment.branch, onSwitchBranch, enabled = !state.isWorking)
-                    HorizontalDivider()
-                    Text(
-                        "오류가 반복될 때 사용자 데이터는 유지하고 Termux 도구와 실행 패키지만 다시 구성합니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    OutlinedButton(
-                        onClick = onRepair,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !environment.processRunning,
-                    ) {
-                        Icon(Icons.Outlined.RestartAlt, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (environment.processRunning) "서버 종료 후 점검·복구" else "설치 점검·복구")
-                    }
-                }
-            }
-        }
-        item(key = "dangerous_installation_actions") {
-            DangerousInstallationActions(environment.processRunning, enabled = !state.isWorking, onReset = onResetInstallation)
-        }
-            }
-
-            if (selectedPanel == ManagementPanel.UPDATE) {
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("안전 업데이트", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        when {
-                            updateReport == null -> "업데이트 전에 커밋·Node.js·저장 공간·수정 파일을 검사합니다."
-                            !updateReport.updateAvailable -> "현재 ${updateReport.branch} 브랜치가 최신 커밋입니다."
-                            updateReport.currentVersion == updateReport.targetVersion ->
-                                "버전 번호는 같지만 ${updateReport.commitsBehind.coerceAtLeast(1)}개의 새 커밋이 있습니다."
-                            else -> "${updateReport.currentVersion.ifBlank { "현재 버전" }} → ${updateReport.targetVersion.ifBlank { "새 버전" }}"
-                        },
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("업데이트 전 자동 백업", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "사용자 데이터·확장·config.yaml · 비밀 설정 제외",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Switch(
-                            checked = state.autoBackupBeforeUpdate,
-                            onCheckedChange = onAutoBackupChange,
-                        )
-                    }
-
-                    if (updateReport != null) {
-                        HorizontalDivider()
-                        InfoRow(
-                            "커밋",
-                            "${updateReport.currentCommit.take(7)} → ${updateReport.targetCommit.take(7)}",
-                            monospace = true,
-                        )
-                        if (updateReport.updateAvailable) {
-                            InfoRow("새 커밋", "${updateReport.commitsBehind.coerceAtLeast(1)}개")
-                            UpdateChangesPreview(updateReport)
-                        }
-                        InfoRow(
-                            "Node.js",
-                            "${updateReport.nodeVersion.ifBlank { "없음" }} / 필요 ${updateReport.nodeRequired.ifBlank { "알 수 없음" }}",
-                        )
-                        InfoRow(
-                            "업데이트 공간",
-                            "${formatBackupBytes(updateReport.requiredBytes)} 필요 · ${formatBackupBytes(updateReport.freeBytes)} 여유",
-                        )
-                        if (!updateReport.nodeCompatible || !updateReport.spaceReady) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = RoundedCornerShape(14.dp),
-                            ) {
-                                Text(
-                                    when {
-                                        !updateReport.nodeCompatible -> "현재 Node.js가 새 버전의 요구 조건을 충족하지 않습니다."
-                                        else -> "기존 패키지를 보존하고 새 패키지를 설치할 공간이 부족합니다."
-                                    },
-                                    modifier = Modifier.padding(14.dp),
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                            }
-                        }
-                        if (state.autoBackupBeforeUpdate && !updateReport.backupStorageReady) {
-                            Text(
-                                "자동 백업을 사용하려면 먼저 아래 백업 저장공간을 연결해 주세요.",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                        if (updateReport.modifiedFiles.isNotEmpty()) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                shape = RoundedCornerShape(14.dp),
-                            ) {
-                                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(
-                                        "수정된 파일 ${updateReport.modifiedFiles.size}개",
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    SelectionContainer {
-                                        Text(
-                                            updateReport.modifiedFiles.joinToString("\n"),
-                                            color = MaterialTheme.colorScheme.onErrorContainer,
-                                            fontFamily = V2Mono,
-                                            style = MaterialTheme.typography.bodySmall,
-                                        )
-                                    }
-                                    Text(
-                                        "진행하면 수정 내용은 별도 안전 파일에 보관되지만 새 버전에는 자동 적용되지 않습니다.",
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    OutlinedButton(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Outlined.HealthAndSafety, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("업데이트 안전 검사")
-                    }
-                    Button(
-                        onClick = onUpdate,
-                        enabled = updateReady,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Update, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            when {
-                                updateReport?.updateAvailable == false -> "최신 상태"
-                                state.autoBackupBeforeUpdate -> "백업 후 안전하게 업데이트"
-                                else -> "안전하게 업데이트"
-                            },
-                        )
-                    }
-                    TextButton(onClick = onPreviousVersions, enabled = !environment.processRunning) {
-                        Text("이전 버전 선택·복귀")
-                    }
-                    state.lastUpdateRecord?.let { record ->
-                        HorizontalDivider()
-                        Text("최근 업데이트 기록", style = MaterialTheme.typography.titleSmall)
-                        InfoRow("시각", record.createdAt.ifBlank { "알 수 없음" })
-                        InfoRow("브랜치", record.branch.ifBlank { "알 수 없음" })
-                        InfoRow(
-                            "기록된 커밋",
-                            "${record.oldCommit.take(7)} → ${(record.newCommit.ifBlank { record.targetCommit }).take(7)}",
-                            monospace = true,
-                        )
-                        Text(
-                            when {
-                                record.result == "success" -> "업데이트 및 서버 검증 완료"
-                                record.result.startsWith("rolled_back") -> "업데이트 실패 후 이전 상태로 롤백됨"
-                                record.result == "rollback_failed" -> "자동 롤백 확인 필요"
-                                else -> "업데이트 기록: ${record.result.ifBlank { "알 수 없음" }}"
-                            },
-                            color = when {
-                                record.result == "success" -> MaterialTheme.colorScheme.primary
-                                record.result == "rollback_failed" -> MaterialTheme.colorScheme.error
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        if (record.result.startsWith("rolled_back") || record.result == "rollback_failed") {
-                            TextButton(onClick = { onSelectPanel(ManagementPanel.BACKUP) }) {
-                                Text("업데이트 전 ZIP 백업 확인·복원")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-            }
-
-        }
-    }
-}
-
 
 @Composable
 internal fun WorkingOverlay(

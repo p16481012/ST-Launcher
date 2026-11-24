@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.Role
@@ -37,7 +38,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import android.text.format.Formatter
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.V2Mono
@@ -45,7 +45,8 @@ import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 
 @Composable
 internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
-    onUpdate: () -> Unit, onRepair: () -> Unit, onReset: (Boolean) -> Unit, onOpenInstallation: () -> Unit) {
+    onUpdate: () -> Unit, onRepair: () -> Unit, onReset: (Boolean) -> Unit, onOpenInstallation: () -> Unit,
+    onPickInstallation: () -> Unit, onSwitchBranch: (SillyBranch) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 && maxWidth >= 720.dp
         val masterWidth = (maxWidth * .32f).coerceIn(238.dp, 360.dp)
@@ -60,10 +61,10 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
         Row(Modifier.fillMaxSize()) {
             if (wide || selected == ToolPage.INDEX) {
                 Column((if (wide) Modifier.width(masterWidth) else Modifier.weight(1f))
-                    .fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 24.dp),
+                    .fillMaxHeight().testTag("tools-index").verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     Text("도구", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-                    val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.EXTENSIONS, ToolPage.FILES),
+                    val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.INSTALLATION, ToolPage.EXTENSIONS, ToolPage.FILES),
                         "문제 해결" to listOf(ToolPage.DIAGNOSTICS, ToolPage.LOGS, ToolPage.REPAIR), "주의" to listOf(ToolPage.RESET))
                     groups.forEach { (label, pages) ->
                         ToolGroup(label) { pages.forEachIndexed { index, page ->
@@ -86,9 +87,9 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
             if (displayed != ToolPage.INDEX) Crossfade(displayed, modifier = Modifier.weight(1f).fillMaxHeight(),
                 animationSpec = tween(if (wide && !reduced) 120 else 0), label = "도구 상세 전환") { page ->
                 Column(Modifier.fillMaxSize().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
-                    val crossSection = state.navigation.previous.lastOrNull()?.section?.let { it != MainSection.LOGS } == true
+                    val hasDetailOrigin = state.navigation.previous.lastOrNull()?.let { it.section != MainSection.LOGS || it.tool != ToolPage.INDEX } == true
                     val nested = page == ToolPage.UPDATE && allChanges
-                    if (page != ToolPage.FILES && (!wide || crossSection || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                    if (page != ToolPage.FILES && (!wide || hasDetailOrigin || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { if (nested) allChanges = false else goBack() }) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
                         Text(if (nested) "바뀐 내용 전체" else page.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
@@ -118,6 +119,9 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                                 }
                             }
                         }
+                        ToolPage.INSTALLATION -> V2InstallationDetail(state, detailMod, onPickInstallation,
+                            viewModel::inspectExistingInstallation, onSwitchBranch,
+                            { viewModel.selectTool(ToolPage.REPAIR) }, { viewModel.selectTool(ToolPage.RESET) })
                         ToolPage.DIAGNOSTICS -> DiagnosticDetail(state, viewModel, detailMod)
                         ToolPage.LOGS -> ToolLogs(state, viewModel, detailMod)
                         ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(page, state, viewModel, onRepair, onReset, detailMod)
@@ -137,6 +141,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
 }
 
 private fun toolIcon(page: ToolPage): ImageVector = when (page) {
+    ToolPage.INSTALLATION -> Icons.Outlined.Inventory2
     ToolPage.UPDATE -> Icons.Outlined.VerticalAlignTop
     ToolPage.EXTENSIONS -> Icons.Outlined.Extension
     ToolPage.FILES -> Icons.Outlined.FolderOpen
@@ -183,14 +188,14 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
 @Composable internal fun ToolDivider(start: Int = 20) = HorizontalDivider(Modifier.padding(start = start.dp, end = 20.dp),
     color = MaterialTheme.colorScheme.outlineVariant)
 
-@Composable private fun Lead(title: String, note: String) {
+@Composable internal fun Lead(title: String, note: String) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
         if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
-@Composable private fun DetailLayout(modifier: Modifier, footer: @Composable RowScope.() -> Unit, content: @Composable ColumnScope.() -> Unit) {
+@Composable internal fun DetailLayout(modifier: Modifier, footer: @Composable RowScope.() -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp), content = content)
@@ -199,46 +204,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
 }
 
 @Composable private fun UpdateDetail(state: LauncherUiState, vm: LauncherViewModel, onUpdate: () -> Unit, onInstall: () -> Unit, mod: Modifier, onAllChanges: () -> Unit) {
-    val r = state.updatePreflight
-    val env = state.environment
-    val canCheck = !state.isWorking && env.managerConnected && env.sillyTavernInstalled
-    val ready = canCheck && r != null && r.updateAvailable && r.nodeCompatible && r.spaceReady &&
-        (!state.autoBackupBeforeUpdate || r.backupStorageReady)
-    val context = LocalContext.current
-    var details by rememberSaveable { mutableStateOf(false) }
-    DetailLayout(mod, footer = {
-        Button(if (ready) onUpdate else vm::checkForUpdates, Modifier.weight(1f).heightIn(min = 52.dp),
-            enabled = canCheck, shape = RoundedCornerShape(14.dp)) { Text(if (ready) "업데이트" else if (r == null) "업데이트 확인" else "다시 확인") }
-    }) {
-        Lead(when { r == null -> "업데이트를 확인해요"; !r.updateAvailable -> "최신 버전이에요"
-            else -> "${r.targetVersion.ifBlank { "새" }} 버전을\n받을 수 있어요" },
-            listOfNotNull(env.sillyTavernVersion.takeIf(String::isNotBlank)?.let { "지금 $it" },
-                r?.takeIf { it.updateAvailable }?.let { "새 커밋 ${it.commitsBehind}개 · 필요 공간 ${Formatter.formatFileSize(context, it.requiredBytes)}" }).joinToString(" · "))
-        if (!canCheck && !state.isWorking) Text("설치를 완료하고 Termux 연결을 확인해 주세요.")
-        if (r != null && r.updateAvailable) {
-            ToolGroup("바뀐 내용", if (r.changes.size > 3) "${r.changes.size}개 모두" else null, onAllChanges) {
-                val changes = r.changes.take(3)
-                changes.forEachIndexed { index, c -> ToolRow(c.subject, c.commit.take(7), dataNote = true); if (index != changes.lastIndex) ToolDivider() }
-                if (changes.isEmpty()) ToolRow("커밋 목록을 확인하지 못했어요.")
-            }
-            val warning = listOfNotNull(
-                if (!r.nodeCompatible) "Node.js 버전이 맞지 않아요. 필요: ${r.nodeRequired}" else null,
-                if (!r.spaceReady) "남은 공간이 부족해요." else null,
-                if (!r.backupStorageReady && state.autoBackupBeforeUpdate) "자동 백업을 위해 백업 탭에서 저장공간을 연결해 주세요." else null,
-                if (r.modifiedFiles.isNotEmpty()) "수정된 파일 ${r.modifiedFiles.size}개를 별도로 보관한 후 업데이트해요." else null).joinToString("\n")
-            if (warning.isNotBlank()) Text(warning, color = MaterialTheme.colorScheme.error)
-        }
-        ToolGroup { SettingsRow("업데이트 전에 자동 백업", checked = state.autoBackupBeforeUpdate,
-            onClick = { vm.setAutoBackupBeforeUpdate(!state.autoBackupBeforeUpdate) }) }
-        TextButton(onClick = { details = !details }) { Text(if (details) "추가 옵션 접기" else "설치 정보·이전 버전 및 추가 옵션") }
-        if (details) ToolGroup {
-            ToolRow("설치 정보·가져오기·브랜치", onClick = onInstall)
-            if (canCheck && !env.processRunning) ToolRow("이전 버전 선택·복귀", onClick = vm::openPreviousVersions)
-            if (r != null) ToolRow("안전 검사 결과", "${r.currentCommit.take(7)} → ${r.targetCommit.take(7)}\nNode.js ${r.nodeVersion} · 여유 ${Formatter.formatFileSize(context, r.freeBytes)}")
-            state.lastUpdateRecord?.let { ToolRow("최근 업데이트", "${it.createdAt} · ${it.result}") }
-            if (canCheck) ToolRow("업데이트 다시 확인", onClick = vm::checkForUpdates)
-        }
-    }
+    UpdateManagementContent(state, mod, vm::checkForUpdates, vm::setAutoBackupBeforeUpdate,
+        onUpdate, onInstall, vm::openPreviousVersions, vm::openBackups, onAllChanges)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

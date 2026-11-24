@@ -51,8 +51,7 @@ internal fun ExistingInstallationImportCard(
     onPickFolder: () -> Unit,
     onInspectPath: (String) -> Unit,
 ) {
-    var pathPrompt by remember { mutableStateOf(false) }
-    var path by remember { mutableStateOf("~/SillyTavern") }
+    var pathPrompt by rememberSaveable { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("기존 설치 가져오기", style = MaterialTheme.typography.titleLarge)
@@ -71,8 +70,15 @@ internal fun ExistingInstallationImportCard(
             Text("서버를 종료한 뒤 진행하세요. 검사 후 원본 유지 또는 이동을 선택합니다.", style = MaterialTheme.typography.bodySmall)
         }
     }
-    if (pathPrompt) V2AlertDialog(
-        onDismissRequest = { pathPrompt = false },
+    if (pathPrompt) ExistingInstallationPathDialog(enabled, onDismiss = { pathPrompt = false }, onInspect = onInspectPath)
+}
+
+/** Used by both first setup and the installed tool; entering a path only requests an inspection. */
+@Composable
+internal fun ExistingInstallationPathDialog(enabled: Boolean, onDismiss: () -> Unit, onInspect: (String) -> Unit) {
+    var path by rememberSaveable { mutableStateOf("~/SillyTavern") }
+    V2AlertDialog(
+        onDismissRequest = onDismiss,
         title = { Text("기존 설치 폴더 경로") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -81,11 +87,11 @@ internal fun ExistingInstallationImportCard(
                     label = { Text("Termux에서 접근 가능한 경로") }, modifier = Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { V2DialogAction(enabled = path.isNotBlank(), onClick = {
-            pathPrompt = false
-            onInspectPath(path)
+        confirmButton = { V2DialogAction(enabled = enabled && path.isNotBlank(), onClick = {
+            onDismiss()
+            onInspect(path.trim())
         }) { Text("검사") } },
-        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { pathPrompt = false }) { Text("취소") } },
+        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onDismiss) { Text("취소") } },
     )
 }
 

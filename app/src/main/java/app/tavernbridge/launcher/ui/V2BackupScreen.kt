@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -147,7 +148,7 @@ internal fun V2BackupScreen(
                 Column(masterModifier.fillMaxHeight()) {
                 Box(Modifier.weight(1f).fillMaxWidth().pullToRefresh(isRefreshing = refreshing, state = pull,
                     enabled = connected && !busy && !state.backupListLoading, threshold = 64.dp, onRefresh = onRefresh)) {
-                LazyColumn(Modifier.fillMaxSize(), state = masterScroll, contentPadding = PaddingValues(
+                LazyColumn(Modifier.fillMaxSize().testTag("backup-overview-list"), state = masterScroll, contentPadding = PaddingValues(
                     horizontal = masterPadding, vertical = if (dual) 36.dp else 20.dp),
                     verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     item {
@@ -206,7 +207,7 @@ internal fun V2BackupScreen(
                             }
                             BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { pane = BackupPane.SPACE })
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본", state.safetyCopyCount?.let { "${it}개" }.orEmpty(),
+                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { "${it}개" }.orEmpty(),
                                 enabled = connected && !busy, click = onSafety)
                         }
                         if (state.environment.processRunning) Text("백업을 가져오려면 서버를 먼저 종료해 주세요.",
@@ -214,7 +215,20 @@ internal fun V2BackupScreen(
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             if (dual) TextButton(onClick = { pane = BackupPane.ALL }) { Text("전체 관리", color = MaterialTheme.colorScheme.secondary) }
                             IconButton(onClick = onRefresh, enabled = connected && !busy && !state.backupListLoading) { Icon(Icons.Outlined.Refresh, "백업 목록 새로고침") }
-                            IconButton(onClick = { pane = BackupPane.MORE }) { Icon(Icons.Outlined.MoreHoriz, "암호화·백업 추가 설정") }
+                        }
+                    }
+                    item(key = "backup-storage-actions") {
+                        Spacer(Modifier.height(16.dp))
+                        BackupGroupHeader("저장·알림")
+                        SettingsGroup {
+                            SettingsRow("암호화 백업", caption = "ZIP 암호화 저장 · 암호화 파일 복원",
+                                icon = Icons.Outlined.Lock, onClick = { pane = BackupPane.MORE })
+                            SettingsDivider(52)
+                            SettingsRow("Download 폴더 열기", icon = Icons.Outlined.FolderOpen, onClick = onOpenFolder)
+                            SettingsDivider(52)
+                            SettingsRow("백업 알림", caption = "홈에서 알려줘요. 자동 백업은 하지 않아요.",
+                                icon = Icons.Outlined.Notifications, checked = state.backupReminder.enabled,
+                                onClick = { onReminderChange(!state.backupReminder.enabled) })
                         }
                     }
                 }
@@ -247,7 +261,7 @@ internal fun V2BackupScreen(
                             IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
                             Text(when (pane) {
                                 BackupPane.ARCHIVE -> "백업 상세"; BackupPane.ALL -> "전체 백업"
-                                BackupPane.SPACE -> "공간 정리"; BackupPane.MORE -> "백업 추가 설정"; else -> "백업"
+                                BackupPane.SPACE -> "공간 정리"; BackupPane.MORE -> "암호화 백업"; else -> "백업"
                             }, style = MaterialTheme.typography.titleMedium)
                         }
                     }
@@ -265,9 +279,16 @@ internal fun V2BackupScreen(
                                     StorageManagementCard(state, onScan, onPreviewCleanup, initiallyExpanded = true)
                                 }
                                 BackupPane.MORE -> {
-                                    EncryptedBackupCard(!busy, onEncrypted, initiallyExpanded = true)
-                                    BackupReminderSetting(state.backupReminder.enabled, onReminderChange)
-                                    OutlinedButton(onClick = onOpenFolder, modifier = Modifier.fillMaxWidth()) { Text("Download 폴더 열기") }
+                                    SettingsGroup {
+                                        SettingsRow("ZIP 암호화 저장", caption = "기존 ZIP은 그대로 두고 .stbackup 파일로 저장해요.",
+                                            icon = Icons.Outlined.Lock, enabled = !busy,
+                                            onClick = { onEncrypted(EncryptedBackupMode.EXPORT) })
+                                        SettingsDivider(52)
+                                        SettingsRow("암호화 백업 열기·복원", caption = ".stbackup 파일을 선택하고 암호를 확인해요.",
+                                            icon = Icons.Outlined.Restore, enabled = !busy,
+                                            onClick = { onEncrypted(EncryptedBackupMode.RESTORE) })
+                                    }
+                                    SettingsCaption("원본 ZIP 8 GiB까지 지원해요. 원본 ZIP은 암호화되지 않으며, 암호를 잊으면 암호화한 사본을 복구할 수 없어요.")
                                 }
                                 else -> Unit
                             }
@@ -366,6 +387,7 @@ private fun BackupDetail(
             if (archive.expandedBytes > 0) BackupDetailRow("해제 크기", formatBackupBytes(archive.expandedBytes))
             if (archive.entryCount > 0) BackupDetailRow("압축 항목", "${archive.entryCount}개")
             if (archive.integrity.isNotBlank()) BackupDetailRow("무결성", if (archive.integrity == "zip-crc32") "ZIP CRC" else archive.integrity)
+            if (archive.createdAt.isNotBlank()) BackupDetailRow("백업 파일", archive.fileName)
             Text(when {
                 !archive.restoreSpaceReady -> "복원 공간이 부족합니다. ${formatBackupBytes(archive.requiredRestoreBytes)}가 필요해요."
                 state.environment.processRunning -> "복원하려면 서버를 먼저 종료해 주세요."
