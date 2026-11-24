@@ -141,6 +141,12 @@ try {
     if (request.protocol === 2) {
         // The user only disabled exposure. Never replay cached auth/allow-list state,
         // and never require unrelated credentials to be usable before closing the listener.
+        const old = document.get('listen', true);
+        if (old && old.anchor) YAML.visit(document, { Alias(_, alias) {
+            if (alias.source === old.anchor && alias.resolve(document) === old) {
+                throw Object.assign(new Error(), { safeCode: 'LAN_SETTINGS_CONFIG_INVALID', sharedListenAnchor: true });
+            }
+        } });
         document.set('listen', false);
     } else {
         const perUser = document.get('perUserBasicAuth') === true, wasBasicAuth = document.get('basicAuthMode') === true;
@@ -182,7 +188,8 @@ try {
     if (committed) process.stdout.write('saved=1\ndurability_warning=1\n');
     else {
         const code = Object.hasOwn(exitCodes, error.safeCode) ? error.safeCode : 'LAN_SETTINGS_SAVE_FAILED';
-        process.stderr.write(`error_code=${code}\n연결 설정을 저장하지 못했습니다. 기존 설정은 유지됩니다.\n`);
+        const hint = error.sharedListenAnchor === true ? 'config.yaml에서 listen 값을 참조하는 YAML 별칭을 먼저 분리해 주세요.' : '연결 설정을 저장하지 못했습니다. 기존 설정은 유지됩니다.';
+        process.stderr.write(`error_code=${code}\n${hint}\n`);
         process.exitCode = exitCodes[code];
     }
 } finally {

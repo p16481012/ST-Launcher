@@ -19,6 +19,47 @@ internal fun retainedLogPrefix(previous: List<String>, next: List<String>): Int 
     }
     return k
 }
+
+internal enum class LogSource { SERVER, ACCESS, TEXT }
+internal data class LiveLogLine(val id: Long, val source: LogSource, val text: String)
+internal data class LogFrame(val rows: List<LiveLogLine>, val firstNewId: Long)
+
+/** server-logs emits two independent bounded tails, not an append-only concatenated text. */
+internal class LiveLogTimeline {
+    private var ordered = emptyList<LiveLogLine>()
+    private var nextId = 1L
+    private var initialized = false
+    fun update(raw: String, combined: Boolean): LogFrame {
+        val serverMarker = "===== SillyTavern server.log ====="
+        val accessMarker = "===== SillyTavern access.log ====="
+        val lines = raw.trimEnd('\r', '\n').lineSequence().toList().takeUnless { raw.isBlank() }.orEmpty()
+        val streams = if (combined && lines.firstOrNull() == serverMarker) {
+            val split = lines.indexOf(accessMarker)
+            if (split < 0) mapOf(LogSource.SERVER to lines.drop(1))
+            else {
+                val server = lines.subList(1, split)
+                mapOf(LogSource.SERVER to (if (server.lastOrNull() == "") server.dropLast(1) else server),
+                    LogSource.ACCESS to lines.drop(split + 1))
+            }
+        } else mapOf(LogSource.TEXT to lines)
+        val keep = mutableSetOf<Long>()
+        val added = mutableListOf<LiveLogLine>()
+        val firstNew = if (initialized) nextId else Long.MAX_VALUE
+        for ((source, incoming) in streams) {
+            val old = ordered.filter { it.source == source }
+            val retained = retainedLogPrefix(old.map { it.text }, incoming)
+            old.takeLast(retained).forEach { keep += it.id }
+            incoming.drop(retained).forEach { added += LiveLogLine(nextId++, source, it) }
+        }
+        ordered = ordered.filter { it.id in keep } + added
+        initialized = ordered.isNotEmpty()
+        return LogFrame(ordered, firstNew)
+    }
+}
+
+internal fun LauncherUiState.canReadLiveServerLog(): Boolean =
+    !isWorking || (environment.managerConnected && termuxSetup.verified && visibleOperation in
+        setOf("backup", "diagnose", "update-preflight", "start", "stop", "restart"))
 fun searchLog(text: String, query: String, limit: Int = 500): LogSearchResult {
     if (query.isEmpty() || query.length > 200 || limit !in 1..1000) return LogSearchResult(emptyList(), false)
     val ranges = mutableListOf<IntRange>()

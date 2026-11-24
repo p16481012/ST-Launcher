@@ -188,7 +188,7 @@ internal fun V2BackupScreen(
                         val reveal = remember(entry.fileName) {
                             MutableTransitionState(reduced || arrivingFile != entry.fileName).apply { targetState = true }
                         }
-                        AnimatedVisibility(visibleState = reveal,
+                        androidx.compose.animation.AnimatedVisibility(visibleState = reveal,
                             modifier = if (reduced) Modifier else Modifier.animateItem(fadeInSpec = tween(120), placementSpec = tween(200),
                                 fadeOutSpec = tween(120)),
                             enter = expandVertically(animationSpec = tween(if (reduced) 0 else 200), expandFrom = Alignment.Top) +

@@ -7,6 +7,8 @@ import androidx.compose.ui.platform.LocalDensity
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -93,7 +96,7 @@ internal fun SetupScreen(
                 (fadeOut(tween(ms)) + slideOutHorizontally(tween(ms)) { if (!reduced && !forward) distance else 0 })
         }, label = "설정 단계") { step ->
             Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().verticalScroll(rememberScrollState())
-                .heightIn(min = minimumHeight).padding(horizontal = 20.dp, vertical = 16.dp)) {
+                .heightIn(min = minimumHeight).padding(horizontal = 24.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (step > 1) TextButton(onClick = { requested = step - 1 }, enabled = ready,
                         contentPadding = PaddingValues(horizontal = 2.dp)) { Text("이전으로") }
@@ -101,7 +104,8 @@ internal fun SetupScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         repeat(5) { index ->
                             Surface(Modifier.weight(1f).height(3.dp), shape = CircleShape,
-                                color = if (index < step) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant) {}
+                                color = if (index < (if (step == 3 && state.termuxSetup.verified) 4 else step))
+                                    MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outlineVariant) {}
                         }
                     }
                     if (step < 5) TextButton(onClick = onLeave, enabled = ready, contentPadding = PaddingValues(horizontal = 4.dp)) {
@@ -121,7 +125,7 @@ internal fun SetupScreen(
                     }
                 }
                 Spacer(Modifier.height(44.dp))
-                Text("$step / 5", fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium,
+                if (step != 3) Text("$step / 5", fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(when (step) {
                     1 -> "Termux부터\n설치해요"
@@ -135,7 +139,7 @@ internal fun SetupScreen(
                 Text(when (step) {
                     1 -> "SillyTavern은 Termux 안에서 돌아가요.\nF-Droid에서 Termux를 설치하고 한 번 열어 주세요."
                     2 -> "Android에서 런처가 Termux에 명령을 보낼 수 있게 ‘Termux 환경에서 명령 실행’을 허용해 주세요."
-                    3 -> "아래 버튼으로 Termux를 열면 명령이 복사돼요. 빈 곳을 길게 눌러 붙여 넣고 Enter를 누르세요. 런처로 돌아오면 연결을 확인해요."
+                    3 -> "Termux 화면을 길게 눌러 붙여 넣고\nEnter를 누르세요."
                     4 -> "관리 스크립트를 연결하고 기존 설치를 확인해요. 지금 있는 파일을 지우거나 덮어쓰지 않아요."
                     else -> if (done) "처음 한 번만 필요한 설정을 모두 마쳤어요." else "처음이라면 정식 버전인 Release를 선택하세요. 이미 쓰던 폴더나 설치 ZIP도 가져올 수 있어요."
                 }, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -143,35 +147,21 @@ internal fun SetupScreen(
                 when {
                     step == 3 -> {
                         Surface(color = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-                            shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "명령 복사", onClick = copy)) {
+                            shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().combinedClickable(enabled = ready,
+                                onClickLabel = "명령 복사", onLongClickLabel = "전체 명령 보기", onLongClick = { showFullCommand = true }, onClick = copy)) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("Termux", Modifier.weight(1f), fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium)
-                                    TextButton(onClick = copy, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.inverseOnSurface)) {
-                                        Icon(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, null, Modifier.size(18.dp))
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(if (copied) "복사됨" else "명령 복사")
-                                    }
+                                    Text("Termux", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                                    Text(if (copied) "복사됨" else "복사", color = if (copied) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.inverseOnSurface,
+                                        style = MaterialTheme.typography.labelMedium)
                                 }
-                                if (showFullCommand) SelectionContainer { Text(setupCommand, fontFamily = V2Mono,
-                                    style = MaterialTheme.typography.bodyMedium) }
-                                else Text(setupCommand.take(82) + if (setupCommand.length > 82) "…" else "",
-                                    fontFamily = V2Mono, style = MaterialTheme.typography.bodyMedium)
+                                Text("~ $ " + setupCommand, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    fontFamily = V2Mono, style = MaterialTheme.typography.bodySmall)
                             }
                         }
-                        TextButton(onClick = { showFullCommand = !showFullCommand }) { Text(if (showFullCommand) "전체 명령 접기" else "복사될 전체 명령 보기") }
-                        when (state.termuxSetup.status) {
-                            TermuxSetupStatus.READY -> Text("허용됐어요", color = app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.live)
-                            TermuxSetupStatus.CHECKING -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text("확인하고 있어요")
-                            }
-                            TermuxSetupStatus.UNKNOWN -> Unit
-                            else -> Text(state.termuxSetup.detail.ifBlank {
-                                if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED)
-                                    "외부 명령 허용이 꺼져 있어요. Termux에 명령을 붙여 넣고 Enter를 눌러 주세요."
-                                else "연결을 확인하지 못했어요. Termux에서 Enter를 누른 뒤 다시 확인해 주세요."
-                            }, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite })
+                        if (showFullCommand) V2BottomSheet({ showFullCommand = false }) {
+                            Text("복사되는 전체 명령", style = MaterialTheme.typography.titleLarge)
+                            SelectionContainer { Text(setupCommand, fontFamily = V2Mono, style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                     step == 5 && !done -> {
@@ -225,9 +215,28 @@ internal fun SetupScreen(
                         SetupQuiet("앱 권한 설정 열기", ready, onOpenPermissionSettings)
                     }
                     3 -> {
+                        val setup = state.termuxSetup
+                        val scheme = MaterialTheme.colorScheme
+                        val checking = setup.status == TermuxSetupStatus.CHECKING
+                        val bad = setup.status != TermuxSetupStatus.UNKNOWN && !checking && !setup.verified
+                        val ink = when { bad -> scheme.error; setup.verified -> app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.live; else -> scheme.onSurfaceVariant }
+                        Row(Modifier.fillMaxWidth().padding(bottom = 12.dp).semantics {
+                            liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite
+                            if (bad) customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("연결 다시 확인") {
+                                onConfirmFirstConnection(); true
+                            })
+                        }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                            if (checking) VisibleBusyIndicator(Modifier.size(14.dp), false, 1.5.dp)
+                            else Spacer(Modifier.size(6.dp).background(if (bad || setup.verified) ink else scheme.secondary, CircleShape))
+                            Text(when {
+                                setup.verified -> "허용됐어요"
+                                checking -> "확인하고 있어요"
+                                bad -> setup.detail.ifBlank { "아직 허용되지 않았어요. 붙여 넣고 Enter를 눌렀는지 확인해 주세요." }
+                                else -> "Termux에서 돌아오면 자동으로 확인해요"
+                            }, style = MaterialTheme.typography.labelMedium, color = ink)
+                        }
                         SetupPrimary("Termux 열기", ready && !state.termuxSetup.verified) { copy(); onOpenSetupTermux() }
-                        if (state.termuxSetup.status in setOf(TermuxSetupStatus.UNVERIFIED, TermuxSetupStatus.EXTERNAL_APPS_DISABLED))
-                            SetupQuiet("연결 다시 확인", ready, onConfirmFirstConnection)
+                        SetupQuiet("명령 다시 복사", ready && !setup.verified, copy)
                     }
                     4 -> SetupPrimary(if (env.managerConnected) "다음" else "연결 확인", ready && state.termuxSetup.verified) {
                         if (env.managerConnected) requested = 5 else onConnect()

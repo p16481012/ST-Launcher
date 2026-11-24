@@ -7,11 +7,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material3.*
@@ -36,8 +35,6 @@ import app.tavernbridge.launcher.ui.theme.V2Mono
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
-private class PreviousTail(var lines: List<String>? = null)
-
 @Composable
 internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modifier) = key(panelKey) {
     val context = LocalContext.current
@@ -45,33 +42,19 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
     var problemsOnly by rememberSaveable { mutableStateOf(false) }
     var shareError by rememberSaveable { mutableStateOf(false) }
     val applied = debouncedListQuery(query)
-    val lines = remember(log, applied, problemsOnly) { visibleLogLines(log.trimEnd('\n', '\r'), applied, problemsOnly) }
-    val visible = remember(lines) { lines.joinToString("\n") }
-    val scroll = rememberScrollState()
+    val timeline = remember { LiveLogTimeline() }
+    val frame = remember(log) { timeline.update(log, panelKey == DiagnosticPanel.SERVER_LOG.name || panelKey == "SERVER") }
+    val lines = remember(frame, applied, problemsOnly) {
+        frame.rows.filter { (!problemsOnly || isProblemLog(it.text)) && (applied.isBlank() || it.text.contains(applied, ignoreCase = true)) }
+    }
+    val visible = remember(lines) { lines.joinToString("\n") { if (it.source == LogSource.ACCESS) "[access] ${it.text}" else it.text } }
+    val scroll = rememberLazyListState()
     var following by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
     val reduced = LocalV2ReducedMotion.current
     val clipboard = LocalClipboardManager.current
     val cs = MaterialTheme.colorScheme
-    val annotated = remember(visible, lines, applied, cs) {
-        AnnotatedString.Builder(visible).apply {
-            var pos = 0
-            for (line in lines) {
-                if (isProblemLog(line) && line.isNotEmpty()) addStyle(SpanStyle(color = cs.error, background = cs.errorContainer), pos, pos + line.length)
-                else logTimestampLength(line).takeIf { it > 0 }?.let { addStyle(SpanStyle(color = cs.outline), pos, pos + it) }
-                pos += line.length + 1
-            }
-            searchLog(visible, applied).ranges.forEach { addStyle(SpanStyle(background = cs.secondaryContainer, color = cs.onSecondaryContainer), it.first, it.last + 1) }
-        }.toAnnotatedString()
-    }
-    val previous = remember(applied, problemsOnly) { PreviousTail() }
-    val firstNew = remember(lines, previous) {
-        // A tab switch, a filter change and initial content must never animate as incoming messages.
-        previous.lines?.let { retainedLogPrefix(it, lines) } ?: lines.size
-    }
-    SideEffect { previous.lines = lines }
-    val suffixOffset = remember(lines, firstNew) { lines.take(firstNew).sumOf { it.length + 1 }.coerceAtMost(visible.length) }
-    val newAlpha = remember(lines, previous) { Animatable(if (!reduced && firstNew < lines.size) 0f else 1f) }
+    val newAlpha = remember(frame) { Animatable(if (!reduced && frame.firstNewId != Long.MAX_VALUE) 0f else 1f) }
     LaunchedEffect(newAlpha, reduced) {
         if (reduced) newAlpha.snapTo(1f) else if (newAlpha.value < 1f) newAlpha.animateTo(1f, tween(120))
     }
@@ -81,9 +64,8 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
             if (moving) following = !canScrollForward
         }
     }
-    LaunchedEffect(scroll.maxValue, following, applied) {
-        if (following && applied.isEmpty() && !scroll.isScrollInProgress && scroll.maxValue != Int.MAX_VALUE)
-            scroll.scrollTo(scroll.maxValue)
+    LaunchedEffect(lines.lastOrNull()?.id, following, applied, problemsOnly) {
+        if (following && lines.isNotEmpty() && !scroll.isScrollInProgress) scroll.scrollToItem(lines.size)
     }
     val showJump = !following && scroll.canScrollForward
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -96,22 +78,36 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
         Surface(Modifier.fillMaxWidth().weight(1f), shape = RoundedCornerShape(20.dp), color = cs.surface) {
             Box(Modifier.fillMaxSize()) {
                 SelectionContainer {
-                    Column(Modifier.fillMaxSize().testTag("live-log-viewport").verticalScroll(scroll).padding(16.dp)) {
-                        if (visible.isBlank()) Text(if (log.isBlank()) "표시할 로그가 없습니다." else "조건에 맞는 로그가 없습니다.", fontFamily = V2Mono, fontSize = 12.sp)
-                        else {
-                            if (suffixOffset > 0) {
-                                val end = if (firstNew < lines.size) suffixOffset - 1 else annotated.length
-                                Text(annotated.subSequence(0, end), fontFamily = V2Mono, fontSize = 12.sp, lineHeight = 18.sp)
+                    LazyColumn(Modifier.fillMaxSize().testTag("live-log-viewport"), state = scroll, contentPadding = PaddingValues(16.dp)) {
+                        if (lines.isEmpty()) item { Text(if (frame.rows.isEmpty()) "표시할 로그가 없습니다." else "조건에 맞는 로그가 없습니다.", fontFamily = V2Mono, fontSize = 12.sp) }
+                        items(lines, key = { it.id }) { row ->
+                            val annotated = remember(row, applied, cs) {
+                                val tag = if (row.source == LogSource.ACCESS) "[access] " else ""
+                                AnnotatedString.Builder(tag + row.text).apply {
+                                    if (tag.isNotEmpty()) addStyle(SpanStyle(color = cs.outline), 0, tag.length)
+                                    if (row.text.isNotEmpty() && isProblemLog(row.text)) addStyle(SpanStyle(color = cs.error, background = cs.errorContainer), tag.length, length)
+                                    else logTimestampLength(row.text).takeIf { it > 0 }?.let { addStyle(SpanStyle(color = cs.outline), tag.length, tag.length + it) }
+                                    searchLog(row.text, applied).ranges.forEach { addStyle(SpanStyle(background = cs.secondaryContainer, color = cs.onSecondaryContainer), tag.length + it.first, tag.length + it.last + 1) }
+                                }.toAnnotatedString()
                             }
-                            if (firstNew < lines.size) Text(annotated.subSequence(suffixOffset, annotated.length), Modifier.graphicsLayer { alpha = newAlpha.value },
+                            Text(annotated, Modifier.graphicsLayer { alpha = if (row.id >= frame.firstNewId) newAlpha.value else 1f },
                                 fontFamily = V2Mono, fontSize = 12.sp, lineHeight = 18.sp)
                         }
+                        item(key = "end") { Spacer(Modifier.height(1.dp)) }
                     }
                 }
                 androidx.compose.animation.AnimatedVisibility(showJump, Modifier.align(Alignment.BottomEnd).padding(10.dp),
                     enter = fadeIn(tween(if (reduced) 0 else 150)), exit = fadeOut(tween(if (reduced) 0 else 150))) {
                     IconButton({ scope.launch {
-                        if (reduced) scroll.scrollTo(scroll.maxValue) else scroll.animateScrollTo(scroll.maxValue, tween(300))
+                        if (reduced) scroll.scrollToItem(lines.size) else scroll.scroll {
+                            val layout = LazyLayoutScrollScope(scroll, this)
+                            val target = lines.size.coerceAtMost((layout.itemCount - 1).coerceAtLeast(0))
+                            var moved = 0f
+                            androidx.compose.animation.core.animate(0f, layout.calculateDistanceTo(target).toFloat(), animationSpec = tween(300)) { position, _ ->
+                                moved += scrollBy(position - moved)
+                            }
+                            layout.snapToItem(target, 0)
+                        }
                         following = true
                     } }, Modifier.size(48.dp).semantics { contentDescription = "맨 아래로" }) {
                         Surface(Modifier.size(40.dp), shape = CircleShape, color = cs.onSurface, contentColor = cs.surface) {

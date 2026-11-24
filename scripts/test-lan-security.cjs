@@ -94,6 +94,10 @@ try {
         const invalid = fixture();
         const extra = run(invalid, { ...disable, basicAuthEnabled: false });
         assert.notEqual(extra.status, 0); unchanged(invalid);
+        const shared = fixture('listen: &shared true\nbasicAuthMode: *shared\n');
+        const refused = run(shared, disable);
+        failure(refused, 'LAN_SETTINGS_CONFIG_INVALID', 94); unchanged(shared); assert.equal(backups(shared).length, 0);
+        assert.match(refused.stderr, /YAML 별칭/);
     });
     check('per-user authentication cannot be replaced by single-account credentials', () => {
         const original = 'listen: true\nperUserBasicAuth: true\nbasicAuthMode: true\n';

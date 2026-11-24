@@ -141,6 +141,7 @@ import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.hasInstallationHistory
 import app.tavernbridge.launcher.model.shouldShowSetupGuide
 import app.tavernbridge.launcher.model.visibleOperation
+import app.tavernbridge.launcher.model.canReadLiveServerLog
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.components.OperationCancelControl
@@ -235,9 +236,10 @@ internal fun LauncherScreen(state: LauncherUiState, viewModel: LauncherViewModel
             }
         }
     }
-    LaunchedEffect(state.section, state.toolPage, state.diagnosticPanel, state.environment.processRunning, state.isWorking) {
-        if (state.section == MainSection.LOGS && state.toolPage == ToolPage.LOGS && state.diagnosticPanel == DiagnosticPanel.SERVER_LOG && !state.isWorking) {
-            watchServerLog(state.environment.processRunning, viewModel::refreshLogsSilently)
+    val mayReadLog = state.canReadLiveServerLog()
+    LaunchedEffect(state.section, state.toolPage, state.diagnosticPanel, state.environment.processRunning, state.isWorking, mayReadLog) {
+        if (state.section == MainSection.LOGS && state.toolPage == ToolPage.LOGS && state.diagnosticPanel == DiagnosticPanel.SERVER_LOG && mayReadLog) {
+            watchServerLog(state.environment.processRunning || state.isWorking, viewModel::refreshLogsSilently)
         }
     }
     SillyTavernLauncherTheme(state.theme, state.displayPreferences) {

@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -157,16 +159,19 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     }
     Spacer(Modifier.height(20.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val color = serverStatusIndicatorColor(ready, cs.background)
-        val dotAlpha = if (ready == ServerReadiness.STARTING && !reduced) {
+        val stopping = actions.stop == HomeStop.STOPPING
+        val color = if (stopping) cs.outline else serverStatusIndicatorColor(ready, cs.background)
+        val dotAlpha = if (ready == ServerReadiness.STARTING && !stopping && !reduced) {
             rememberInfiniteTransition(label = "시작 상태").animateFloat(1f, .45f,
                 infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "시작 상태 점").value
         } else 1f
         Box(Modifier.size(8.dp).alpha(dotAlpha).background(color, CircleShape))
-        Crossfade(ready, animationSpec = tween(if (reduced) 0 else 120), label = "서버 상태") { status -> Text(when (status) {
+        val statusText = if (stopping) "끄는 중" else when (ready) {
             ServerReadiness.READY -> "실행 중"; ServerReadiness.STARTING -> "시작 중"; ServerReadiness.OFFLINE -> "서버 꺼짐"
             ServerReadiness.UNRESPONSIVE -> "응답 없음"; ServerReadiness.PORT_CONFLICT -> "포트 충돌"
-        }, style = MaterialTheme.typography.labelMedium, color = color) }
+        }
+        Crossfade(statusText, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            animationSpec = tween(if (reduced) 0 else 120), label = "서버 상태") { Text(it, style = MaterialTheme.typography.labelMedium, color = color) }
         if (env.processRunning && env.sessionStartedEpoch > 0) {
             var now by remember(env.sessionStartedEpoch) { mutableLongStateOf(System.currentTimeMillis() / 1000) }
             LaunchedEffect(env.sessionStartedEpoch) { while (true) { now = System.currentTimeMillis() / 1000; delay(1000) } }

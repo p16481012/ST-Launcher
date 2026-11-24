@@ -423,7 +423,8 @@ internal fun TavernFileManagerDialog(
                                     if (active.sensitive) Text("민감한 정보가 포함될 수 있어요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                                     if (!active.isDirectory) {
                                         val current = preview?.takeIf { it.relativePath == active.relativePath }
-                                        if (current != null) InlineFilePreview(current) else
+                                        if (current != null) InlineFilePreview(current)
+                                        else if (state.pendingFilePreviewPath == active.relativePath) V2BusyIndicator(Modifier.fillMaxWidth()) else
                                             TextButton(onClick = { onPreview(active.relativePath) }, enabled = !state.fileBrowserLoading) { Text("내용 미리보기") }
                                         TextButton(onClick = { onEdit(active.relativePath) }, enabled = !state.fileBrowserLoading && active.sizeBytes <= 65536 && !isTavernPng(active)) { Text("텍스트 수정") }
                                     }
@@ -457,7 +458,7 @@ internal fun TavernFileManagerDialog(
                     if (!entry.isDirectory) {
                         val current = preview?.takeIf { it.relativePath == entry.relativePath }
                         when { current != null -> InlineFilePreview(current)
-                            state.fileBrowserLoading -> V2BusyIndicator(Modifier.fillMaxWidth())
+                            state.pendingFilePreviewPath == entry.relativePath -> V2BusyIndicator(Modifier.fillMaxWidth())
                             else -> TextButton(onClick = { onPreview(entry.relativePath) }) { Text("내용 미리보기") }
                         }
                         if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)

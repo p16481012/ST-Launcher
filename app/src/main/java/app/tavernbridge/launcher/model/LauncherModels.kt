@@ -194,5 +194,6 @@ data class LauncherUiState(
     val restoredFilePaths: Set<String> = emptySet(),
     val editingFile: TavernTextFile? = null,
     val filePreview: TavernFilePreview? = null,
+    val pendingFilePreviewPath: String? = null,
     val pendingInstallation: ExistingInstallation? = null,
 )

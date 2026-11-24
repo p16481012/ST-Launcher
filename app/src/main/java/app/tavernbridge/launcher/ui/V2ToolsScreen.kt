@@ -346,6 +346,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
             }
         }
         if (panel == DiagnosticPanel.WORK_HISTORY) Text("런처 작업 기록", style = MaterialTheme.typography.titleMedium)
+        if (panel == DiagnosticPanel.SERVER_LOG && !state.canReadLiveServerLog())
+            Text("이 작업이 끝나면 실시간 로그가 다시 갱신돼요.", style = MaterialTheme.typography.bodySmall)
         LogViewer(log, panel.name, Modifier.fillMaxWidth().weight(1f))
     }
 }

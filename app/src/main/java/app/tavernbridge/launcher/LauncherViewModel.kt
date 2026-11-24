@@ -1,4 +1,5 @@
 package app.tavernbridge.launcher
+import app.tavernbridge.launcher.model.canReadLiveServerLog
 
 import app.tavernbridge.launcher.model.reselectRoot
 
@@ -151,6 +152,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val progressLogHistory = ProgressLogHistory()
     private var fileBrowserJob: Job? = null
     private var filePreviewJob: Job? = null
+    private var previewGeneration = 0L
     @Volatile private var operationCancellationRequested = false
     private var activeOperationControl: OperationCancellationControl? = null
     private var cancellationRequestJob: Job? = null
@@ -532,6 +534,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun confirmFirstConnection() {
         if (!state.value.awaitingFirstConnection || state.value.isWorking) return
+        setupTrip.disarm()
         refreshEnvironment(firstConnectionButton = true)
     }
 
@@ -798,7 +801,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (setupTrip.consume() && state.value.awaitingFirstConnection && !state.value.setupDeferred) {
             viewModelScope.launch {
                 refreshJob?.join()
-                if (appInForeground && !state.value.termuxSetup.verified) confirmFirstConnection()
+                // The first refresh after process recreation owns its initial busy placeholder;
+                // refreshEnvironment's gate distinguishes that from actual Termux work.
+                if (appInForeground && state.value.awaitingFirstConnection && !state.value.setupDeferred)
+                    refreshEnvironment(firstConnectionButton = true)
             }
             return
         }
@@ -2023,7 +2029,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (reportErrors && deferRead(VisibleReadQueue.ListKind.LOG, {
                 it.section == MainSection.LOGS && it.toolPage == ToolPage.LOGS && it.diagnosticPanel == panel
             }) { loadDiagnosticText(panel, true) }) return
-        if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true || !state.value.termuxSetup.verified) return
+        val s = state.value
+        // server-logs is a bounded, read-only tail. Never bootstrap or read across an installation swap.
+        if (!appInForeground || refreshJob?.isActive == true || !s.termuxSetup.verified ||
+            (s.isWorking && (panel != DiagnosticPanel.SERVER_LOG || !s.canReadLiveServerLog()))) return
         if (!reportErrors && !state.value.environment.managerConnected) return
         if (panel == DiagnosticPanel.OVERVIEW) return
         if (logReadJobs[panel]?.isActive == true) {
@@ -2360,25 +2369,28 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun previewSillyTavernFile(path: String) {
         if (commandEntryBlocked(allowWhileWorking = true) || state.value.fileBrowserLoading) return
-        mutableState.update { it.copy(fileBrowserLoading = true, fileBrowserError = "", filePreview = null) }
+        filePreviewJob?.cancel()
+        val request = ++previewGeneration
+        mutableState.update { it.copy(pendingFilePreviewPath = path, fileBrowserError = "", filePreview = null) }
         val parent = state.value.fileBrowserPath
         filePreviewJob = viewModelScope.launch {
             try {
                 val preview = repository.previewSillyTavernFile(path)
-                mutableState.update { if (it.fileBrowserOpen && it.fileBrowserPath == parent) it.copy(filePreview = preview) else it }
+                mutableState.update { if (request == previewGeneration && it.fileBrowserOpen && it.fileBrowserPath == parent &&
+                    it.pendingFilePreviewPath == path) it.copy(filePreview = preview) else it }
             } catch (cancelled: CancellationException) { throw cancelled
-            } catch (error: Exception) { mutableState.update { it.copy(fileBrowserError = error.userMessage()) } }
-            finally { if (kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
+            } catch (error: Exception) { if (request == previewGeneration) mutableState.update { it.copy(fileBrowserError = error.userMessage()) } }
+            finally { if (request == previewGeneration) {
                 filePreviewJob = null
-                mutableState.update { it.copy(fileBrowserLoading = false) }
+                mutableState.update { it.copy(pendingFilePreviewPath = null) }
             } }
         }
     }
 
     fun closeFilePreview() {
-        val pending = filePreviewJob != null
+        ++previewGeneration
         filePreviewJob?.cancel(); filePreviewJob = null
-        mutableState.update { it.copy(filePreview = null, fileBrowserLoading = if (pending) false else it.fileBrowserLoading) }
+        mutableState.update { it.copy(filePreview = null, pendingFilePreviewPath = null) }
     }
 
     fun importSillyTavernFile(uri: Uri) {

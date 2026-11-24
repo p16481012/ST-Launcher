@@ -67,7 +67,9 @@ class FileLogPrototypeTest {
     }
 
     @Test fun logAwayFromBottomDoesNotJumpAndErrorFilterIsImmediate() {
-        val log = mutableStateOf((1..100).joinToString("\n") { "ordinary item $it" })
+        fun raw(server: IntRange, extra: String) = "===== SillyTavern server.log =====\n" +
+            server.joinToString("\n") { "ordinary item $it" } + extra + "\n\n===== SillyTavern access.log =====\nGET /"
+        val log = mutableStateOf(raw(1..100, ""))
         ui.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
                 LogViewer(log.value, "SERVER", Modifier.fillMaxSize())
@@ -76,11 +78,27 @@ class FileLogPrototypeTest {
         ui.onNodeWithContentDescription("맨 아래로").assertDoesNotExist()
         ui.onNodeWithTag("live-log-viewport").performTouchInput { swipeDown() }
         ui.onNodeWithContentDescription("맨 아래로").assertExists()
-        ui.runOnIdle { log.value += "\nWARN incoming" }
+        ui.runOnIdle { log.value = raw(2..100, "\nWARN incoming") }
         ui.onNodeWithContentDescription("맨 아래로").assertExists().performClick()
         ui.onNodeWithContentDescription("맨 아래로").assertDoesNotExist()
         ui.onNodeWithText("오류만").performClick()
         ui.onNodeWithText("WARN incoming").assertExists()
         ui.onNodeWithText("ordinary item", substring = true).assertDoesNotExist()
+    }
+
+    @Test fun anotherFileCanBeSelectedWhileTabletPreviewIsPending() {
+        val selected = mutableListOf<String>()
+        val state = mutableStateOf(LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),
+            fileBrowserEntries = listOf(entry("a.txt"), entry("b.txt"))))
+        ui.setContent {
+            SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+                TavernFileManagerDialog(state.value, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {},
+                    { path -> selected += path; state.value = state.value.copy(pendingFilePreviewPath = path) },
+                    null, {}, embedded = true, sideBySide = true)
+            }
+        }
+        ui.onNodeWithText("a.txt").performClick()
+        ui.onNodeWithText("b.txt").performClick()
+        ui.runOnIdle { assertEquals(listOf("a.txt", "b.txt"), selected) }
     }
 }

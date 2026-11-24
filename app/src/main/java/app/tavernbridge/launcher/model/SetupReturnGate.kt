@@ -6,6 +6,7 @@ internal class SetupReturnGate {
     private var left = false
     fun launched() { opened = true; left = false }
     fun paused() { if (opened) left = true }
+    fun disarm() { opened = false; left = false }
     val waitingForReturn get() = opened && left
     fun restoreReturn(wasAway: Boolean) {
         if (wasAway) { opened = true; left = true }
