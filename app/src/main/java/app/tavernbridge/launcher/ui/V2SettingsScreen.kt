@@ -62,11 +62,12 @@ internal fun V2SettingsLayout(state: LauncherUiState, detail: @Composable (Setti
         val fontScale = LocalDensity.current.fontScale
         val wide = chooseLauncherNavigation(LocalConfiguration.current.screenWidthDp.toFloat()) == LauncherNavigationMode.RAIL
         val roomy = wide && maxWidth >= 890.dp && fontScale < 1.3f
+        val listWidth = if (roomy) 350.dp else (maxWidth * .38f).coerceAtMost(300.dp)
         BackHandler(enabled = !wide && open != null) { open = null }
         val selected = open ?: SettingsPage.DISPLAY
         Row(Modifier.fillMaxSize()) {
             if (wide || open == null) {
-                Column((if (wide) Modifier.width(if (roomy) 350.dp else (maxWidth * .38f).coerceAtMost(300.dp)) else Modifier.fillMaxWidth()).fillMaxHeight()
+                Column((if (wide) Modifier.width(listWidth) else Modifier.fillMaxWidth()).fillMaxHeight()
                     .verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 22.dp)) {
                     Text("설정", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
                     Spacer(Modifier.height(24.dp))

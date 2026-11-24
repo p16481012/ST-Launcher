@@ -66,7 +66,7 @@ internal fun V2BackupScreen(
     // A separate "can Termux write a new backup ZIP?" check must not gate the picker.
     val canImport = !busy && !state.environment.processRunning
     val archives = state.backups
-    val estimate by produceState<Long?>(null, archives, state.backupAnnotations, state.displayPreferences.keepBackups, state.backupsLoaded) {
+    val estimate by produceState<Long?>(null, archives, state.backupAnnotations, state.displayPreferences.keepBackups, state.backupsLoaded, state.backupStorageReady) {
         value = if (!state.backupsLoaded || state.backupStorageReady != true) null else withContext(Dispatchers.Default) {
             runCatching {
                 BackupRetentionPolicy.afterCreation(archives, state.backupAnnotations, state.displayPreferences.keepBackups)
