@@ -23,12 +23,14 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.BuildConfig
 import app.tavernbridge.launcher.LauncherViewModel
+import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.data.TermuxInstallationInspector
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
@@ -102,6 +104,8 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
 internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) {
     val reminder = state.backupReminder
     val prefs = state.displayPreferences
+    val cleanupTitle = stringResource(R.string.backup_cleanup_rule)
+    val keepCount = prefs.keepBackups.count
     var retention by rememberSaveable { mutableStateOf(false) }
     var secretsConfirm by rememberSaveable { mutableStateOf(false) }
     SettingsGroup { SettingsRow("백업 알림 받기", caption = "마지막 백업 후 시간이 지나면 앱에서 알려줘요",
@@ -113,15 +117,18 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
         SettingsRow("업데이트 전에 자동 백업", checked = state.autoBackupBeforeUpdate,
             onClick = { vm.setAutoBackupBeforeUpdate(!state.autoBackupBeforeUpdate) })
         SettingsDivider()
-        SettingsRow("보관할 백업 수", value = prefs.keepBackups.label, onClick = { retention = true })
+        SettingsRow(cleanupTitle, value = prefs.keepBackups.label,
+            caption = if (keepCount == null) stringResource(R.string.backup_cleanup_unlimited)
+                      else stringResource(R.string.backup_cleanup_recommendation, keepCount),
+            onClick = { retention = true })
         SettingsDivider()
         SettingsRow("API 키 포함", caption = "직접 만드는 백업의 기본 선택이에요", checked = prefs.includeSecretsByDefault,
             onClick = { if (prefs.includeSecretsByDefault) vm.setDisplayPreferences(prefs.copy(includeSecretsByDefault = false)) else secretsConfirm = true })
     }
     SettingsCaption("API 키를 포함한 백업은 다른 사람에게 보내지 마세요.")
-    if (prefs.keepBackups.count != null) SettingsCaption("새 백업을 만든 뒤 정리 후보를 보여줘요. 선택·확인 전에는 삭제하지 않아요. 전체·고정 백업은 추천에서 제외해요.")
-    if (retention) SettingsChoice("보관할 백업 수", BackupKeep.entries, prefs.keepBackups, { it.label },
-        { vm.setDisplayPreferences(prefs.copy(keepBackups = it)); retention = false }) { retention = false }
+    if (retention) SettingsChoice(cleanupTitle, BackupKeep.entries, prefs.keepBackups, { it.label },
+        { vm.setDisplayPreferences(prefs.copy(keepBackups = it)); retention = false },
+        hint = stringResource(R.string.backup_cleanup_exempt)) { retention = false }
     if (secretsConfirm) AlertDialog(onDismissRequest = { secretsConfirm = false }, title = { Text("수동 백업에 API 키를 포함할까요?") },
         text = { Text("사용자 데이터 또는 전체 설치를 직접 백업하면 비밀 설정이 암호화되지 않은 ZIP에 포함될 수 있어요. 백업할 때마다 변경할 수 있어요.") },
         confirmButton = { TextButton(onClick = { secretsConfirm = false; vm.setDisplayPreferences(prefs.copy(includeSecretsByDefault = true)) }) { Text("포함") } },
@@ -299,9 +306,11 @@ private fun SettingsInfo(title: String, body: String, close: () -> Unit) {
 }
 
 @Composable
-private fun <T> SettingsChoice(title: String, choices: List<T>, selected: T, label: (T) -> String, select: (T) -> Unit, close: () -> Unit) {
+private fun <T> SettingsChoice(title: String, choices: List<T>, selected: T, label: (T) -> String, select: (T) -> Unit,
+    hint: String = "", close: () -> Unit) {
     AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()).selectableGroup()) {
+            if (hint.isNotEmpty()) SettingsCaption(hint)
             choices.forEach { item -> Row(Modifier.fillMaxWidth().selectable(item == selected, role = Role.RadioButton) { select(item) }
                 .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 RadioButton(selected = item == selected, onClick = null); Text(label(item))
