@@ -6,7 +6,25 @@ import sys
 
 from PIL import Image, ImageChops, ImageDraw
 
+def verify_management_captures(root):
+    # A screenshot of a blank window can still have a status bar and a valid PNG header.
+    # Check for contrasting content inside several separate strips of the app body.
+    for name in ("tool-installation", "management-update", "management-backup"):
+        with Image.open(root / f"{name}.png") as raw:
+            image = raw.convert("L")
+        w, h = image.size
+        bands_with_content = 0
+        for top in (0.12, 0.28, 0.44, 0.60, 0.76):
+            band = image.crop((round(w * .04), round(h * top), round(w * .96), round(h * (top + .12))))
+            hist = band.histogram()
+            if sum(hist[:150]) >= 60 and sum(hist[195:]) >= 250:
+                bands_with_content += 1
+        if bands_with_content < 2:
+            raise ValueError(f"{name}: no readable body content ({bands_with_content} nonblank bands)")
+        print(f"{name}: management body visible in {bands_with_content} bands")
+
 def main(root):
+    verify_management_captures(root)
     accents = ("amber", "green", "wine", "slate", "blue", "violet")
     modes = tuple(product(("light", "dark"), ("normal", "high")))
     for screen in ("home", "settings", "backups"):

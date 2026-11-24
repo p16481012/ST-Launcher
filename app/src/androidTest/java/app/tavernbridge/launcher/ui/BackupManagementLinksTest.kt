@@ -1,11 +1,13 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import org.junit.Assert.assertEquals
@@ -23,15 +25,20 @@ class BackupManagementLinksTest {
             termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
             environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true,
                 managerConnected = true, sillyTavernInstalled = true),
-            backupsLoaded = true, backupStorageReady = true, backupReminder = BackupReminderState(enabled = false))
+            backupsLoaded = true, backupStorageReady = true, backupReminder = BackupReminderState(enabled = false),
+            // On a wide screen the real overview shows its latest archive in the second pane.
+            backups = listOf(BackupArchive(fileName = "SillyTavern-20261124-165300.zip", sizeBytes = 83_886_080L,
+                createdAt = "2026-11-24 16:53:00", categories = setOf(BackupCategory.USER_DATA, BackupCategory.CONFIG),
+                customFolders = emptySet(), includesSecrets = false, sillyTavernVersion = "1.19.1",
+                characterFiles = 12, chatFiles = 34)))
         var openedFolder = 0
         var openedSafety = 0
         var reminder: Boolean? = null
         val modes = mutableListOf<EncryptedBackupMode>()
         ui.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
-                Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-                    Box(Modifier.widthIn(max = 400.dp).fillMaxHeight()) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                         V2BackupScreen(state, onCreateBackup = { _, _, _ -> }, onRefresh = {},
                             onReminderChange = { reminder = it }, onTransfer = { _, _ -> },
                             onOpenFolder = { openedFolder++ }, onSafety = { openedSafety++ }, onScan = {},
@@ -47,8 +54,11 @@ class BackupManagementLinksTest {
         overview.performScrollToNode(hasText("안전 사본·휴지통"))
         ui.onNodeWithText("안전 사본·휴지통").performScrollTo().performClick()
         overview.performScrollToKey("backup-storage-actions")
-        ui.waitForIdle()
-        captureModalWindowSnapshot("management-backup")
+        ui.onNodeWithText("Download 폴더 열기").performScrollTo()
+        if (InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp >= 840) {
+            ui.onNodeWithText("이 백업으로 복원").assertIsDisplayed()
+        }
+        ui.captureManagementScreen("management-backup", "Download 폴더 열기")
         ui.onNodeWithText("Download 폴더 열기").performScrollTo().performClick()
         ui.onNodeWithText("백업 알림").performScrollTo().performClick()
         ui.onNodeWithText("암호화 백업").performScrollTo().performClick()

@@ -107,7 +107,7 @@ jobs:
         env:
           FORM: ${{ matrix.form }}
         run: |
-          expected=(home setup-step-3 settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash)
+          expected=(home setup-step-3 settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash tool-installation management-update management-backup)
           if [[ "$FORM" == phone ]]; then expected+=(settings-index); fi
           for name in "${expected[@]}"; do
             test -s "visual-results/$name.png"

@@ -69,7 +69,7 @@ class UpdateManagementContentTest {
         show()
         ui.onNodeWithText("최신 버전이에요").assertIsDisplayed()
         ui.onNodeWithText("최신 상태").assertIsNotEnabled()
-        captureModalWindowSnapshot("management-update")
+        ui.captureManagementScreen("management-update", "최신 버전이에요")
         ui.onNodeWithText("a123456 → a123456").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("업데이트 안전 검사").performScrollTo().assertIsEnabled()
         ui.onNodeWithText("이전 버전 선택·복귀").performScrollTo().assertIsNotEnabled()

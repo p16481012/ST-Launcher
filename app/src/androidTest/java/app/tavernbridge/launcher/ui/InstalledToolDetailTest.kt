@@ -1,22 +1,18 @@
 package app.tavernbridge.launcher.ui
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
-import androidx.test.platform.app.InstrumentationRegistry
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
-import java.io.File
 
 class InstalledToolDetailTest {
     @get:Rule val ui = createComposeRule()
@@ -42,11 +38,7 @@ class InstalledToolDetailTest {
         listOf("버전", "1.19.1", "브랜치", "설치 위치", "~/SillyTavern", "Node.js", "v24.22.3",
             "커밋", "c96a1d0c6", "기존 설치 가져오기").forEach { ui.onNodeWithText(it).assertExists() }
         ui.onAllNodesWithText("Staging").assertCountEquals(2)
-        ui.waitForIdle()
-        val dir = File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "v2-visual")
-        check(dir.isDirectory || dir.mkdirs())
-        val bitmap = ui.onRoot().captureToImage().asAndroidBitmap()
-        File(dir, "tool-installation.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        ui.captureManagementScreen("tool-installation", "설치 정보")
         item("내부 저장소 폴더 선택").assertIsEnabled().performClick()
         item("Termux 폴더 경로 입력").performClick()
         ui.onNode(hasSetTextAction()).performTextReplacement("/storage/emulated/0/Documents/SillyTavern")
