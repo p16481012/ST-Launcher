@@ -151,11 +151,8 @@ import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import kotlinx.coroutines.delay
 import java.util.Locale
 
-internal fun formatUiText(text: String, keepWordsTogether: Boolean): String {
-    val sentenceWrapped = text.replace(Regex("""(?<=\.)[ \t]+(?=[가-힣])"""), "\n")
-    if (!keepWordsTogether) return sentenceWrapped
-    return sentenceWrapped.replace(Regex("""(?<=\S)(?=\S)"""), "\u2060")
-}
+private val sentenceBoundary = Regex("""(?<=\.)[ \t]+(?=[가-힣])""")
+internal fun formatUiText(text: String): String = text.replace(sentenceBoundary, "\n")
 
 @Composable
 private fun Text(
@@ -178,10 +175,7 @@ private fun Text(
     style: TextStyle = androidx.compose.material3.LocalTextStyle.current,
 ) {
     MaterialText(
-        text = formatUiText(
-            text = text,
-            keepWordsTogether = fontFamily != V2Mono && style.fontFamily != V2Mono && LocalDensity.current.fontScale < 1.3f,
-        ),
+        text = if (fontFamily == V2Mono || style.fontFamily == V2Mono) text else formatUiText(text),
         modifier = modifier,
         color = color,
         fontSize = fontSize,
@@ -197,7 +191,10 @@ private fun Text(
         maxLines = maxLines,
         minLines = minLines,
         onTextLayout = onTextLayout,
-        style = style,
+        // Wrap at natural phrase boundaries without inserting invisible characters into
+        // button names, screen-reader text, selection, search or copied values.
+        style = if (fontFamily != V2Mono && style.fontFamily != V2Mono && LocalDensity.current.fontScale < 1.3f)
+            style.copy(lineBreak = androidx.compose.ui.text.style.LineBreak.Heading) else style,
     )
 }
 
@@ -1126,124 +1123,124 @@ internal fun BackupCreatorCard(
     val selected = selectedKeys.mapNotNull(BackupCategory::fromKey).toSet()
     val canIncludeSecrets = BackupCategory.USER_DATA in selected || BackupCategory.FULL in selected
 
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("백업 범위", style = MaterialTheme.typography.titleLarge)
-            Column(Modifier.selectableGroup()) {
-                listOf("data" to "사용자 데이터", "full" to "전체 설치", "choose" to "직접 선택").forEach { (key, label) ->
-                    Row(Modifier.fillMaxWidth().selectable(selected = scope == key, role = androidx.compose.ui.semantics.Role.RadioButton,
-                        onClick = {
-                            if (scope != key) {
-                                scope = key
-                                selectedKeys = listOf(if (key == "full") BackupCategory.FULL.key else BackupCategory.USER_DATA.key)
-                                selectedFolders = emptyList()
-                            }
-                        }).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        androidx.compose.material3.RadioButton(selected = scope == key, onClick = null)
-                        Column { Text(label, style = MaterialTheme.typography.bodyLarge)
-                            Text(when (key) { "data" -> BackupCategory.USER_DATA.description; "full" -> BackupCategory.FULL.description
-                                else -> "확장 프로그램·서버 설정·개별 폴더 조합" }, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("백업 범위", style = MaterialTheme.typography.titleLarge)
+        Column(Modifier.selectableGroup()) {
+            listOf("data" to "사용자 데이터", "full" to "전체 설치", "choose" to "직접 선택").forEach { (key, label) ->
+                Row(Modifier.fillMaxWidth().selectable(selected = scope == key, role = androidx.compose.ui.semantics.Role.RadioButton,
+                    onClick = {
+                        if (scope != key) {
+                            scope = key
+                            selectedKeys = listOf(if (key == "full") BackupCategory.FULL.key else BackupCategory.USER_DATA.key)
+                            selectedFolders = emptyList()
                         }
-                    }
-                }
-            }
-            if (scope == "choose") BackupCategory.entries.filter { it != BackupCategory.FULL }.forEach { category ->
-                val checked = category in selected
-                Row(Modifier.fillMaxWidth().toggleable(value = checked, role = androidx.compose.ui.semantics.Role.Checkbox,
-                    onValueChange = { enabled ->
-                        selectedKeys = if (enabled) (selectedKeys + category.key).distinct() else selectedKeys - category.key
-                        if (category == BackupCategory.CUSTOM && !enabled) selectedFolders = emptyList()
-                    }).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                    }).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SettingsChoiceMark(checked, selection = true)
-                    Column(Modifier.padding(top = 10.dp)) {
-                        Text(category.label, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            category.description,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                    androidx.compose.material3.RadioButton(selected = scope == key, onClick = null)
+                    Column { Text(label, style = MaterialTheme.typography.bodyLarge)
+                        Text(when (key) { "data" -> BackupCategory.USER_DATA.description; "full" -> BackupCategory.FULL.description
+                            else -> "확장 프로그램·서버 설정·개별 폴더 조합" }, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-            }
-
-            if (BackupCategory.CUSTOM in selected) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("~/SillyTavern/data/default-user", style = MaterialTheme.typography.titleSmall)
-                        if (availableFolders.isEmpty()) {
-                            Text(
-                                "선택할 사용자 폴더가 없습니다.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        availableFolders.forEach { folder ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = folder.key in selectedFolders,
-                                    onCheckedChange = { enabled ->
-                                        selectedFolders = if (enabled) {
-                                            (selectedFolders + folder.key).distinct()
-                                        } else {
-                                            selectedFolders - folder.key
-                                        }
-                                    },
-                                )
-                                Column(Modifier.padding(vertical = 6.dp)) {
-                                    Text(folder.label, fontWeight = FontWeight.SemiBold)
-                                    Text(
-                                        backupFolderInfo(folder.key).description,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            FilterChip(
-                selected = includeSecrets && canIncludeSecrets,
-                enabled = canIncludeSecrets,
-                onClick = { includeSecrets = !includeSecrets },
-                label = { Text("API 키 등 비밀 설정 포함") },
-                leadingIcon = { Icon(Icons.Outlined.WarningAmber, null, Modifier.size(18.dp)) },
-            )
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
-                shape = RoundedCornerShape(14.dp),
-            ) {
-                Text(
-                    if (includeSecrets && canIncludeSecrets) {
-                        "주의: secrets.json을 포함합니다. ZIP은 암호화되지 않으므로 공유하거나 클라우드에 올리지 마세요."
-                    } else {
-                        "secrets.json은 기본적으로 제외됩니다. ZIP 자체는 암호화되지 않습니다."
-                    },
-                    modifier = Modifier.padding(14.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (serverRunning) Text("백업하는 동안 서버를 잠시 꺼요. 완료 후 다시 켜며, 중단하면 꺼진 상태로 남아요.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(
-                onClick = {
-                    onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = canStart && selected.isNotEmpty() &&
-                    (BackupCategory.CUSTOM !in selected || selectedFolders.isNotEmpty()),
-            ) {
-                Icon(Icons.Outlined.CloudDownload, null)
-                Spacer(Modifier.width(8.dp))
-                Text("백업 시작")
             }
         }
+        if (scope == "choose") BackupCategory.entries.filter { it != BackupCategory.FULL }.forEach { category ->
+            val checked = category in selected
+            Row(Modifier.fillMaxWidth().toggleable(value = checked, role = androidx.compose.ui.semantics.Role.Checkbox,
+                onValueChange = { enabled ->
+                    selectedKeys = if (enabled) (selectedKeys + category.key).distinct() else selectedKeys - category.key
+                    if (category == BackupCategory.CUSTOM && !enabled) selectedFolders = emptyList()
+                }).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                SettingsChoiceMark(checked, selection = true)
+                Column(Modifier.padding(top = 10.dp)) {
+                    Text(category.label, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        category.description,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
+        if (BackupCategory.CUSTOM in selected) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("~/SillyTavern/data/default-user", style = MaterialTheme.typography.titleSmall)
+                    if (availableFolders.isEmpty()) {
+                        Text(
+                            "선택할 사용자 폴더가 없습니다.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    availableFolders.forEach { folder ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = folder.key in selectedFolders,
+                                onCheckedChange = { enabled ->
+                                    selectedFolders = if (enabled) {
+                                        (selectedFolders + folder.key).distinct()
+                                    } else {
+                                        selectedFolders - folder.key
+                                    }
+                                },
+                            )
+                            Column(Modifier.padding(vertical = 6.dp)) {
+                                Text(folder.label, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    backupFolderInfo(folder.key).description,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        FilterChip(
+            selected = includeSecrets && canIncludeSecrets,
+            enabled = canIncludeSecrets,
+            onClick = { includeSecrets = !includeSecrets },
+            label = { Text("API 키 등 비밀 설정 포함") },
+            leadingIcon = { Icon(Icons.Outlined.WarningAmber, null, Modifier.size(18.dp)) },
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.errorContainer,
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Text(
+                if (includeSecrets && canIncludeSecrets) {
+                    "주의: secrets.json을 포함합니다. ZIP은 암호화되지 않으므로 공유하거나 클라우드에 올리지 마세요."
+                } else {
+                    "secrets.json은 기본적으로 제외됩니다. ZIP 자체는 암호화되지 않습니다."
+                },
+                modifier = Modifier.padding(14.dp),
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (serverRunning) Text("백업하는 동안 서버를 잠시 꺼요. 완료 후 다시 켜며, 중단하면 꺼진 상태로 남아요.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(
+            onClick = {
+                onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = canStart && selected.isNotEmpty() &&
+                (BackupCategory.CUSTOM !in selected || selectedFolders.isNotEmpty()),
+        ) {
+            Icon(Icons.Outlined.CloudDownload, null)
+            Spacer(Modifier.width(8.dp))
+            Text("백업 시작")
+        }
+    }
 }
 
 

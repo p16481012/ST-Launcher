@@ -277,12 +277,9 @@ internal fun V2BackupScreen(
             }
         }
     }
-    if (localScope) V2BottomSheet({ localScope = false }) {
-        BackupCreatorCard(state.environment.processRunning, state.displayPreferences.includeSecretsByDefault, state.backupFolders,
-            !busy && state.backupStorageReady == true) { categories, secrets, folders ->
-            localScope = false; onCreateBackup(categories, secrets, folders)
-        }
-    }
+    if (localScope && !busy) V2BackupFlowSheet(state, true,
+        onCreate = { categories, secrets, folders -> localScope = false; onCreateBackup(categories, secrets, folders) },
+        onCancel = {}, onClose = { localScope = false })
 }
 
 @Composable

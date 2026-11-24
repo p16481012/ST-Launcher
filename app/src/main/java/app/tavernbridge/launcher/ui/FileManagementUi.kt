@@ -279,17 +279,23 @@ internal fun TavernFileManagerDialog(
                     LaunchedEffect(state.fileBrowserPath, trail.maxValue) { trail.scrollTo(trail.maxValue) }
                     Row(Modifier.weight(1f).horizontalScroll(trail),
                         verticalAlignment = Alignment.CenterVertically) {
-                        if (state.fileBrowserPath.isEmpty()) Text("SillyTavern", Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) else
-                        TextButton(onClick = { onNavigate("") }, enabled = !state.fileBrowserMutating,
-                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text("SillyTavern") }
+                        if (state.fileBrowserPath.isEmpty()) {
+                            Text("SillyTavern", Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+                        } else {
+                            TextButton(onClick = { onNavigate("") }, enabled = !state.fileBrowserMutating,
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text("SillyTavern") }
+                        }
                         var prefix = ""
                         state.fileBrowserPath.split('/').filter(String::isNotBlank).forEach { segment ->
                             prefix = listOf(prefix, segment).filter(String::isNotBlank).joinToString("/")
                             val target = prefix
                             Text("/")
-                            if (target == state.fileBrowserPath) Text(segment, Modifier.padding(horizontal = 12.dp)) else
-                            TextButton(onClick = { onNavigate(target) }, enabled = !state.fileBrowserMutating,
-                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text(segment) }
+                            if (target == state.fileBrowserPath) {
+                                Text(segment, Modifier.padding(horizontal = 12.dp))
+                            } else {
+                                TextButton(onClick = { onNavigate(target) }, enabled = !state.fileBrowserMutating,
+                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text(segment) }
+                            }
                         }
                     }
                 }

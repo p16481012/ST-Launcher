@@ -154,7 +154,7 @@ internal fun SetupInstruction(number: String, instruction: String) {
             )
         }
         Text(
-            formatUiText(instruction, keepWordsTogether = true),
+            formatUiText(instruction),
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -219,14 +219,14 @@ internal fun TermuxSetupFeedback(state: LauncherUiState) {
                     )
                 }
                 Text(
-                    formatUiText(title, keepWordsTogether = true),
+                    formatUiText(title),
                     modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.SemiBold,
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
             Text(
-                formatUiText(description, keepWordsTogether = true),
+                formatUiText(description),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
