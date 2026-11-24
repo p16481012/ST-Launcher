@@ -43,3 +43,11 @@ internal fun LauncherUiState.previousScreen(): LauncherUiState {
         fileBrowserPath = if (target.tool == ToolPage.FILES) target.folderPath else fileBrowserPath,
         navigation = navigation.copy(entryId = target.id, previous = navigation.previous.dropLast(1)))
 }
+
+internal fun LauncherNavigation.masterEntry(section: MainSection): Long =
+    previous.takeLastWhile { it.section == section }.firstOrNull()?.id ?: entryId
+
+internal fun LauncherUiState.reselectRoot(tab: MainSection) = copy(section = tab,
+    toolPage = ToolPage.INDEX, diagnosticPanel = DiagnosticPanel.OVERVIEW,
+    navigation = LauncherNavigation(navigation.nextId, navigation.nextId + 1,
+        navigation.previous.dropLastWhile { it.section == tab }))

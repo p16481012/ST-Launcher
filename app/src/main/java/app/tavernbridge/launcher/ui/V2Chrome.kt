@@ -1,6 +1,19 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.*
+import androidx.compose.animation.*
+import androidx.compose.foundation.gestures.*
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.*
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.window.DialogWindowProvider
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
@@ -29,48 +42,95 @@ import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.launcherTabs
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun V2BottomSheet(onClose: () -> Unit, handleLabel: String = "시트 닫기", content: @Composable ColumnScope.() -> Unit) {
     val reduced = LocalV2ReducedMotion.current
     val latestClose by rememberUpdatedState(onClose)
-    val handle: @Composable () -> Unit = {
-        // In the animated sheet Material owns the drag gesture; only the static dialog needs a recognizer.
-        val drag = if (!reduced) Modifier else Modifier.pointerInput(Unit) {
-            var dy = 0f
-            detectVerticalDragGestures(onDragStart = { dy = 0f }, onDragEnd = {
-                if (dy > 20.dp.toPx()) latestClose()
-            }) { _, distance -> dy += distance }
-        }
-        Box(Modifier.fillMaxWidth().height(48.dp).then(drag)
-            .clickable(role = Role.Button) { latestClose() }
-            .semantics { contentDescription = handleLabel }, contentAlignment = Alignment.Center) {
-            Spacer(Modifier.size(36.dp, 4.dp).background(MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp)))
+    val scope = rememberCoroutineScope()
+    var height by remember { mutableIntStateOf(0) }
+    var drag by remember { mutableFloatStateOf(0f) }
+    var closing by remember { mutableStateOf(false) }
+    val open = remember { Animatable(if (reduced) 1f else 0f) }
+    val settle = remember { Animatable(0f) }
+    var settling by remember { mutableStateOf(false) }
+    var motionJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val density = LocalDensity.current
+    val dismiss: () -> Unit = {
+        if (!closing) {
+            closing = true
+            motionJob?.cancel()
+            scope.launch {
+                open.animateTo(0f, tween(if (reduced) 0 else 200, easing = FastOutLinearInEasing))
+                latestClose()
+            }
         }
     }
-    val body: @Composable () -> Unit = {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-            .padding(start = 24.dp, end = 24.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    val rest: (Float) -> Unit = { velocity ->
+        if (height > 0 && (drag >= height / 3f || velocity >= with(density) { 125.dp.toPx() } && drag > 0f)) dismiss()
+        else if (drag > 0f) {
+            motionJob?.cancel()
+            motionJob = scope.launch {
+                settle.snapTo(drag); settling = true
+                settle.animateTo(0f, tween(if (reduced) 0 else 200))
+                drag = 0f; settling = false
+            }
+        }
     }
-    if (reduced) {
-        Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                Spacer(Modifier.matchParentSize().clickable(interactionSource = interaction, indication = null, onClick = onClose))
-                Surface(Modifier.widthIn(max = 640.dp).fillMaxWidth(),
-                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), color = MaterialTheme.colorScheme.surface) {
-                    Column(Modifier.navigationBarsPadding()) {
-                        handle()
-                        body()
+    val startDrag: () -> Unit = {
+        motionJob?.cancel()
+        if (settling) { drag = settle.value; settling = false }
+    }
+    val scroll = rememberScrollState()
+    val scrollRest by rememberUpdatedState(rest)
+    val nested = remember(scroll) { object : NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            if (closing || source != NestedScrollSource.UserInput || available.y == 0f ||
+                (drag == 0f && (scroll.value > 0 || available.y < 0))) return Offset.Zero
+            startDrag()
+            val before = drag
+            drag = (drag + available.y).coerceIn(0f, height.toFloat())
+            return Offset(0f, drag - before)
+        }
+        override suspend fun onPreFling(available: Velocity): Velocity {
+            if (drag <= 0f) return Velocity.Zero
+            scrollRest(available.y)
+            return Velocity(0f, available.y)
+        }
+    } }
+    LaunchedEffect(Unit) { if (!reduced) open.animateTo(1f, tween(250, easing = LinearOutSlowInEasing)) }
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        DisposableEffect(window) {
+            val original = window?.attributes?.dimAmount ?: 0f
+            window?.setDimAmount(0f)
+            onDispose { window?.setDimAmount(original) }
+        }
+        val held = if (settling) settle.value else drag
+        val visible = open.value * (1f - held / height.coerceAtLeast(1)).coerceIn(0f, 1f)
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            Spacer(Modifier.matchParentSize().background(Color.Black.copy(alpha = .40f * visible))
+                .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null, onClickLabel = handleLabel, onClick = dismiss))
+            Surface(Modifier.statusBarsPadding().imePadding().widthIn(max = 640.dp).fillMaxWidth()
+                .onSizeChanged { height = it.height }.graphicsLayer {
+                    translationY = if (reduced) 0f else (1f - visible) * size.height
+                }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), color = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.navigationBarsPadding()) {
+                    Box(Modifier.fillMaxWidth().height(48.dp)
+                        .draggable(rememberDraggableState { delta -> if (!closing) drag = (drag + delta).coerceIn(0f, height.toFloat()) },
+                            Orientation.Vertical, onDragStarted = { startDrag() }, onDragStopped = { rest(it) })
+                        .clickable(role = Role.Button, onClick = dismiss)
+                        .semantics { contentDescription = handleLabel }, contentAlignment = Alignment.Center) {
+                        Spacer(Modifier.size(36.dp, 4.dp).background(MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp)))
+                    }
+                    CompositionLocalProvider(LocalV2SheetDismiss provides dismiss) {
+                    Column(Modifier.fillMaxWidth().nestedScroll(nested).verticalScroll(scroll)
+                        .padding(start = 24.dp, end = 24.dp, bottom = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
                     }
                 }
             }
         }
-    } else ModalBottomSheet(onDismissRequest = onClose, containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), tonalElevation = 0.dp,
-        dragHandle = null, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        handle()
-        body()
     }
 }
 
@@ -97,6 +157,13 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
 }
 
 internal val LocalV2NoticeHost = staticCompositionLocalOf<SnackbarHostState?> { null }
+internal val LocalV2SheetDismiss = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+internal fun noticeTimeout(message: String, action: String?): Long = when {
+    action != null -> 8_000L
+    message == "되돌렸어요" -> 2_000L
+    else -> 5_000L
+}
 
 @Composable
 internal fun V2BottomActions(content: @Composable () -> Unit) {
@@ -108,26 +175,45 @@ internal suspend fun showV2Notice(host: SnackbarHostState, message: String, acti
 
 @Composable
 internal fun V2NoticeHost(host: SnackbarHostState) {
-    host.currentSnackbarData?.let { data ->
-        key(data) {
+    val reduced = LocalV2ReducedMotion.current
+    val entranceOffset = with(LocalDensity.current) { 16.dp.roundToPx() }
+    AnimatedContent(targetState = host.currentSnackbarData, label = "하단 알림", transitionSpec = {
+        (fadeIn(tween(if (reduced) 0 else 180)) + slideInVertically(tween(if (reduced) 0 else 180)) { if (reduced) 0 else entranceOffset }) togetherWith
+            fadeOut(tween(if (reduced) 0 else 180))
+    }) { shown -> shown?.let { data ->
             val accessibility = LocalAccessibilityManager.current
             LaunchedEffect(data, accessibility) {
-                delay(accessibility?.calculateRecommendedTimeoutMillis(5_000L, true, true, true) ?: 5_000L)
+                val timeout = noticeTimeout(data.visuals.message, data.visuals.actionLabel)
+                delay(accessibility?.calculateRecommendedTimeoutMillis(timeout, true, true, true) ?: timeout)
                 data.dismiss()
             }
-            val swipe = rememberSwipeToDismissBoxState()
-            LaunchedEffect(swipe.currentValue) {
-                if (swipe.currentValue != SwipeToDismissBoxValue.Settled) data.dismiss()
-            }
-            SwipeToDismissBox(state = swipe, backgroundContent = {}) {
+            val density = LocalDensity.current
+            val threshold = with(density) { 64.dp.toPx() }
+            var width by remember { mutableIntStateOf(1) }
+            var offset by remember { mutableFloatStateOf(0f) }
+            val scope = rememberCoroutineScope()
+            var job by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+            Box(Modifier.onSizeChanged { width = it.width }.graphicsLayer {
+                translationX = if (reduced) 0f else offset
+                alpha = (1f - kotlin.math.abs(offset) / width.coerceAtLeast(1)).coerceIn(0f, 1f)
+            }.draggable(rememberDraggableState { offset += it }, Orientation.Horizontal,
+                onDragStarted = { job?.cancel() }, onDragStopped = { velocity ->
+                    val fling = kotlin.math.abs(velocity) > with(density) { 400.dp.toPx() }
+                    val dismiss = fling || kotlin.math.abs(offset) >= threshold
+                    val sign = if ((if (fling) velocity else offset) < 0) -1 else 1
+                    job = scope.launch {
+                        animate(offset, if (dismiss) sign * width.toFloat() else 0f,
+                            animationSpec = tween(if (reduced) 0 else if (dismiss) 120 else 200)) { value, _ -> offset = value }
+                        if (dismiss) data.dismiss()
+                    }
+                })) {
                 Snackbar(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                        .semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
+                        .semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(20.dp),
                     action = data.visuals.actionLabel?.let { label -> { TextButton(onClick = data::performAction) {
                         Text(label, color = MaterialTheme.colorScheme.inversePrimary)
                     } } }, dismissAction = { TextButton(onClick = data::dismiss) {
                         Text("닫기", color = MaterialTheme.colorScheme.inverseOnSurface)
                     } }) { Text(data.visuals.message) }
             }
-        }
-    }
+    } }
 }

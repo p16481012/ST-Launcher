@@ -29,13 +29,15 @@ internal class BackupMetadataStore(context: Context, scope: String) {
     }
 
     @Synchronized
-    fun rememberCreated(output: String) {
-        val receipt = output.lineSequence().filter { it.startsWith("backup_receipt=") }.singleOrNull()?.removePrefix("backup_receipt=") ?: return
+    fun rememberCreated(output: String): String? {
+        val receipt = output.lineSequence().filter { it.startsWith("backup_receipt=") }.singleOrNull()?.removePrefix("backup_receipt=") ?: return null
         val name = receipt.substringBefore('|')
         val revision = receipt.substringAfter('|', "")
         if (BackupRetentionPolicy.validFileName(name) && revision.matches(Regex("[a-f0-9]{64}"))) {
             preferences.edit().putString("${prefix}created:$name", revision).apply()
+            return name
         }
+        return null
     }
 
     @Synchronized

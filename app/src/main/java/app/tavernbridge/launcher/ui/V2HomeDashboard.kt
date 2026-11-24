@@ -1,5 +1,8 @@
 package app.tavernbridge.launcher.ui
 
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,10 +17,12 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -26,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.theme.V2Mono
+import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import app.tavernbridge.launcher.ui.theme.serverStatusIndicatorColor
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -34,13 +40,15 @@ import java.util.Locale
 internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart: () -> Unit, onStop: () -> Unit,
     onRestart: () -> Unit, onBackups: () -> Unit, onUpdate: () -> Unit, onLogs: () -> Unit, onHistory: () -> Unit,
     onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit, onSnooze: () -> Unit,
-    onOpenArchive: (String) -> Unit) {
+    onOpenArchive: (String) -> Unit, onCancelStart: () -> Unit = {}, onChangePort: () -> Unit = {},
+    onBlocked: () -> Unit = {}) {
     val env = state.environment
     var info by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedResult by remember { mutableStateOf<OperationResultSummary?>(null) }
     var historicResult by rememberSaveable { mutableStateOf<String?>(null) }
     val hero: @Composable () -> Unit = {
-        HomeServer(state, onOpen, onStart, onStop, onRestart, onBackups, onLogs, { info = "서버 정보" })
+        HomeServer(state, onOpen, onStart, onStop, onRestart, onBackups, onLogs, { info = "서버 정보" },
+            onCancelStart, onChangePort, onBlocked)
     }
     val status: @Composable () -> Unit = {
         val days = v2DaysSince(state.backupReminder.lastBackupAtMillis, state.backupReminderNowMillis)
@@ -134,11 +142,14 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
 
 @Composable
 private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -> Unit, onStop: () -> Unit,
-    onRestart: () -> Unit, onBackups: () -> Unit, onLogs: () -> Unit, onInfo: () -> Unit) {
+    onRestart: () -> Unit, onBackups: () -> Unit, onLogs: () -> Unit, onInfo: () -> Unit,
+    onCancelStart: () -> Unit, onChangePort: () -> Unit, onBlocked: () -> Unit) {
     val env = state.environment
     val cs = MaterialTheme.colorScheme
-    val ready = env.serverReadiness
     val locked = state.isWorking || env.operationActive
+    val actions = homeServerActions(env.serverReadiness, env.processRunning, locked, state.visibleOperation, state.cancellationRequested)
+    val ready = actions.status
+    val reduced = LocalV2ReducedMotion.current
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(listOfNotNull(env.branch?.value, env.sillyTavernVersion.takeIf(String::isNotBlank)).joinToString(" · ").ifBlank { "설치됨" },
             Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, fontFamily = V2Mono, color = cs.onSurfaceVariant)
@@ -147,11 +158,15 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     Spacer(Modifier.height(20.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         val color = serverStatusIndicatorColor(ready, cs.background)
-        Box(Modifier.size(8.dp).background(color, CircleShape))
-        Text(when (ready) {
+        val dotAlpha = if (ready == ServerReadiness.STARTING && !reduced) {
+            rememberInfiniteTransition(label = "시작 상태").animateFloat(1f, .45f,
+                infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "시작 상태 점").value
+        } else 1f
+        Box(Modifier.size(8.dp).alpha(dotAlpha).background(color, CircleShape))
+        Crossfade(ready, animationSpec = tween(if (reduced) 0 else 120), label = "서버 상태") { status -> Text(when (status) {
             ServerReadiness.READY -> "실행 중"; ServerReadiness.STARTING -> "시작 중"; ServerReadiness.OFFLINE -> "서버 꺼짐"
             ServerReadiness.UNRESPONSIVE -> "응답 없음"; ServerReadiness.PORT_CONFLICT -> "포트 충돌"
-        }, style = MaterialTheme.typography.labelMedium, color = color)
+        }, style = MaterialTheme.typography.labelMedium, color = color) }
         if (env.processRunning && env.sessionStartedEpoch > 0) {
             var now by remember(env.sessionStartedEpoch) { mutableLongStateOf(System.currentTimeMillis() / 1000) }
             LaunchedEffect(env.sessionStartedEpoch) { while (true) { now = System.currentTimeMillis() / 1000; delay(1000) } }
@@ -164,25 +179,53 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     Spacer(Modifier.height(6.dp))
     Text("127.0.0.1:${env.port}", fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
     Spacer(Modifier.height(26.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val problem = ready == ServerReadiness.UNRESPONSIVE || ready == ServerReadiness.PORT_CONFLICT
-        Button(onClick = if (ready == ServerReadiness.READY) onOpen else if (problem) onLogs else onStart,
-            modifier = Modifier.weight(1f).heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp),
-            enabled = ready == ServerReadiness.READY || problem || (!locked && ready == ServerReadiness.OFFLINE)) {
-            Text(when { ready == ServerReadiness.READY -> "대화 열기"; problem -> "로그 보기"; ready == ServerReadiness.STARTING -> "시작 중"; else -> "서버 시작" })
+    Row {
+        val primary = actions.primary
+        val mainModifier = Modifier.weight(1f).heightIn(min = 52.dp)
+        val shape = RoundedCornerShape(14.dp)
+        if (primary == HomePrimary.LOGS || primary == HomePrimary.PORT) {
+            OutlinedButton(onClick = if (primary == HomePrimary.LOGS) onLogs else onChangePort,
+                modifier = mainModifier, enabled = actions.canPrimary, shape = shape) {
+                Text(if (primary == HomePrimary.LOGS) "로그 보기" else "포트 바꾸기")
+            }
+        } else Button(onClick = if (primary == HomePrimary.CHAT) onOpen else onStart,
+            modifier = mainModifier, shape = shape, enabled = actions.canPrimary) {
+            Crossfade(primary, animationSpec = tween(if (reduced) 0 else 120), label = "서버 동작") {
+                when (it) {
+                    HomePrimary.STARTING -> VisibleBusyIndicator(Modifier.size(22.dp).semantics {
+                        contentDescription = "서버 시작 중"
+                    }, false, 2.dp)
+                    HomePrimary.CHAT -> Text("대화 열기")
+                    HomePrimary.START -> Text("서버 시작")
+                    else -> Unit
+                }
+            }
         }
-        if (env.processRunning) Surface(onClick = onStop, enabled = !locked,
+        AnimatedVisibility(visible = actions.stop != HomeStop.HIDDEN,
+            enter = fadeIn(tween(if (reduced) 0 else 120)) + expandHorizontally(tween(if (reduced) 0 else 200)),
+            exit = fadeOut(tween(if (reduced) 0 else 120)) + shrinkHorizontally(tween(if (reduced) 0 else 200))) {
+            Row { Spacer(Modifier.width(8.dp))
+            Surface(onClick = when (actions.stop) {
+                HomeStop.CANCEL_START -> onCancelStart; HomeStop.BLOCKED -> onBlocked; else -> onStop
+            }, enabled = actions.stop !in setOf(HomeStop.STOPPING, HomeStop.HIDDEN),
             modifier = Modifier.size(52.dp), shape = RoundedCornerShape(14.dp), color = cs.surface,
             border = androidx.compose.foundation.BorderStroke(1.dp, cs.outlineVariant)) {
-            Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Stop, "서버 종료", tint = cs.error) }
+                Box(contentAlignment = Alignment.Center) { if (actions.stop == HomeStop.STOPPING)
+                    VisibleBusyIndicator(Modifier.size(20.dp).semantics { contentDescription = "서버 종료 중" }, false, 2.dp)
+                else Icon(Icons.Outlined.Stop, if (actions.stop == HomeStop.CANCEL_START) "시작 취소" else "서버 종료",
+                    tint = if (actions.stop == HomeStop.BLOCKED) cs.onSurfaceVariant else cs.error) }
+            } }
         }
     }
+    if (ready == ServerReadiness.UNRESPONSIVE || ready == ServerReadiness.PORT_CONFLICT)
+        Text(if (ready == ServerReadiness.PORT_CONFLICT) "다른 앱이 포트 ${env.port}을 쓰고 있어요." else "서버가 응답하지 않아요. 재시작해 보세요.",
+            Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
     Spacer(Modifier.height(28.dp))
     Surface(shape = RoundedCornerShape(20.dp), color = cs.surface) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            HomeAction(Modifier.weight(1f), Icons.Outlined.RestartAlt, "재시작", !locked && env.processRunning, onRestart)
+            HomeAction(Modifier.weight(1f), Icons.Outlined.RestartAlt, "재시작", !locked && env.processRunning, onRestart, onBlocked.takeIf { actions.otherWork })
             VerticalDivider(Modifier.height(28.dp), color = cs.outlineVariant)
-            HomeAction(Modifier.weight(1f), Icons.Outlined.FileDownload, "백업", true, onBackups)
+            HomeAction(Modifier.weight(1f), Icons.Outlined.FileDownload, "백업", !locked, onBackups, onBlocked.takeIf { locked })
             VerticalDivider(Modifier.height(28.dp), color = cs.outlineVariant)
             HomeAction(Modifier.weight(1f), Icons.Outlined.Subject, "로그", true, onLogs)
         }
@@ -190,8 +233,8 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
 }
 
 @Composable
-private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
-    Column(modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick).heightIn(min = 72.dp).padding(4.dp),
+private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit, blocked: (() -> Unit)? = null) {
+    Column(modifier.clickable(enabled = enabled || blocked != null, role = Role.Button, onClick = if (enabled) onClick else blocked ?: {}).heightIn(min = 72.dp).padding(4.dp),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else .54f)
         Icon(icon, null, Modifier.size(21.dp), tint = ink)
@@ -223,6 +266,6 @@ internal fun V2Explanation(title: String, detail: String, onDismiss: () -> Unit)
     V2BottomSheet(onClose = onDismiss) {
             Text(title, style = MaterialTheme.typography.titleLarge)
             Text(detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text("확인") }
+            Button(onClick = LocalV2SheetDismiss.current ?: onDismiss, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text("확인") }
     }
 }

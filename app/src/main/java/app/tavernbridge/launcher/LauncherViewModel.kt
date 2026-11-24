@@ -1,5 +1,7 @@
 package app.tavernbridge.launcher
 
+import app.tavernbridge.launcher.model.reselectRoot
+
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
@@ -244,6 +246,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun openPortEditor() {
+        selectSection(MainSection.SETTINGS)
+        mutableState.update { it.copy(portEditorRequested = true) }
+    }
+
+    fun consumePortEditorRequest() { mutableState.update { it.copy(portEditorRequested = false) } }
+
+    fun openLanAddressFromNotice() {
+        if (!state.value.environment.externalAccessEnabled) return
+        if (state.value.section != MainSection.SETTINGS) selectSection(MainSection.SETTINGS)
+        mutableState.update { it.copy(lanAddressRequested = true) }
+    }
+
+    fun consumeLanAddressRequest() { mutableState.update { it.copy(lanAddressRequested = false) } }
+
     suspend fun inspectResetImpact(): app.tavernbridge.launcher.model.ResetImpact? {
         val ui = state.value
         if (!ui.environment.managerConnected || !ui.environment.sillyTavernInstalled || ui.isWorking) return null
@@ -312,6 +329,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun openBackups() {
         selectSection(MainSection.BACKUPS)
         selectManagementPanel(ManagementPanel.BACKUP)
+    }
+
+    fun reselectTab(tab: MainSection) {
+        if (state.value.toolPage == ToolPage.FILES) leaveFileTools()
+        if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
+        mutableState.update { it.reselectRoot(tab) }
+        if (tab == MainSection.BACKUPS) selectManagementPanel(ManagementPanel.BACKUP)
     }
 
     fun beginBackupTransfer(archive: BackupArchive, action: BackupTransferAction) {
@@ -493,7 +517,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun refresh() = refreshEnvironment(firstConnectionButton = false)
 
-    /** Only the step-3 button is wired here, never a lifecycle or permission callback. */
+    private val setupTrip = app.tavernbridge.launcher.model.SetupReturnGate()
+    fun onSetupWindowPaused() = setupTrip.paused()
+
+    /** Only the onboarding launch is armed. Other shortcuts into Termux do not trigger a check. */
+    fun openTermuxForSetup() {
+        if (!state.value.awaitingFirstConnection || state.value.isWorking) return
+        if (runCatching { repository.openTermux() }.getOrDefault(false)) setupTrip.launched()
+        else mutableState.update { it.firstConnectionFailed(it.environment, TermuxSetupState(
+            TermuxSetupStatus.UNVERIFIED, "Termux를 열지 못했어요. 설치 상태를 확인해 주세요.")) }
+    }
+
     fun confirmFirstConnection() {
         if (!state.value.awaitingFirstConnection || state.value.isWorking) return
         refreshEnvironment(firstConnectionButton = true)
@@ -759,6 +793,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshAfterResume() {
+        if (setupTrip.consume() && state.value.awaitingFirstConnection && !state.value.setupDeferred) {
+            viewModelScope.launch {
+                refreshJob?.join()
+                if (appInForeground && !state.value.termuxSetup.verified) confirmFirstConnection()
+            }
+            return
+        }
         if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         // A delayed resume callback may arrive after a quick button check has
         // already succeeded. Don't send a second doctor while still onboarding.
@@ -1040,7 +1081,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     ) {
         startServerWithWakeLock().also { result ->
             if (result.isSuccess && appInForeground && repository.autoOpenBrowser() && !operationCancellationRequested) {
-                runCatching { repository.openBrowser(repository.configuredPort()) }
+                if (runCatching { repository.openBrowser(repository.configuredPort()) }.getOrDefault(false))
+                    mutableState.update { it.copy(autoOpenedStartAtMillis = it.dispatchedAtMillis) }
             }
         }
     }
@@ -1444,9 +1486,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (!state.value.environment.managerConnected || !state.value.termuxSetup.verified) return
         if (commandEntryBlocked(allowWhileWorking = true, notifyBusy = false)) return
         viewModelScope.launch {
-            mutableState.update { it.copy(backupsLoaded = false) }
+            if (state.value.backupListLoading) return@launch
+            mutableState.update { it.copy(backupListLoading = true, backupListError = "", backupListErrorCode = "") }
             try {
                 val storageReady = repository.backupStorageReady()
+                if (!storageReady) {
+                    mutableState.update { it.copy(backupStorageReady = false, backupsLoaded = false,
+                        backupListLoading = false, backups = emptyList(), backupFolders = emptyList()) }
+                    return@launch
+                }
                 val (backups, safetyCount) = repository.readBackupCatalog(true)
                 val reminder = backupReminderStore.observeArchives(backups)
                 val folders = repository.listUserBackupFolders()
@@ -1459,14 +1507,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         backupReminderNowMillis = System.currentTimeMillis(),
                         backupFolders = folders,
                         backupsLoaded = true,
+                        backupListLoading = false,
                         backupStorageReady = storageReady,
+                        message = if (it.backupStorageReady == false) "백업 저장공간을 연결했어요." else it.message,
                         safetyCopyCount = safetyCount,
                         lastUpdateRecord = updateRecord,
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                mutableState.update { it.copy(backupListLoading = false) }
+                throw cancelled
             } catch (error: Exception) {
+                val detail = error.userMessage()
                 mutableState.update {
-                    it.copy(backupsLoaded = false, backupStorageReady = null, error = error.userMessage())
+                    it.copy(backupListLoading = false, backupListError = detail,
+                        backupListErrorCode = errorCodeFrom(detail).ifBlank { "BACKUP_LIST_FAILED" })
                 }
             }
         }
@@ -1611,7 +1666,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             maintainServer {
                 repository.createBackup(request).also { result ->
                     result.requireSuccess()
-                    if (!result.stdoutTruncated) backupMetadataStore.rememberCreated(result.stdout)
+                    if (!result.stdoutTruncated) {
+                        val created = backupMetadataStore.rememberCreated(result.stdout)
+                        mutableState.update { it.copy(lastCreatedBackupName = created) }
+                    }
                     rememberSuccessfulBackup(request)
                     refreshBackupListAfterOperation(suggestCleanup = true)
                 }
@@ -2146,6 +2204,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     fileBrowserOpen = true,
                     fileBrowserPath = relativePath,
                     fileBrowserLoading = true,
+                    fileListReadFailed = false,
                     fileBrowserError = "",
                     fileBrowserEntries = emptyList(),
                 )
@@ -2159,7 +2218,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 throw cancelled
             } catch (error: Exception) {
                 mutableState.update {
-                    it.copy(fileBrowserEntries = emptyList(), fileBrowserLoading = false, fileBrowserError = error.userMessage())
+                    it.copy(fileBrowserEntries = emptyList(), fileBrowserLoading = false, fileListReadFailed = true, fileBrowserError = error.userMessage())
                 }
             }
         }
@@ -2252,13 +2311,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun undoLastTrashedEntry() {
         val ids = repository.trashReceipts().asReversed().ifEmpty { return }
-        mutateTavernFiles("restore-st-trash", "휴지통 항목 복구", "휴지통의 항목을 원래 위치로 복구했습니다.") {
+        mutateTavernFiles("restore-st-trash", "휴지통 항목 복구", "되돌렸어요") {
             var last: TermuxCommandResult? = null
+            val restored = mutableSetOf<String>()
             for (id in ids) {
                 operationCheckpoint()
                 last = repository.restoreSillyTavernEntry(id)
                 if (!last.isSuccess) return@mutateTavernFiles last
-                mutableState.update { it.copy(lastTrashedEntryId = repository.lastTrashedEntryId()) }
+                app.tavernbridge.launcher.data.FileManagementProtocol.restoredPath(last.stdout)?.let(restored::add)
+                mutableState.update { it.copy(lastTrashedEntryId = repository.lastTrashedEntryId(), restoredFilePaths = restored.toSet()) }
             }
             requireNotNull(last)
         }
@@ -2344,7 +2405,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val started = System.currentTimeMillis()
         partialFileActionNotice = ""
         progressLogHistory.clear()
-        mutableState.update { it.copy(fileBrowserMutating = true, isWorking = true, workingLabel = label,
+        mutableState.update { it.copy(fileBrowserMutating = true, restoredFilePaths = emptySet(), isWorking = true, workingLabel = label,
             workingStartedAtMillis = started, fileBrowserError = "", fileBrowserNotice = "", workProgress = null) }
         val fileBrowserPath = state.value.fileBrowserPath
         viewModelScope.launch {
@@ -2689,7 +2750,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             extensionListGeneration++
             mutableState.update {
                 it.closeOperationDialogsForResult().copy(isWorking = true, extensionLoading = false, workingLabel = label,
-                    workingStartedAtMillis = operationStartedAt, workProgress = null)
+                    workingStartedAtMillis = operationStartedAt, dispatchedAtMillis = operationStartedAt,
+                    dispatchedOperation = operation, lastCreatedBackupName = if (operation == "backup") null else it.lastCreatedBackupName,
+                    workProgress = null)
             }
             LocalProgressJournal(operation, ::publishProgress).phase(
                 "작업 요청 준비", "$label 요청을 Termux에 전달하고 있습니다.")

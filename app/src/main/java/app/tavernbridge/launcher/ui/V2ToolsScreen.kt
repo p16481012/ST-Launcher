@@ -5,6 +5,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.animation.*
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +20,7 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,6 +41,7 @@ import android.text.format.Formatter
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.V2Mono
+import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 
 @Composable
 internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
@@ -47,7 +53,10 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
         val selected = state.toolPage
         val displayed = if (wide && selected == ToolPage.INDEX) ToolPage.UPDATE else selected
         val goBack = viewModel::navigateBack
-        BackHandler(selected != ToolPage.INDEX, onBack = goBack)
+        var allChanges by rememberSaveable(displayed) { mutableStateOf(false) }
+        val reduced = LocalV2ReducedMotion.current
+        V2BackHandler(selected != ToolPage.INDEX, onBack = goBack)
+        V2BackHandler(allChanges && displayed == ToolPage.UPDATE) { allChanges = false }
         Row(Modifier.fillMaxSize()) {
             if (wide || selected == ToolPage.INDEX) {
                 Column((if (wide) Modifier.width(masterWidth) else Modifier.weight(1f))
@@ -74,20 +83,44 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                 }
             }
             if (wide) VerticalDivider()
-            if (displayed != ToolPage.INDEX) key(displayed) {
-                Column(Modifier.weight(1f).fillMaxHeight().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
+            if (displayed != ToolPage.INDEX) Crossfade(displayed, modifier = Modifier.weight(1f).fillMaxHeight(),
+                animationSpec = tween(if (wide && !reduced) 120 else 0), label = "도구 상세 전환") { page ->
+                Column(Modifier.fillMaxSize().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
                     val crossSection = state.navigation.previous.lastOrNull()?.section?.let { it != MainSection.LOGS } == true
-                    if (displayed != ToolPage.FILES && (!wide || crossSection)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                    val nested = page == ToolPage.UPDATE && allChanges
+                    if (page != ToolPage.FILES && (!wide || crossSection || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
-                        Text(displayed.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                        IconButton(onClick = { if (nested) allChanges = false else goBack() }) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
+                        Text(if (nested) "바뀐 내용 전체" else page.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                     }
                     val detailMod = Modifier.fillMaxSize().padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 8.dp)
-                    when (displayed) {
-                        ToolPage.UPDATE -> UpdateDetail(state, viewModel, onUpdate, onOpenInstallation, detailMod)
+                    when (page) {
+                        ToolPage.UPDATE -> {
+                            val holder = rememberSaveableStateHolder()
+                            val dx = with(LocalDensity.current) { 24.dp.roundToPx() }
+                            AnimatedContent(allChanges, transitionSpec = {
+                                when {
+                                    reduced -> EnterTransition.None togetherWith ExitTransition.None
+                                    targetState -> (fadeIn(tween(220)) + slideInHorizontally(tween(220, easing = LinearOutSlowInEasing)) { dx }) togetherWith fadeOut(tween(220))
+                                    else -> fadeIn(tween(180)) togetherWith (fadeOut(tween(180)) + slideOutHorizontally(tween(180, easing = FastOutLinearInEasing)) { dx })
+                                }.using(null)
+                            }, label = "바뀐 내용 전체 전환") { full ->
+                                holder.SaveableStateProvider(full) {
+                                    if (full) Column(detailMod.verticalScroll(rememberScrollState())) {
+                                        ToolGroup("바뀐 내용") {
+                                            state.updatePreflight?.changes.orEmpty().forEachIndexed { index, c ->
+                                                if (index > 0) ToolDivider()
+                                                ToolRow(c.subject, c.commit.take(7), dataNote = true)
+                                            }
+                                            if (state.updatePreflight?.changesTruncated == true) ToolRow("일부 변경 사항만 표시합니다.")
+                                        }
+                                    } else UpdateDetail(state, viewModel, onUpdate, onOpenInstallation, detailMod) { allChanges = true }
+                                }
+                            }
+                        }
                         ToolPage.DIAGNOSTICS -> DiagnosticDetail(state, viewModel, detailMod)
                         ToolPage.LOGS -> ToolLogs(state, viewModel, detailMod)
-                        ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(displayed, state, viewModel, onRepair, onReset, detailMod)
+                        ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(page, state, viewModel, onRepair, onReset, detailMod)
                         ToolPage.EXTENSIONS -> ExtensionManagerDialog(
                             state.extensionInventory, state.extensionLoading, state.isWorking, state.environment.managerConnected &&
                                 !state.environment.processRunning && !state.environment.recoveryPending, state.extensionError,
@@ -164,14 +197,13 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     }
 }
 
-@Composable private fun UpdateDetail(state: LauncherUiState, vm: LauncherViewModel, onUpdate: () -> Unit, onInstall: () -> Unit, mod: Modifier) {
+@Composable private fun UpdateDetail(state: LauncherUiState, vm: LauncherViewModel, onUpdate: () -> Unit, onInstall: () -> Unit, mod: Modifier, onAllChanges: () -> Unit) {
     val r = state.updatePreflight
     val env = state.environment
     val canCheck = !state.isWorking && env.managerConnected && env.sillyTavernInstalled
     val ready = canCheck && r != null && r.updateAvailable && r.nodeCompatible && r.spaceReady &&
         (!state.autoBackupBeforeUpdate || r.backupStorageReady)
     val context = LocalContext.current
-    var all by rememberSaveable { mutableStateOf(false) }
     var details by rememberSaveable { mutableStateOf(false) }
     DetailLayout(mod, footer = {
         Button(if (ready) onUpdate else vm::checkForUpdates, Modifier.weight(1f).heightIn(min = 52.dp),
@@ -183,11 +215,10 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                 r?.takeIf { it.updateAvailable }?.let { "새 커밋 ${it.commitsBehind}개 · 필요 공간 ${Formatter.formatFileSize(context, it.requiredBytes)}" }).joinToString(" · "))
         if (!canCheck && !state.isWorking) Text("설치를 완료하고 Termux 연결을 확인해 주세요.")
         if (r != null && r.updateAvailable) {
-            ToolGroup("바뀐 내용", if (r.changes.size > 3) if (all) "접기" else "${r.changes.size}개 모두" else null, { all = !all }) {
-                val changes = if (all) r.changes else r.changes.take(3)
+            ToolGroup("바뀐 내용", if (r.changes.size > 3) "${r.changes.size}개 모두" else null, onAllChanges) {
+                val changes = r.changes.take(3)
                 changes.forEachIndexed { index, c -> ToolRow(c.subject, c.commit.take(7), dataNote = true); if (index != changes.lastIndex) ToolDivider() }
                 if (changes.isEmpty()) ToolRow("커밋 목록을 확인하지 못했어요.")
-                if (all && r.changesTruncated) ToolRow("일부 변경 사항만 표시합니다.")
             }
             val warning = listOfNotNull(
                 if (!r.nodeCompatible) "Node.js 버전이 맞지 않아요. 필요: ${r.nodeRequired}" else null,

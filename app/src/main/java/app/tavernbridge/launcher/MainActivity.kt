@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        viewModel.onSetupWindowPaused()
         window.decorView.removeCallbacks(refreshWhenForeground)
         super.onPause()
     }

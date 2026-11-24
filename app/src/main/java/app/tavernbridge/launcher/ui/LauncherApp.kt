@@ -7,10 +7,27 @@ import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.DocumentsContract
+import androidx.lifecycle.findViewTreeLifecycleOwner
+import androidx.compose.animation.Crossfade
+import androidx.compose.ui.graphics.graphicsLayer
+import app.tavernbridge.launcher.model.masterEntry
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -123,6 +140,7 @@ import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.hasInstallationHistory
 import app.tavernbridge.launcher.model.shouldShowSetupGuide
+import app.tavernbridge.launcher.model.visibleOperation
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.components.OperationCancelControl
@@ -234,6 +252,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     EncryptedBackupHost(state, viewModel)
     val localTransfer = localTransferProgress(state.backupTransfer, state.encryptedBackup)
     val showLocalProgress = rememberProgressVisible(localTransfer != null, localTransfer?.key)
+    val commandAtHome = state.section == MainSection.HOME && state.environment.sillyTavernInstalled &&
+        !state.environment.recoveryPending && state.visibleOperation in setOf("start", "stop")
     val showWorkProgress = rememberProgressVisible(state.isWorking, state.workingStartedAtMillis)
     var localFolded by rememberSaveable(localTransfer?.key) { mutableStateOf(false) }
     val localStarted = rememberSaveable(localTransfer?.key) { System.currentTimeMillis() }
@@ -247,6 +267,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     val resources = LocalResources.current
     val snackbarHostState = remember { SnackbarHostState() }
     var progressFolded by rememberSaveable(state.workingStartedAtMillis) { mutableStateOf(false) }
+    var backupScopeOpen by rememberSaveable { mutableStateOf(false) }
+    val backupWork = state.isWorking && state.visibleOperation == "backup"
+    LaunchedEffect(state.isWorking, state.section) {
+        if (state.isWorking || state.section != MainSection.BACKUPS) backupScopeOpen = false
+    }
     var lastOfferedUndo by rememberSaveable { mutableStateOf(state.lastTrashedEntryId) }
     LaunchedEffect(state.isWorking, state.lastTrashedEntryId, state.lastOperationResult?.completedAtMillis) {
         if (state.isWorking) return@LaunchedEffect
@@ -364,21 +389,78 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         )
     }
 
+    var seenResult by rememberSaveable { mutableStateOf(state.lastOperationResult?.completedAtMillis ?: -1L) }
+    var failedResult by rememberSaveable { mutableStateOf(-1L) }
+    val summary = state.lastOperationResult
+    LaunchedEffect(summary?.completedAtMillis, state.isWorking) {
+        if (!state.isWorking && summary != null && summary.completedAtMillis != seenResult) {
+            seenResult = summary.completedAtMillis
+            if (!summary.succeeded && summary.errorCode != "OPERATION_CANCELLED" &&
+                !(section == MainSection.HOME && summary.operation == "start" && summary.errorCode.contains("PORT"))) {
+                failedResult = summary.completedAtMillis
+            }
+            if (summary.succeeded && summary.operation == "restore-st-trash") showV2Notice(snackbarHostState, "되돌렸어요")
+        }
+    }
+    if (summary != null && !state.isWorking && failedResult == summary.completedAtMillis && !summary.succeeded) {
+        V2BottomSheet(onClose = { failedResult = -1L }) {
+            Text("${summary.title} 작업을 마치지 못했어요", style = MaterialTheme.typography.titleLarge)
+            Text(summary.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (summary.errorCode.isNotBlank()) Text(summary.errorCode, style = MaterialTheme.typography.labelMedium)
+            Text(when {
+                state.environment.recoveryPending -> "이전 작업의 복구가 필요해요. 복구 전에는 설치 파일을 변경하지 마세요."
+                summary.operation in setOf("backup", "export-backup", "diagnose", "check-update", "update-preflight") -> "이 작업은 현재 설치 데이터를 바꾸지 않아요."
+                else -> "실패한 단계와 파일 상태는 작업 기록에서 확인할 수 있어요."
+            })
+            Button(onClick = {
+                failedResult = -1L
+                if (summary.canRetry) viewModel.retryLastOperation() else viewModel.selectTool(ToolPage.DIAGNOSTICS)
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (summary.canRetry) "다시 시도" else "진단 열기") }
+            TextButton(onClick = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
+                modifier = Modifier.fillMaxWidth()) { Text("기록 보기") }
+        }
+    }
     LaunchedEffect(state.message, state.error, state.lastOperationResult) {
         val notice = state.error ?: state.message
         if (notice != null) {
-            val retryable = state.error != null && state.lastOperationResult?.canRetry == true
+            if (summary != null && !summary.succeeded && state.error != null && (summary.detail == notice || notice.contains(summary.detail))) {
+                viewModel.consumeNotice()
+                return@LaunchedEffect
+            }
+            val op = summary?.takeIf { it.succeeded && it.detail == notice && state.error == null }?.operation
+            if (op == "start" && state.autoOpenedStartAtMillis >= 0 && state.autoOpenedStartAtMillis == state.dispatchedAtMillis) {
+                viewModel.consumeNotice()
+                return@LaunchedEffect
+            }
+            val archive = if (op == "backup") state.backups.find { it.fileName == state.lastCreatedBackupName } else null
+            val action = when {
+                op == "start" -> "대화 열기"
+                op == "save-lan-security" && state.environment.externalAccessEnabled -> "주소 보기"
+                archive != null -> "보기"
+                else -> null
+            }
             val result = showV2Notice(snackbarHostState,
-                message = notice,
-                actionLabel = if (retryable) "다시 시도" else null,
+                message = when {
+                    op == "start" -> "서버를 켰어요"
+                    archive != null -> "백업했어요 · ${formatBackupBytes(archive.sizeBytes)}"
+                    else -> notice
+                }, actionLabel = action,
             )
             viewModel.consumeNotice()
-            if (result == SnackbarResult.ActionPerformed) viewModel.retryLastOperation()
+            if (result == SnackbarResult.ActionPerformed) when {
+                op == "start" -> {
+                    val browser = viewModel.preferredBrowser()
+                    if (browser != null) viewModel.openBrowser(browser.packageName)
+                    else { selectedBrowserPackage = null; browserPickerOpen = true }
+                }
+                op == "save-lan-security" -> viewModel.openLanAddressFromNotice()
+                archive != null -> { requestedArchive = archive.fileName; viewModel.openBackups() }
+            }
         }
     }
 
     confirmation?.let { pending ->
-        AlertDialog(
+        V2ConfirmDialog(
             onDismissRequest = { confirmation = null },
             title = { Text(pending.title) },
             text = {
@@ -388,10 +470,12 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         label = if (pending.action == ConfirmationAction.RESET) "초기화 전에 전체 백업하기" else "현재 설치를 먼저 ZIP으로 백업") {
                         confirmation = pending.copy(backupBefore = it)
                     }
+                    if (pending.action == ConfirmationAction.RESET && !pending.backupBefore)
+                        Text("백업 없이 진행해요.", color = MaterialTheme.colorScheme.error)
                 }
             },
-            confirmButton = {
-                Button(onClick = {
+            confirmButton = { finish ->
+                Button(onClick = { finish {
                     confirmation = null
                     if (ConfirmationCodec.decode(ConfirmationCodec.encode(pending)) == null) {
                         viewModel.showMessage(resources.getString(R.string.ui_confirmation_expired))
@@ -415,14 +499,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         ConfirmationAction.REPAIR -> viewModel.repair()
                         ConfirmationAction.RESET -> viewModel.resetInstallation(pending.allowBackup && pending.backupBefore)
                     }
-                }, enabled = !state.isWorking, shape = RoundedCornerShape(14.dp),
+                } }, enabled = !state.isWorking, shape = RoundedCornerShape(14.dp),
                     colors = if (pending.action in setOf(ConfirmationAction.DELETE_BACKUPS, ConfirmationAction.RESET))
                         ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)
                     else ButtonDefaults.buttonColors()
                 ) { Text(if (pending.allowBackup && !pending.backupBefore) pending.withoutBackupLabel else pending.confirmLabel) }
             },
-            dismissButton = {
-                TextButton(onClick = { confirmation = null }) { Text(stringResource(R.string.ui_cancel)) }
+            dismissButton = { cancel ->
+                TextButton(onClick = cancel) { Text(stringResource(R.string.ui_cancel)) }
             },
         )
     }
@@ -512,23 +596,28 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     val tab = if (section == MainSection.SETUP) MainSection.LOGS else section
     val selectTab: (MainSection) -> Unit = { target ->
         welcomeAfterInstall = false
-        if (target == MainSection.BACKUPS) viewModel.openBackups() else viewModel.selectSection(target)
+        if (target == tab) viewModel.reselectTab(target)
+        else if (target == MainSection.BACKUPS) viewModel.openBackups() else viewModel.selectSection(target)
     }
-    BackHandler(!setupFullScreen && (state.navigation.previous.isNotEmpty() || section == MainSection.SETUP)) {
-        viewModel.navigateBack()
-    }
+    val backProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     // Restore the originating Settings subpage, Backup detail, list position, etc.
     // only when Back returns to that visit. Opening a screen afresh starts fresh.
     val savedScreens = rememberSaveableStateHolder()
-    val knownKeys = remember { mutableSetOf<Long>() }
-    androidx.compose.runtime.DisposableEffect(state.navigation) {
-        val live = state.navigation.previous.mapTo(mutableSetOf()) { it.id }.apply { add(state.navigation.entryId) }
+    val knownKeys = remember { mutableSetOf<String>() }
+    androidx.compose.runtime.DisposableEffect(state.navigation, section) {
+        val live = state.navigation.previous.mapTo(mutableSetOf()) { "${it.section}:${it.id}" }
+            .apply { add("${section}:${state.navigation.entryId}") }
         (knownKeys - live).forEach { savedScreens.removeState(it) }
         knownKeys.clear()
         knownKeys.addAll(live)
         onDispose {}
     }
-    androidx.compose.runtime.CompositionLocalProvider(LocalV2NoticeHost provides snackbarHostState) {
+    androidx.compose.runtime.CompositionLocalProvider(LocalV2NoticeHost provides snackbarHostState,
+        LocalV2BackProgress provides { backProgress.floatValue = it },
+        LocalBackupScopeOpener provides { backupScopeOpen = true }) {
+    V2BackHandler(!setupFullScreen && (state.navigation.previous.isNotEmpty() || section == MainSection.SETUP)) {
+        viewModel.navigateBack()
+    }
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -550,8 +639,30 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             Row(Modifier.fillMaxSize()) {
             if (useRail && !setupFullScreen) LauncherNavigationRail(tab, selectTab, { it.icon() })
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-            savedScreens.SaveableStateProvider(state.navigation.entryId) {
-            androidx.compose.runtime.key(section) {
+            val stableMaster = useRail && section == MainSection.LOGS
+            val screenId = if (stableMaster) state.navigation.masterEntry(section) else state.navigation.entryId
+            val route = V2RouteKey(screenId, section, section == MainSection.LOGS && state.toolPage != ToolPage.INDEX && !stableMaster)
+            val reduced = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
+            val offset = with(androidx.compose.ui.platform.LocalDensity.current) { 24.dp.roundToPx() }
+            AnimatedContent(targetState = route, label = "화면 전환",
+                modifier = Modifier.graphicsLayer {
+                    if (!useRail && !reduced) { translationX = offset * backProgress.floatValue; alpha = 1f - .35f * backProgress.floatValue }
+                },
+                transitionSpec = {
+                    val subpage = !reduced && (targetState.detail || initialState.detail || targetState.section == MainSection.SETUP || initialState.section == MainSection.SETUP)
+                    val back = targetState.entry < initialState.entry
+                    val ms = if (!subpage) 120 else if (back) 180 else 220
+                    val ease = if (back) FastOutLinearInEasing else LinearOutSlowInEasing
+                    val enter = fadeIn(tween(ms, easing = ease)) + slideInHorizontally(tween(ms, easing = ease)) { if (subpage && !back) offset else 0 }
+                    val exit = fadeOut(tween(ms, easing = ease)) + slideOutHorizontally(tween(ms, easing = ease)) { if (subpage && back) offset else 0 }
+                    enter togetherWith exit
+                }) { entry ->
+            // Freeze outgoing data until transition disposal; its scroll state belongs to its visit.
+            val frame = remember(entry) { androidx.compose.runtime.mutableStateOf(state) }
+            if (entry == route) androidx.compose.runtime.SideEffect { frame.value = state }
+            val state = if (entry == route) state else frame.value
+            val section = entry.section
+            savedScreens.SaveableStateProvider("${entry.section}:${entry.entry}") {
                 when (section) {
                     MainSection.HOME -> HomeScreen(
                         state = state,
@@ -566,6 +677,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         },
                         onStart = viewModel::start,
                         onStop = viewModel::stop,
+                        onCancelStart = viewModel::cancelCurrentOperation,
+                        onChangePort = viewModel::openPortEditor,
+                        onBlocked = { viewModel.showMessage("다른 작업이 끝난 뒤에 할 수 있어요.") },
                         onRestart = viewModel::restart,
                         onRepair = viewModel::repair,
                         onSetup = { viewModel.selectSection(MainSection.SETUP) },
@@ -624,7 +738,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onInspectInstallation = viewModel::inspectExistingInstallation,
                             storageSetupCommand = viewModel.storageSetupCommand,
                             onOpenTermux = viewModel::openTermux,
-                            onStorageCommandCopied = { viewModel.showMessage("명령을 복사하고 Termux를 열었습니다.") },
+                            onStorageCommandCopied = {},
                             onRestoreBackup = { backup ->
                                 confirmation = Confirmation(
                                     title = "이 백업으로 복원할까요?",
@@ -663,6 +777,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onOpenPermissionSettings = viewModel::openPermissionSettings,
                             onVerifyTermux = viewModel::verifyTermuxSetup,
                             onConfirmFirstConnection = viewModel::confirmFirstConnection,
+                            onOpenSetupTermux = viewModel::openTermuxForSetup,
                             onConnect = viewModel::connectManager,
                             onSelectBranch = viewModel::selectInstallBranch,
                             onInstall = {
@@ -755,7 +870,22 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onClose = viewModel::closeSillyTavernFolder,
                 )
             }
-            if (showWorkProgress && !progressFolded) {
+            val scope = backupScopeOpen && !state.isWorking && state.section == MainSection.BACKUPS
+            if (scope || (backupWork && !progressFolded)) {
+                val reducedMotion = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
+                V2BottomSheet(onClose = { if (backupWork) progressFolded = true else backupScopeOpen = false },
+                    handleLabel = if (backupWork) stringResource(R.string.ui_collapse_progress) else "시트 닫기") {
+                    Crossfade(targetState = scope, modifier = Modifier.fillMaxWidth().animateContentSize(tween(if (reducedMotion) 0 else 200)),
+                        animationSpec = tween(if (reducedMotion) 0 else 120), label = "백업 범위와 진행") { choosing ->
+                        if (choosing) BackupCreatorCard(state.environment.processRunning, state.displayPreferences.includeSecretsByDefault,
+                            state.backupFolders, scope && state.backupStorageReady == true, viewModel::createBackup)
+                        else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            WorkingProgressContent(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
+                                state.cancellationRequested, viewModel::cancelCurrentOperation)
+                        }
+                    }
+                }
+            } else if (showWorkProgress && !progressFolded && !commandAtHome) {
                 WorkingOverlay(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
                     state.cancellationRequested, viewModel::cancelCurrentOperation) { progressFolded = true }
             }
@@ -771,6 +901,9 @@ private fun HomeScreen(
     onOpen: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onCancelStart: () -> Unit,
+    onChangePort: () -> Unit,
+    onBlocked: () -> Unit,
     onRestart: () -> Unit,
     onRepair: () -> Unit,
     onSetup: () -> Unit,
@@ -791,16 +924,17 @@ private fun HomeScreen(
     val env = state.environment
     if (state.environmentChecked && env.sillyTavernInstalled && !env.recoveryPending) {
         V2HomeDashboard(state, onOpen, onStart, onStop, onRestart, onOpenBackups,
-            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder, onOpenArchive)
+            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder, onOpenArchive,
+            onCancelStart, onChangePort, onBlocked)
     } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         when {
             state.shouldShowSetupGuide || (state.setupDeferred && !state.hasInstallationHistory) ->
-                EmptyHomeCard(onSetup)
+                EmptyHomeCard(state.setupDeferred, onSetup, onRefresh)
             !state.environmentChecked -> EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
                 setupCommand, onOpenPermissionSettings)
             env.recoveryPending -> RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
-            else -> EmptyHomeCard(onSetup)
+            else -> EmptyHomeCard(state.setupDeferred, onSetup, onRefresh)
         }
         if (!env.recoveryPending) state.lastOperationResult?.let { OperationResultCard(it, onRetry) }
     }
@@ -942,16 +1076,15 @@ private fun EnvironmentCheckingCard(
 }
 
 @Composable
-private fun EmptyHomeCard(onSetup: () -> Unit) {
+private fun EmptyHomeCard(deferred: Boolean, onSetup: () -> Unit, onRefresh: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("홈", style = MaterialTheme.typography.displaySmall)
-        Surface(onClick = onSetup, modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(14.dp)) {
-            Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("설정 이어하기", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.secondary)
-            }
+        Text(if (deferred) "설정을 이어갈까요?" else "SillyTavern을 설치하세요", style = MaterialTheme.typography.displaySmall)
+        Text(if (deferred) "처음 설정을 건너뛰었어요. 끝내지 않은 단계부터 이어갈 수 있어요."
+            else "설치를 마치면 이곳에서 서버를 시작하고 대화를 열 수 있어요.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(onClick = onSetup, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+            Text(if (deferred) "이어서 하기" else "설치하기")
         }
+        TextButton(onClick = onRefresh) { Text("설치 상태 다시 확인") }
     }
 }
 
@@ -971,43 +1104,41 @@ internal fun BackupCreatorCard(
     var selectedKeys by rememberSaveable { mutableStateOf(listOf(BackupCategory.USER_DATA.key)) }
     var selectedFolders by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var includeSecrets by rememberSaveable { mutableStateOf(includeSecretsByDefault) }
-    var confirmPause by rememberSaveable { mutableStateOf(false) }
+    var scope by rememberSaveable { mutableStateOf("data") }
     val selected = selectedKeys.mapNotNull(BackupCategory::fromKey).toSet()
     val canIncludeSecrets = BackupCategory.USER_DATA in selected || BackupCategory.FULL in selected
 
-    if (confirmPause) AlertDialog(
-        onDismissRequest = { confirmPause = false },
-        title = { Text("서버를 잠시 멈추고 백업할까요?") },
-        text = { Text("백업 중 대화할 수 없습니다. 백업 후 원래 실행 중이었던 서버만 다시 시작합니다. 작업을 중단하면 서버는 종료 상태로 남습니다.") },
-        confirmButton = { TextButton(enabled = canStart, onClick = {
-            confirmPause = false
-            onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
-        }) { Text("중지 후 백업") } },
-        dismissButton = { TextButton(onClick = { confirmPause = false }) { Text("취소") } },
-    )
-
-    Card(shape = RoundedCornerShape(22.dp)) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("새 백업 만들기", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "필요한 항목만 골라 검증된 ZIP으로 Download 폴더에 저장합니다.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            BackupCategory.entries.forEach { category ->
-                val checked = category in selected
-                Row(verticalAlignment = Alignment.Top) {
-                    Checkbox(
-                        checked = checked,
-                        onCheckedChange = { enabled ->
-                            selectedKeys = when {
-                                category == BackupCategory.FULL && enabled -> listOf(category.key)
-                                category == BackupCategory.FULL -> selectedKeys - category.key
-                                enabled -> (selectedKeys - BackupCategory.FULL.key + category.key).distinct()
-                                else -> selectedKeys - category.key
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("백업 범위", style = MaterialTheme.typography.titleLarge)
+            Column(Modifier.selectableGroup()) {
+                listOf("data" to "사용자 데이터", "full" to "전체 설치", "choose" to "직접 선택").forEach { (key, label) ->
+                    Row(Modifier.fillMaxWidth().selectable(selected = scope == key, role = androidx.compose.ui.semantics.Role.RadioButton,
+                        onClick = {
+                            if (scope != key) {
+                                scope = key
+                                selectedKeys = listOf(if (key == "full") BackupCategory.FULL.key else BackupCategory.USER_DATA.key)
+                                selectedFolders = emptyList()
                             }
-                            if (category == BackupCategory.CUSTOM && !enabled) selectedFolders = emptyList()
-                        },
-                    )
+                        }).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        androidx.compose.material3.RadioButton(selected = scope == key, onClick = null)
+                        Column { Text(label, style = MaterialTheme.typography.bodyLarge)
+                            Text(when (key) { "data" -> BackupCategory.USER_DATA.description; "full" -> BackupCategory.FULL.description
+                                else -> "확장 프로그램·서버 설정·개별 폴더 조합" }, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            if (scope == "choose") BackupCategory.entries.filter { it != BackupCategory.FULL }.forEach { category ->
+                val checked = category in selected
+                Row(Modifier.fillMaxWidth().toggleable(value = checked, role = androidx.compose.ui.semantics.Role.Checkbox,
+                    onValueChange = { enabled ->
+                        selectedKeys = if (enabled) (selectedKeys + category.key).distinct() else selectedKeys - category.key
+                        if (category == BackupCategory.CUSTOM && !enabled) selectedFolders = emptyList()
+                    }).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SettingsChoiceMark(checked, selection = true)
                     Column(Modifier.padding(top = 10.dp)) {
                         Text(category.label, fontWeight = FontWeight.SemiBold)
                         Text(
@@ -1080,10 +1211,11 @@ internal fun BackupCreatorCard(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+            if (serverRunning) Text("백업하는 동안 서버를 잠시 꺼요. 완료 후 다시 켜며, 중단하면 꺼진 상태로 남아요.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(
                 onClick = {
-                    if (serverRunning) confirmPause = true
-                    else onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
+                    onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
                 },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = canStart && selected.isNotEmpty() &&
@@ -1091,15 +1223,9 @@ internal fun BackupCreatorCard(
             ) {
                 Icon(Icons.Outlined.CloudDownload, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (serverRunning) "서버 잠시 중지 후 백업" else "선택한 항목 백업")
+                Text("백업 시작")
             }
-            Text(
-                "백업 중 파일이 바뀌지 않도록 서버를 멈춥니다. 원래 종료 상태였다면 완료 후에도 켜지지 않습니다.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
-    }
 }
 
 
@@ -1111,6 +1237,21 @@ internal fun BackupStorageSetupCard(
     onCopied: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    var copiedAt by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    LaunchedEffect(copiedAt) { if (copiedAt > 0) { delay(3_000); copiedAt = 0L } }
+    var checkOnReturn by rememberSaveable { mutableStateOf(false) }
+    val check by androidx.compose.runtime.rememberUpdatedState(onRefresh)
+    val lifecycle = androidx.compose.ui.platform.LocalView.current.findViewTreeLifecycleOwner()?.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && checkOnReturn) {
+                checkOnReturn = false
+                check()
+            }
+        }
+        lifecycle?.addObserver(observer)
+        onDispose { lifecycle?.removeObserver(observer) }
+    }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
         shape = RoundedCornerShape(22.dp),
@@ -1126,25 +1267,27 @@ internal fun BackupStorageSetupCard(
                 shape = RoundedCornerShape(14.dp),
             ) {
                 Text(
-                    "1. 아래 명령을 복사해 Termux에 붙여넣고 Enter\n2. Android에 표시되는 파일·사진 및 동영상 등 저장공간 접근 요청을 허용\n3. 런처로 돌아와 ‘연결 확인’을 누르기",
+                    "1. 아래 명령을 눌러 복사하세요.\n2. Termux를 열어 붙여넣고 Enter를 누른 뒤 저장공간 접근을 허용하세요.\n3. 런처로 돌아오면 연결을 확인해요.",
                     modifier = Modifier.padding(14.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp)) {
-                Text(command, Modifier.padding(12.dp), fontFamily = V2Mono)
+            Surface(onClick = {
+                clipboard.setText(AnnotatedString(command))
+                copiedAt = android.os.SystemClock.elapsedRealtime()
+                onCopied()
+            }, modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp)) {
+                Text(if (copiedAt > 0) "복사됨" else command, Modifier.padding(12.dp), fontFamily = V2Mono,
+                    color = if (copiedAt > 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface)
             }
             Button(
                 onClick = {
-                    clipboard.setText(AnnotatedString(command))
-                    onCopied()
+                    checkOnReturn = true
                     onOpenTermux()
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Icon(Icons.Outlined.ContentCopy, null)
-                Spacer(Modifier.width(8.dp))
-                Text("복사하고 Termux 열기")
+                Text("Termux 열기")
             }
             TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.Refresh, null)
@@ -1479,6 +1622,14 @@ internal fun WorkingOverlay(
     onCancel: () -> Unit,
     onFold: () -> Unit,
 ) {
+    V2BottomSheet(onClose = onFold, handleLabel = stringResource(R.string.ui_collapse_progress)) {
+        WorkingProgressContent(label, progress, startedAtMillis, cancellationRequested, onCancel)
+    }
+}
+
+@Composable
+private fun WorkingProgressContent(label: String, progress: app.tavernbridge.launcher.model.WorkProgress?,
+    startedAtMillis: Long, cancellationRequested: Boolean, onCancel: () -> Unit) {
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
     val finalizing = progress?.status == "success" && !finalConfirmation
     val measuredPercent = progress?.measuredPercent.takeUnless { finalizing }
@@ -1515,7 +1666,6 @@ internal fun WorkingOverlay(
         else if (!reduce) LinearProgressIndicator(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth().height(4.dp))
         else HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.outlineVariant)
     }
-    V2BottomSheet(onClose = onFold, handleLabel = stringResource(R.string.ui_collapse_progress)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             measuredPercent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono, style = MaterialTheme.typography.titleLarge) }
@@ -1535,7 +1685,6 @@ internal fun WorkingOverlay(
         WorkProgressLog(progress?.logText.orEmpty(), initiallyExpanded = false) {
             OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel, modifier = Modifier.weight(1f))
         }
-    }
 }
 @Composable
 internal fun WorkingMiniBar(label: String, progress: app.tavernbridge.launcher.model.WorkProgress?, expand: () -> Unit) {

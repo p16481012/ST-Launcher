@@ -27,10 +27,10 @@ UI: `LanConnectionCard(externalEnabled, endpoints, onRefresh, onConfigure, onCop
 
 ## 인증 설정과 비밀값 전달
 
-`LANSecuritySettingsDialog(current: LanSecuritySnapshot, busy, onDismiss, onConfirm)`는 다음 계약을 사용합니다.
+`LanSecuritySettingsPage`와 최종 확인 대화상자는 다음 계약을 사용합니다.
 
-1. 기본 외부 접속은 OFF입니다. 변경 범위·HTTP의 한계를 읽고 체크해야 적용할 수 있습니다.
-2. 아이디·암호는 `remember`에만 보관합니다. 화면 회전/닫기 시 사라지며 SavedState·ViewModel 상태·Intent·런처 설정·진단·QR에 넣지 않습니다. Dialog는 `SecureFlagPolicy.SecureOn`입니다.
+1. 기본 외부 접속은 OFF입니다. 켜려고 누르면 설정 화면으로 이동하며 접속은 여전히 꺼져 있습니다. 변경 범위·HTTP의 한계를 읽고 체크한 다음 변경 요약에서 재확인해야 적용합니다. 끌 때는 기존 허용 목록과 인증 값을 보존하고 노출을 중지합니다. 허용 여부는 실제 서버 설정을 읽은 값입니다.
+2. 아이디·암호는 `remember`에만 보관합니다. 화면 회전/닫기 시 사라지며 SavedState·ViewModel 상태·Intent·런처 설정·진단·QR에 넣지 않습니다. 입력 화면에는 `FLAG_SECURE`, 최종 확인 대화상자에는 `SecureFlagPolicy.SecureOn`이 적용됩니다. 요약에 암호는 표시하지 않습니다.
 3. 인증을 새로 켤 때는 아이디·8자 이상 암호가 필요하며 공백만 있는 암호는 거부합니다. 이미 켜진 경우 두 칸을 모두 비우면 기존 값을 유지합니다. 기존 `perUserBasicAuth` 사용자는 단일 계정 설정으로 바꾸지 않습니다.
 4. 적용 결과인 `LanSecurityChange`와 그 `EphemeralBasicAuthCredentials`의 소유권은 콜백 소비자에게 넘어갑니다. 소비자는 성공·실패·취소 모두 `finally`에서 `close()` 해야 합니다. 문자열화 결과는 마스킹되며 암호 CharArray는 close 시 0으로 덮습니다. 관리형 런타임의 모든 임시 String까지 메모리 소거를 보장한다는 뜻은 아닙니다.
 5. 실제 인증에는 SillyTavern `config.yaml`의 `basicAuthMode`/`basicAuthUser` 저장이 필요합니다. 이 사실과 설정을 포함한 백업의 보호 필요성을 UI에 명시합니다. “암호를 설정 파일에 저장하지 않는다”는 정책은 백업 암호/런처 환경설정에 적용되며 SillyTavern의 인증 설정 자체에는 해당하지 않습니다.

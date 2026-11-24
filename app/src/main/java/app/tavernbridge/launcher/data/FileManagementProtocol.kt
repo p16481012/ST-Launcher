@@ -56,6 +56,11 @@ internal object FileManagementProtocol {
 
     private fun decode(value: String): String = String(Base64.getDecoder().decode(value), Charsets.UTF_8)
 
+    /** Optional receipt for visual feedback only; never interpret a display path as a file command. */
+    fun restoredPath(output: String): String? = fields(output)["restored_b64"]?.takeIf { it.length <= 8192 }
+        ?.let { runCatching { decode(it) }.getOrNull() }
+        ?.takeIf { path -> path.isNotEmpty() && path.split('/').all(::validTavernEntryName) }
+
     fun installation(output: String): ExistingInstallation {
         val values = fields(output)
         return ExistingInstallation(

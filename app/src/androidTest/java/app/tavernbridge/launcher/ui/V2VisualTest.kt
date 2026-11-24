@@ -72,19 +72,22 @@ class V2VisualTest {
 
     @Test fun setupDoesNotProbeUntilExplicitlyRequested() {
         var probes = 0
+        var copied = 0
+        var opened = 0
         compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 SetupScreen(fixture.copy(environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true)),
                     setupCommand = "준비 명령 미리보기", onDownloadTermux = {}, onOpenTermux = {}, onRequestPermission = {},
                     onOpenPermissionSettings = {}, onVerifyTermux = { probes++ }, onConfirmFirstConnection = { probes++ },
-                    onConnect = { probes++ }, onSelectBranch = {}, onInstall = {}, onSwitchBranch = {}, onBackup = {}, onCopied = {},
+                    onConnect = { probes++ }, onSelectBranch = {}, onInstall = {}, onSwitchBranch = {}, onBackup = {}, onCopied = { copied++ },
+                    onOpenSetupTermux = { check(copied > 0); opened++ },
                     onPickInstallation = {}, onInspectInstallation = {}, onImportBackup = {}, onLeave = {})
             }
         } }
         compose.runOnIdle { assertEquals(0, probes) }
         capture("setup-step-3")
-        compose.onNodeWithText("실행했어요 · 연결 확인").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, probes) }
+        compose.onNodeWithText("Termux 열기").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(0, probes); assertEquals(1, opened); assertEquals(1, copied) }
     }
 
     @Test fun settingsUsesMasterDetailOrStackAndCanChangeSize() {

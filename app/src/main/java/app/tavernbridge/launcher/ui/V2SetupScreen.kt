@@ -1,7 +1,12 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.platform.LocalDensity
+import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -53,25 +58,39 @@ internal fun SetupScreen(
     onInspectInstallation: (String) -> Unit,
     onImportBackup: () -> Unit,
     onLeave: () -> Unit,
+    onOpenSetupTermux: () -> Unit = onOpenTermux,
 ) {
     val env = state.environment
     val eligible = setupEligibleStep(env, state.termuxSetup)
-    var requested by rememberSaveable(eligible) { mutableIntStateOf(eligible) }
+    var requested by rememberSaveable { mutableIntStateOf(eligible) }
+    LaunchedEffect(eligible) {
+        if (requested == 3 && eligible >= 4) kotlinx.coroutines.delay(1_000)
+        requested = eligible
+    }
     val step = requested.coerceIn(1, eligible)
     val done = step == 5 && eligible == 5 && env.sillyTavernInstalled
     val ready = !state.isWorking && state.termuxSetup.status != TermuxSetupStatus.CHECKING
     var showFullCommand by rememberSaveable { mutableStateOf(false) }
-    var copied by rememberSaveable(setupCommand) { mutableStateOf(false) }
+    var copied by remember(setupCommand) { mutableStateOf(false) }
+    var copySequence by remember { mutableIntStateOf(0) }
+    LaunchedEffect(copySequence) { if (copySequence > 0) { kotlinx.coroutines.delay(3_000); copied = false } }
     var showImport by rememberSaveable { mutableStateOf(false) }
     var existingActions by rememberSaveable { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
-    val copy = { clipboard.setText(AnnotatedString(setupCommand)); copied = true; onCopied() }
+    val copy = { clipboard.setText(AnnotatedString(setupCommand)); copied = true; copySequence++; onCopied() }
     val canInstall = eligible == 5 && !env.processRunning && ready
-    BackHandler(enabled = ready && step > 1) { requested = step - 1 }
+    V2BackHandler(enabled = ready && step > 1) { requested = step - 1 }
 
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val minimumHeight = maxHeight
-        key(step) {
+        val reduced = LocalV2ReducedMotion.current
+        val distance = with(LocalDensity.current) { 24.dp.roundToPx() }
+        AnimatedContent(step, transitionSpec = {
+            val forward = targetState > initialState
+            val ms = if (reduced) 0 else if (forward) 220 else 180
+            (fadeIn(tween(ms)) + slideInHorizontally(tween(ms)) { if (!reduced && forward) distance else 0 }) togetherWith
+                (fadeOut(tween(ms)) + slideOutHorizontally(tween(ms)) { if (!reduced && !forward) distance else 0 })
+        }, label = "설정 단계") { step ->
             Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().verticalScroll(rememberScrollState())
                 .heightIn(min = minimumHeight).padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -115,7 +134,7 @@ internal fun SetupScreen(
                 Text(when (step) {
                     1 -> "SillyTavern은 Termux 안에서 돌아가요.\nF-Droid에서 Termux를 설치하고 한 번 열어 주세요."
                     2 -> "Android에서 런처가 Termux에 명령을 보낼 수 있게 ‘Termux 환경에서 명령 실행’을 허용해 주세요."
-                    3 -> "명령을 복사하고 Termux를 여세요. 빈 곳을 길게 눌러 붙여 넣고 Enter를 누른 뒤, 여기서 ‘실행했어요’를 눌러요."
+                    3 -> "아래 버튼으로 Termux를 열면 명령이 복사돼요. 빈 곳을 길게 눌러 붙여 넣고 Enter를 누르세요. 런처로 돌아오면 연결을 확인해요."
                     4 -> "관리 스크립트를 연결하고 기존 설치를 확인해요. 지금 있는 파일을 지우거나 덮어쓰지 않아요."
                     else -> if (done) "처음 한 번만 필요한 설정을 모두 마쳤어요." else "처음이라면 정식 버전인 Release를 선택하세요. 이미 쓰던 폴더나 설치 ZIP도 가져올 수 있어요."
                 }, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -123,7 +142,7 @@ internal fun SetupScreen(
                 when {
                     step == 3 -> {
                         Surface(color = MaterialTheme.colorScheme.inverseSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-                            shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                            shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "명령 복사", onClick = copy)) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("Termux", Modifier.weight(1f), fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium)
@@ -140,7 +159,14 @@ internal fun SetupScreen(
                             }
                         }
                         TextButton(onClick = { showFullCommand = !showFullCommand }) { Text(if (showFullCommand) "전체 명령 접기" else "복사될 전체 명령 보기") }
-                        if (state.termuxSetup.status != TermuxSetupStatus.UNKNOWN) TermuxSetupFeedback(state)
+                        when (state.termuxSetup.status) {
+                            TermuxSetupStatus.READY -> Text("허용됐어요", color = app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.live)
+                            TermuxSetupStatus.CHECKING -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text("확인하고 있어요")
+                            }
+                            TermuxSetupStatus.UNKNOWN -> Unit
+                            else -> TermuxSetupFeedback(state)
+                        }
                     }
                     step == 5 && !done -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -193,10 +219,9 @@ internal fun SetupScreen(
                         SetupQuiet("앱 권한 설정 열기", ready, onOpenPermissionSettings)
                     }
                     3 -> {
-                        SetupPrimary("Termux 열기", ready, onOpenTermux)
-                        SetupQuiet(if (state.termuxSetup.verified) "다음" else if (ready) "실행했어요 · 연결 확인" else "연결 확인 중…", ready) {
-                            if (state.termuxSetup.verified) requested = 4 else onConfirmFirstConnection()
-                        }
+                        SetupPrimary("Termux 열기", ready && !state.termuxSetup.verified) { copy(); onOpenSetupTermux() }
+                        if (state.termuxSetup.status in setOf(TermuxSetupStatus.UNVERIFIED, TermuxSetupStatus.EXTERNAL_APPS_DISABLED))
+                            SetupQuiet("연결 다시 확인", ready, onConfirmFirstConnection)
                     }
                     4 -> SetupPrimary(if (env.managerConnected) "다음" else "연결 확인", ready && state.termuxSetup.verified) {
                         if (env.managerConnected) requested = 5 else onConnect()

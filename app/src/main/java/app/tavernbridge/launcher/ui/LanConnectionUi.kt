@@ -75,6 +75,16 @@ fun LanConnectionCard(
 
 @Composable
 private fun LanQrDialog(endpoint: LanEndpoint, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(stringResource(R.string.lan_show_qr)) },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(endpoint.url)
+            LanQrImage(endpoint)
+        } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.lan_close)) } })
+}
+
+@Composable
+internal fun LanQrImage(endpoint: LanEndpoint) {
     val rendered by produceState<Result<Bitmap>?>(null, endpoint.url) {
         value = null
         value = try {
@@ -85,12 +95,6 @@ private fun LanQrDialog(endpoint: LanEndpoint, onDismiss: () -> Unit) {
             Result.failure(failure)
         }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.lan_show_qr)) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(endpoint.url)
                 val bitmap = rendered?.getOrNull()
                 if (bitmap != null) {
                     Image(
@@ -99,8 +103,4 @@ private fun LanQrDialog(endpoint: LanEndpoint, onDismiss: () -> Unit) {
                     )
                 } else Text(stringResource(if (rendered == null) R.string.lan_qr_loading else R.string.lan_qr_failed))
                 Text(stringResource(R.string.lan_qr_notice))
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.lan_close)) } },
-    )
 }

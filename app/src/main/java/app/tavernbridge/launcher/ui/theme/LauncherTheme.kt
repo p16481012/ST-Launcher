@@ -5,6 +5,10 @@ import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import androidx.compose.animation.animateColor
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -99,17 +103,33 @@ private fun systemMotionReduced(): Boolean {
 @Composable
 fun SillyTavernLauncherTheme(appTheme: AppTheme, preferences: DisplayPreferences = DisplayPreferences(), content: @Composable () -> Unit) {
     val dark = when (appTheme) { AppTheme.DARK -> true; AppTheme.LIGHT -> false; AppTheme.SYSTEM -> isSystemInDarkTheme() }
-    val tokens = remember(dark, preferences.accent, preferences.highContrast) { launcherColors(dark, preferences.accent, preferences.highContrast) }
+    val reducedMotion = preferences.reducedMotion ?: systemMotionReduced()
+    val target = remember(dark, preferences.accent, preferences.highContrast) { launcherColors(dark, preferences.accent, preferences.highContrast) }
+    // Crossfade semantic colors in place. Never compose a second running launcher (it owns effects and dialogs).
+    val transition = updateTransition(target, label = "launcher palette")
+    @Composable fun shade(role: (LauncherColors) -> Color): Color {
+        val animated by transition.animateColor(transitionSpec = {
+            tween(if (reducedMotion) 0 else if (initialState.dark != targetState.dark) 250 else 200)
+        }, label = "semantic role") { role(it) }
+        return if (reducedMotion) role(target) else animated
+    }
+    val tokens = target.copy(canvas = shade { it.canvas }, surface = shade { it.surface }, sunken = shade { it.sunken },
+        ink = shade { it.ink }, onInk = shade { it.onInk }, ink2 = shade { it.ink2 }, ink3 = shade { it.ink3 },
+        hairline = shade { it.hairline }, accent = shade { it.accent }, accentWash = shade { it.accentWash },
+        onAccentWash = shade { it.onAccentWash }, live = shade { it.live }, liveWash = shade { it.liveWash },
+        danger = shade { it.danger }, dangerWash = shade { it.dangerWash }, disabledInk = shade { it.disabledInk })
     val colors = remember(tokens) { tokens.materialScheme() }
     val density = LocalDensity.current
-    val scaled = remember(density, preferences.textSize) { Density(density.density, preferences.textSize.applyTo(density.fontScale)) }
-    val reducedMotion = preferences.reducedMotion ?: systemMotionReduced()
+    val targetScale = preferences.textSize.applyTo(density.fontScale)
+    val animatedScale by animateFloatAsState(targetScale, tween(if (reducedMotion) 0 else 200), label = "launcher text size")
+    val scale = if (reducedMotion) targetScale else animatedScale
+    val scaled = remember(density, scale) { Density(density.density, scale) }
     val view = LocalView.current
     if (!view.isInEditMode) SideEffect {
         (view.context as? Activity)?.let {
             WindowCompat.getInsetsController(it.window, view).apply {
-                isAppearanceLightStatusBars = !dark
-                isAppearanceLightNavigationBars = !dark
+                isAppearanceLightStatusBars = tokens.canvas.luminance() > .179f
+                isAppearanceLightNavigationBars = tokens.canvas.luminance() > .179f
             }
         }
     }

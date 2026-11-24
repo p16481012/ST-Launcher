@@ -1,6 +1,9 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -20,6 +23,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
+import kotlinx.coroutines.delay
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -143,7 +156,7 @@ internal fun ReplacementBackupChoice(checked: Boolean, label: String = "현재 �
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun TavernFileManagerDialog(
     state: LauncherUiState,
@@ -185,8 +198,26 @@ internal fun TavernFileManagerDialog(
         if (selectionMode) { selectionMode = false; selectedPaths = emptySet() }
         else onNavigate(state.fileBrowserPath.substringBeforeLast('/', ""))
     }
-    val visibleEntries = remember(state.fileBrowserEntries, query, sort) { visibleTavernFiles(state.fileBrowserEntries, query, sort) }
+    val appliedQuery = debouncedListQuery(query)
+    val visibleEntries = remember(state.fileBrowserEntries, appliedQuery, sort) { visibleTavernFiles(state.fileBrowserEntries, appliedQuery, sort) }
     val canModify = state.canModifyTavernFiles()
+    val reduced = LocalV2ReducedMotion.current
+    val haptics = LocalHapticFeedback.current
+    val systemTouch = LocalViewConfiguration.current
+    val rowTouch = remember(systemTouch) { object : ViewConfiguration by systemTouch {
+        // Retain an explicitly extended Android accessibility long-press delay.
+        override val longPressTimeoutMillis = if (systemTouch.longPressTimeoutMillis > 500L) systemTouch.longPressTimeoutMillis else 300L
+    } }
+    var highlighted by remember { mutableStateOf(emptySet<String>()) }
+    val restoredResult = state.lastOperationResult?.takeIf { it.operation == "restore-st-trash" && it.succeeded }
+    var seenRestore by rememberSaveable { mutableStateOf(if (state.fileBrowserMutating) null else restoredResult?.completedAtMillis) }
+    LaunchedEffect(restoredResult?.completedAtMillis, state.fileBrowserMutating) {
+        highlighted = emptySet()
+        if (restoredResult != null && !state.fileBrowserMutating && restoredResult.completedAtMillis != seenRestore) {
+            seenRestore = restoredResult.completedAtMillis
+            highlighted = state.restoredFilePaths; delay(1000); highlighted = emptySet()
+        }
+    }
     fun selectEntry(entry: TavernFileEntry) {
         selected = entry
         onClosePreview()
@@ -199,10 +230,17 @@ internal fun TavernFileManagerDialog(
         selectedPaths = selectedPaths.intersect(state.fileBrowserEntries.map { it.relativePath }.toSet())
     }
     fun toggleSelection(entry: TavernFileEntry) {
-        if (entry.relativePath in selectedPaths) selectedPaths = selectedPaths - entry.relativePath
+        if (!canModify) return
+        if (entry.relativePath in selectedPaths) {
+            selectedPaths = selectedPaths - entry.relativePath
+            if (selectedPaths.isEmpty()) selectionMode = false
+        }
         else if (selectedPaths.size < MAX_FILE_SELECTION && canSelectTavernFileForTrash(entry)) selectedPaths = selectedPaths + entry.relativePath
     }
-    LaunchedEffect(canModify, state.fileBrowserPath) { actionMenu = null }
+    LaunchedEffect(canModify, state.fileBrowserPath) {
+        actionMenu = null
+        if (!canModify) { selectionMode = false; selectedPaths = emptySet() }
+    }
     ToolPaneHost(embedded, onClose) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
@@ -218,10 +256,12 @@ internal fun TavernFileManagerDialog(
                     if (selectionMode) {
                         val visiblePaths = visibleEntries.filter(::canSelectTavernFileForTrash).map { it.relativePath }.take(MAX_FILE_SELECTION).toSet()
                         val allSelected = visiblePaths.isNotEmpty() && selectedPaths.containsAll(visiblePaths)
-                        TextButton(onClick = { selectedPaths = if (allSelected) selectedPaths - visiblePaths else (selectedPaths + visiblePaths).take(MAX_FILE_SELECTION).toSet() },
+                        TextButton(onClick = {
+                            selectedPaths = if (allSelected) selectedPaths - visiblePaths else (selectedPaths + visiblePaths).take(MAX_FILE_SELECTION).toSet()
+                            if (selectedPaths.isEmpty()) selectionMode = false
+                        },
                             enabled = canModify && visiblePaths.isNotEmpty()) { Text(if (allSelected) "선택 해제" else "모두 선택") }
                     } else {
-                        IconButton(onClick = { sortSheet = true }) { Icon(Icons.Outlined.Sort, "정렬: ${sort.label}") }
                         Box {
                             IconButton(onClick = { moreMenu = true }) { Icon(Icons.Outlined.MoreVert, "파일 더보기") }
                             DropdownMenu(moreMenu, { moreMenu = false }) {
@@ -235,8 +275,11 @@ internal fun TavernFileManagerDialog(
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    val trail = rememberScrollState()
+                    LaunchedEffect(state.fileBrowserPath, trail.maxValue) { trail.scrollTo(trail.maxValue) }
+                    Row(Modifier.weight(1f).horizontalScroll(trail),
                         verticalAlignment = Alignment.CenterVertically) {
+                        if (state.fileBrowserPath.isEmpty()) Text("SillyTavern", Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) else
                         TextButton(onClick = { onNavigate("") }, enabled = !state.fileBrowserMutating,
                             colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text("SillyTavern") }
                         var prefix = ""
@@ -244,21 +287,20 @@ internal fun TavernFileManagerDialog(
                             prefix = listOf(prefix, segment).filter(String::isNotBlank).joinToString("/")
                             val target = prefix
                             Text("/")
+                            if (target == state.fileBrowserPath) Text(segment, Modifier.padding(horizontal = 12.dp)) else
                             TextButton(onClick = { onNavigate(target) }, enabled = !state.fileBrowserMutating,
                                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text(segment) }
                         }
                     }
                 }
-                if (!selectionMode) OutlinedTextField(value = query, onValueChange = { query = it.take(200) }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), placeholder = { Text("이 폴더에서 찾기") },
-                    leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                    trailingIcon = if (query.isNotEmpty()) ({ IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, "검색어 지우기") } }) else null)
-                if (!selectionMode) Text(sort.label, Modifier.padding(start = 20.dp, top = 4.dp), style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!selectionMode) FileLogSearchField(query, { query = it }, "이 폴더에서 찾기",
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    TextButton({ sortSheet = true }) { Text(sort.label) }
+                }
                 val toolbar: @Composable () -> Unit = {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Box {
-                        TextButton(onClick = { actionMenu = FileActionMenu.CREATE }, enabled = canModify) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surface)) {
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { actionMenu = FileActionMenu.CREATE }, enabled = canModify, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Outlined.Add, null); Text("새로 만들기", style = MaterialTheme.typography.labelSmall)
                             }
@@ -273,8 +315,8 @@ internal fun TavernFileManagerDialog(
                                 onClick = { actionMenu = null; newFolder = true })
                         }
                     }
-                    Box {
-                        TextButton(onClick = { actionMenu = FileActionMenu.IMPORT }, enabled = canModify) {
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { actionMenu = FileActionMenu.IMPORT }, enabled = canModify, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Outlined.FileDownload, null); Text("가져오기", style = MaterialTheme.typography.labelSmall)
                             }
@@ -289,7 +331,8 @@ internal fun TavernFileManagerDialog(
                                 onClick = { actionMenu = null; onImportFolder() })
                         }
                     }
-                    TextButton(onClick = { selectionMode = true; selected = null; onClosePreview() }, enabled = canModify) {
+                    TextButton(onClick = { selectionMode = true; selected = null; onClosePreview() }, enabled = canModify && visibleEntries.any(::canSelectTavernFileForTrash),
+                        modifier = Modifier.weight(1f).heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Checklist, null); Text("선택", style = MaterialTheme.typography.labelSmall) }
                     }
                 }
@@ -298,7 +341,7 @@ internal fun TavernFileManagerDialog(
                     Text("서버·작업 실행 중에는 탐색만 가능합니다.",
                         Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
                 }
-                if (state.fileBrowserError.isNotBlank()) {
+                if (state.fileBrowserError.isNotBlank() && !state.fileListReadFailed) {
                     Text(state.fileBrowserError, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 }
@@ -311,17 +354,44 @@ internal fun TavernFileManagerDialog(
                 }
                 Row(Modifier.weight(1f).fillMaxWidth()) {
                     LazyColumn(Modifier.weight(if (sideBySide && !selectionMode) 1.3f else 1f).fillMaxHeight(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        if (visibleEntries.isEmpty() && !state.fileBrowserLoading) item { Text(if (query.isBlank()) "표시할 항목이 없습니다." else "이 폴더에 일치하는 항목이 없습니다.") }
+                        if (state.fileListReadFailed) item {
+                            Column(Modifier.fillMaxWidth().padding(vertical = 20.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("폴더를 불러오지 못했어요", style = MaterialTheme.typography.titleMedium)
+                                Text(state.fileBrowserError, style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton({ onNavigate(state.fileBrowserPath) }) { Text("다시 시도") }
+                            }
+                        } else if (visibleEntries.isEmpty() && !state.fileBrowserLoading) item {
+                            Column(Modifier.fillMaxWidth().padding(vertical = 28.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(if (appliedQuery.isBlank()) Icons.Outlined.FolderOpen else Icons.Outlined.Search, null)
+                                Text(if (appliedQuery.isBlank()) "빈 폴더예요" else "검색 결과가 없어요", style = MaterialTheme.typography.titleMedium)
+                                Text(if (appliedQuery.isBlank()) "새로 만들거나 가져와서 채울 수 있어요." else "이 폴더 안에서만 찾아요. 상위 폴더로 이동해 다시 찾아보세요.", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                         items(visibleEntries, key = { it.relativePath }) { entry ->
                             Surface(Modifier.fillMaxWidth(), color =
-                                if (entry.relativePath in selectedPaths || (sideBySide && selected?.relativePath == entry.relativePath)) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface) {
-                                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = !state.fileBrowserLoading && !state.fileBrowserMutating) {
+                                if (entry.relativePath in highlighted || entry.relativePath in selectedPaths) MaterialTheme.colorScheme.secondaryContainer
+                                else if (sideBySide && selected?.relativePath == entry.relativePath) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surface) {
+                                CompositionLocalProvider(LocalViewConfiguration provides rowTouch) {
+                                val selectable = canModify && canSelectTavernFileForTrash(entry)
+                                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).semantics { if (selectionMode) this.selected = entry.relativePath in selectedPaths }
+                                    .combinedClickable(enabled = !state.fileBrowserLoading && !state.fileBrowserMutating && (!selectionMode || selectable),
+                                    onLongClickLabel = "선택", hapticFeedbackEnabled = false, onLongClick = if (!selectable) null else ({
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        if (selectionMode) toggleSelection(entry) else {
+                                            selected = null; onClosePreview(); selectedPaths = setOf(entry.relativePath); selectionMode = true
+                                        }
+                                    }), onClick = {
                                     if (selectionMode) toggleSelection(entry)
                                     else if (entry.isDirectory) { selected = null; onClosePreview(); onNavigate(entry.relativePath) } else selectEntry(entry)
-                                }.padding(start = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    if (selectionMode) Checkbox(checked = entry.relativePath in selectedPaths,
-                                        onCheckedChange = { toggleSelection(entry) }, enabled = canModify && canSelectTavernFileForTrash(entry))
-                                    else Icon(if (entry.isDirectory) Icons.Outlined.FolderOpen else Icons.Outlined.InsertDriveFile, null)
+                                }).padding(start = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    androidx.compose.animation.AnimatedVisibility(selectionMode,
+                                        enter = expandHorizontally(tween(if (reduced) 0 else 120)) + fadeIn(tween(if (reduced) 0 else 120)),
+                                        exit = shrinkHorizontally(tween(if (reduced) 0 else 120)) + fadeOut(tween(if (reduced) 0 else 120))) {
+                                        Checkbox(checked = entry.relativePath in selectedPaths, onCheckedChange = null, enabled = selectable)
+                                    }
+                                    if (!selectionMode) Icon(if (entry.isDirectory) Icons.Outlined.FolderOpen else Icons.Outlined.InsertDriveFile, null)
                                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                         Text(entry.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(listOf(if (entry.isDirectory) "폴더" else fileBytes(entry.sizeBytes), fileListDate(entry.modifiedAt)).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, fontFamily = V2Mono)
@@ -332,6 +402,7 @@ internal fun TavernFileManagerDialog(
                                         Icon(Icons.Outlined.MoreVert, "${entry.name} 작업")
                                     }
                                 }
+                                }
                             }
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
@@ -340,6 +411,8 @@ internal fun TavernFileManagerDialog(
                         val active = selected?.let { candidate -> state.fileBrowserEntries.firstOrNull { it.relativePath == candidate.relativePath && it.revision == candidate.revision } }
                         Surface(Modifier.weight(1f).padding(start = 0.dp, top = 16.dp, end = 16.dp, bottom = 16.dp),
                             color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(16.dp)) {
+                            Crossfade(active, animationSpec = tween(if (reduced) 0 else 120), label = "파일 상세 전환") { shown ->
+                            val active = shown
                             Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (active == null) Text("목록에서 파일을 선택하면 이곳에서 미리보기와 파일 작업을 확인할 수 있어요.",
                                     style = MaterialTheme.typography.bodyMedium)
@@ -359,11 +432,16 @@ internal fun TavernFileManagerDialog(
                                     TextButton(onClick = { trashTarget = active; selected = null; onClosePreview() }, enabled = canModify) { Text("휴지통으로 이동", color = MaterialTheme.colorScheme.error) }
                                 }
                             }
+                            }
                         }
                     }
                     }
-                if (!state.fileBrowserMutating) V2BottomActions {
-                    if (!selectionMode) toolbar() else Button(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), onClick = { batchConfirmation = selectedTavernFiles(state.fileBrowserEntries, selectedPaths) },
+                if (!state.fileBrowserMutating && !state.fileListReadFailed && WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) == 0) V2BottomActions {
+                    if (!selectionMode) toolbar() else Button(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), onClick = {
+                        val entries = selectedTavernFiles(state.fileBrowserEntries, selectedPaths)
+                        if (entries.size == 1) { selectionMode = false; selectedPaths = emptySet(); onTrashMany(entries) }
+                        else if (entries.isNotEmpty()) batchConfirmation = entries
+                    },
                         enabled = canModify && selectedPaths.isNotEmpty(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
                         Text("${selectedPaths.size}개 휴지통으로 이동")
                     }

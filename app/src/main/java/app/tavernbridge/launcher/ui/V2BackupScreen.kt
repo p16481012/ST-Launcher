@@ -1,6 +1,9 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.*
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +22,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -28,12 +33,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.V2Mono
+import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-private enum class BackupPane { OVERVIEW, ARCHIVE, ALL, CREATE, SPACE, MORE }
+private enum class BackupPane { OVERVIEW, ARCHIVE, ALL, SPACE, MORE }
+internal val LocalBackupScopeOpener = staticCompositionLocalOf<(() -> Unit)?> { null }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun V2BackupScreen(
     state: LauncherUiState,
@@ -62,6 +70,8 @@ internal fun V2BackupScreen(
         if (state.environment.managerConnected && state.termuxSetup.verified) onRefresh()
     }
     var pane by rememberSaveable { mutableStateOf(if (requestedArchive == null) BackupPane.OVERVIEW else BackupPane.ARCHIVE) }
+    var localScope by rememberSaveable { mutableStateOf(false) }
+    val openScope = LocalBackupScopeOpener.current ?: { localScope = true }
     var fromAll by rememberSaveable { mutableStateOf(false) }
     var selectedName by rememberSaveable { mutableStateOf(requestedArchive) }
     var openedFromHome by rememberSaveable { mutableStateOf(requestedArchive != null) }
@@ -80,6 +90,13 @@ internal fun V2BackupScreen(
     // A separate "can Termux write a new backup ZIP?" check must not gate the picker.
     val canImport = connected && !busy && !state.environment.processRunning
     val archives = state.backups
+    val listFailed = state.backupListError.isNotBlank()
+    val firstLoad = !state.backupsLoaded && state.backupStorageReady != false && !listFailed && connected
+    var showSkeleton by remember(firstLoad) { mutableStateOf(false) }
+    LaunchedEffect(firstLoad) { if (firstLoad) { kotlinx.coroutines.delay(300); showSkeleton = true } }
+    val reduced = LocalV2ReducedMotion.current
+    val pull = rememberPullToRefreshState()
+    val refreshing = state.backupListLoading && state.backupsLoaded
     val estimate by produceState<Long?>(null, archives, state.backupAnnotations, state.displayPreferences.keepBackups, state.backupsLoaded, state.backupStorageReady) {
         value = if (!state.backupsLoaded || state.backupStorageReady != true) null else withContext(Dispatchers.Default) {
             runCatching {
@@ -100,9 +117,10 @@ internal fun V2BackupScreen(
             if (pane == BackupPane.OVERVIEW) { selectedName = null; openedFromHome = false }
         }
     }
-    val headline = if (!connected && !state.backupsLoaded) "백업을 보려면\nTermux를 연결해 주세요"
+    val headline = if (listFailed) "백업 목록을\n불러오지 못했어요"
+        else if (!connected && !state.backupsLoaded) "백업을 보려면\nTermux를 연결해 주세요"
         else backupOverviewHeading(archives.firstOrNull(), state.backupsLoaded, state.backupStorageReady, LocalDate.now())
-    BackHandler(pane != BackupPane.OVERVIEW, onBack = goBack)
+    V2BackHandler(pane != BackupPane.OVERVIEW, onBack = goBack)
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val dual = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 && maxWidth >= 720.dp
         val masterWidth = (maxWidth * .33f).coerceIn(280.dp, 382.dp)
@@ -114,7 +132,9 @@ internal fun V2BackupScreen(
                 val masterModifier = if (dual) Modifier.width(masterWidth) else Modifier.fillMaxWidth()
                 val masterPadding = if (dual) 24.dp else 20.dp
                 Column(masterModifier.fillMaxHeight()) {
-                LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = masterScroll, contentPadding = PaddingValues(
+                Box(Modifier.weight(1f).fillMaxWidth().pullToRefresh(isRefreshing = refreshing, state = pull,
+                    enabled = connected && !busy && !state.backupListLoading, threshold = 64.dp, onRefresh = onRefresh)) {
+                LazyColumn(Modifier.fillMaxSize(), state = masterScroll, contentPadding = PaddingValues(
                     horizontal = masterPadding, vertical = if (dual) 36.dp else 20.dp),
                     verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     item {
@@ -124,25 +144,38 @@ internal fun V2BackupScreen(
                         Spacer(Modifier.height(8.dp))
                         val reminder = if (state.backupReminder.enabled) "${state.backupReminder.interval.label} 알림" else "알림 꺼짐"
                         Text(if (state.backupsLoaded && state.backupStorageReady == true)
-                            "${archives.size}개 · ${formatBackupBytes(archives.sumOf { it.sizeBytes })} · $reminder" else reminder,
+                            "${archives.size}개 · ${formatBackupBytes(archives.sumOf { it.sizeBytes })} · $reminder"
+                            else if (firstLoad && showSkeleton) "확인하고 있어요" else reminder,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium, fontFamily = V2Mono)
                         Spacer(Modifier.height(20.dp))
                         BackupGroupHeader(if (dual) "백업 목록" else "최근",
-                            if (dual) "파일에서 가져오기" else "전체 ${archives.size}개", if (dual) canImport else state.backupsLoaded,
+                            if (dual) "파일에서 가져오기" else if (state.backupsLoaded && !listFailed) "전체 ${archives.size}개" else "", if (dual) canImport else state.backupsLoaded,
                             if (dual) onImport else ({ pane = BackupPane.ALL }))
                     }
-                    val recent = if (dual) archives else archives.take(2)
+                    val recent = if (listFailed || state.backupStorageReady == false) emptyList() else if (dual) archives else archives.take(2)
                     if (recent.isEmpty()) item {
-                        BackupBlank(when {
-                            !connected -> "홈에서 Termux 연결을 확인한 뒤 백업을 다시 열어 주세요."
-                            state.backupStorageReady == false -> "저장공간을 연결한 뒤 다운로드 폴더의 백업을 확인할 수 있어요."
-                            !state.backupsLoaded -> "다운로드 폴더를 확인하고 있어요."
-                            else -> "아직 다운로드 폴더에 런처 백업이 없어요."
-                        })
+                        when {
+                            listFailed -> Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface) {
+                                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                                    val reason = state.backupListError.removePrefix("[${state.backupListErrorCode}]").trim().lineSequence().firstOrNull()
+                                    Text(reason.orEmpty().ifBlank { "Termux 응답을 확인하지 못했어요. 잠시 뒤 다시 시도해 주세요." })
+                                    Text(state.backupListErrorCode, fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium)
+                                    TextButton(onClick = onRefresh, enabled = connected && !busy) { Text("다시 시도") }
+                                }
+                            }
+                            !connected -> BackupBlank("홈에서 Termux 연결을 확인한 뒤 백업을 다시 열어 주세요.")
+                            state.backupStorageReady == false -> BackupStorageSetupCard(storageSetupCommand, onTermux, onRefresh, onCopied)
+                            firstLoad && showSkeleton -> BackupSkeleton(reduced)
+                            !firstLoad -> BackupBlank("채팅과 캐릭터를 Download 폴더에 저장해요.")
+                            else -> Unit
+                        }
                     }
                     items(recent, key = { "backup:${it.fileName}" }) { entry ->
                         val selected = dual && (pane == BackupPane.OVERVIEW || pane == BackupPane.ARCHIVE) && entry.fileName == archive?.fileName
-                        BackupArchiveRow(entry, entry === recent.first(), entry === recent.last(), selected = selected) { selectArchive(entry, false) }
+                        Box(if (reduced) Modifier else Modifier.animateItem(fadeInSpec = tween(120), placementSpec = tween(200),
+                            fadeOutSpec = tween(120))) {
+                            BackupArchiveRow(entry, entry === recent.first(), entry === recent.last(), selected = selected) { selectArchive(entry, false) }
+                        }
                     }
                     item {
                         Spacer(Modifier.height(20.dp))
@@ -152,24 +185,36 @@ internal fun V2BackupScreen(
                                 BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", enabled = canImport, click = onImport)
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             }
-                            BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) } ?: "확인 전", click = { pane = BackupPane.SPACE })
+                            BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { pane = BackupPane.SPACE })
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본", state.safetyCopyCount?.let { "${it}개" } ?: "확인 전",
+                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본", state.safetyCopyCount?.let { "${it}개" }.orEmpty(),
                                 enabled = connected && !busy, click = onSafety)
                         }
                         if (state.environment.processRunning) Text("백업을 가져오려면 서버를 먼저 종료해 주세요.",
                             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             if (dual) TextButton(onClick = { pane = BackupPane.ALL }) { Text("전체 관리", color = MaterialTheme.colorScheme.secondary) }
-                            IconButton(onClick = onRefresh, enabled = connected && !busy) { Icon(Icons.Outlined.Refresh, "백업 목록 새로고침") }
+                            IconButton(onClick = onRefresh, enabled = connected && !busy && !state.backupListLoading) { Icon(Icons.Outlined.Refresh, "백업 목록 새로고침") }
                             IconButton(onClick = { pane = BackupPane.MORE }) { Icon(Icons.Outlined.MoreHoriz, "암호화·백업 추가 설정") }
                         }
                     }
                 }
-                V2BottomActions {
-                    Button(onClick = { pane = BackupPane.CREATE }, enabled = connected && !busy, shape = RoundedCornerShape(14.dp),
+                if (pull.distanceFraction > 0f || refreshing) {
+                    Surface(modifier = Modifier.align(Alignment.TopCenter).graphicsLayer {
+                        translationY = ((if (refreshing) 1f else pull.distanceFraction.coerceIn(0f, 1.4f)) * 64.dp.toPx()) - 40.dp.toPx()
+                    }.size(40.dp), shape = androidx.compose.foundation.shape.CircleShape,
+                        color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (refreshing) VisibleBusyIndicator(Modifier.size(20.dp), false, 2.dp)
+                            else Icon(Icons.Outlined.ArrowDownward, "당겨서 새로고침", Modifier.size(20.dp))
+                        }
+                    }
+                }
+                }
+                if (!listFailed && state.backupStorageReady != false) V2BottomActions {
+                    Button(onClick = openScope, enabled = connected && !busy && state.backupStorageReady == true, shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth().padding(horizontal = masterPadding, vertical = 8.dp).heightIn(min = 52.dp)) {
-                        Text(if (state.backupStorageReady == false) "저장공간 연결" else "지금 백업")
+                        Text("지금 백업")
                     }
                 }
                 }
@@ -182,7 +227,7 @@ internal fun V2BackupScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
                             Text(when (pane) {
-                                BackupPane.ARCHIVE -> "백업 상세"; BackupPane.ALL -> "전체 백업"; BackupPane.CREATE -> "백업 만들기"
+                                BackupPane.ARCHIVE -> "백업 상세"; BackupPane.ALL -> "전체 백업"
                                 BackupPane.SPACE -> "공간 정리"; BackupPane.MORE -> "백업 추가 설정"; else -> "백업"
                             }, style = MaterialTheme.typography.titleMedium)
                         }
@@ -196,14 +241,6 @@ internal fun V2BackupScreen(
                         BackupPane.ALL -> BackupAll(state, busy, allScroll, { selectArchive(it, true) }, onDelete)
                         else -> Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             when (pane) {
-                                BackupPane.CREATE -> when (state.backupStorageReady) {
-                                    false -> BackupStorageSetupCard(storageSetupCommand, onTermux, onRefresh, onCopied)
-                                    true -> BackupCreatorCard(state.environment.processRunning,
-                                        state.displayPreferences.includeSecretsByDefault, state.backupFolders, !busy) { categories, secrets, folders ->
-                                        if (!busy) { pane = BackupPane.OVERVIEW; onCreateBackup(categories, secrets, folders) }
-                                    }
-                                    null -> { BackupBlank("저장공간 연결 상태를 확인해 주세요."); TextButton(onClick = onRefresh) { Text("다시 확인") } }
-                                }
                                 BackupPane.SPACE -> {
                                     estimate?.let { Text("일반 백업 정리 기준으로 확보할 수 있는 공간은 ${formatBackupBytes(it)}예요. 아래에서 다른 기준으로도 확인할 수 있어요.", style = MaterialTheme.typography.bodyMedium) }
                                     StorageManagementCard(state, onScan, onPreviewCleanup, initiallyExpanded = true)
@@ -220,6 +257,22 @@ internal fun V2BackupScreen(
                 }
             }
         }
+    }
+    if (localScope) V2BottomSheet({ localScope = false }) {
+        BackupCreatorCard(state.environment.processRunning, state.displayPreferences.includeSecretsByDefault, state.backupFolders,
+            !busy && state.backupStorageReady == true) { categories, secrets, folders ->
+            localScope = false; onCreateBackup(categories, secrets, folders)
+        }
+    }
+}
+
+@Composable
+private fun BackupSkeleton(reduced: Boolean) {
+    val opacity = if (reduced) 1f else rememberInfiniteTransition(label = "백업 목록").animateFloat(1f, .6f,
+        infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "자리 행").value
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surface)
+        .padding(horizontal = 16.dp, vertical = 12.dp).alpha(opacity), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        repeat(2) { Box(Modifier.fillMaxWidth(.7f).height(18.dp).background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(6.dp))) }
     }
 }
 

@@ -1,9 +1,17 @@
 package app.tavernbridge.launcher.ui
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -11,6 +19,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
@@ -18,8 +27,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -28,7 +44,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import app.tavernbridge.launcher.BuildConfig
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.R
@@ -81,10 +102,13 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
             Row(Modifier.selectableGroup()) {
                 LauncherAccent.entries.forEach { accent ->
                     val chosen = prefs.accent == accent
+                    val source = remember { MutableInteractionSource() }
+                    val pressed by source.collectIsPressedAsState()
                     Box(Modifier.size(48.dp)
-                        .selectable(chosen, role = Role.RadioButton) { onDisplay(prefs.copy(accent = accent)) }
+                        .selectable(chosen, interactionSource = source, indication = null, role = Role.RadioButton) { onDisplay(prefs.copy(accent = accent)) }
                         .semantics { contentDescription = accent.label }, contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(32.dp).then(if (chosen) Modifier.border(2.dp, colors.secondary, CircleShape) else Modifier)
+                        if (pressed) Box(Modifier.size(44.dp).background(colors.onSurface.copy(alpha = .08f), CircleShape))
+                        Box(Modifier.size(32.dp).then(if (chosen) Modifier.border(1.5.dp, colors.onSurface, CircleShape) else Modifier)
                             .padding(4.dp).background(Color(if (colors.surface.luminance() < .45f) accent.darkArgb else accent.lightArgb), CircleShape))
                     }
                 }
@@ -159,7 +183,10 @@ internal fun ServerLanRows(state: LauncherUiState, openEditor: (String) -> Unit,
     }
     SettingsGroup {
         SettingsRow("같은 Wi-Fi에서 접속 허용", caption = blocked ?: "허용한 기기만 들어올 수 있어요", checked = env.externalAccessEnabled,
-            onClick = { edit("toggle-listen") })
+            onClick = { edit(if (env.externalAccessEnabled) "disable-listen" else "toggle-listen") })
+        val duration = if (LocalV2ReducedMotion.current) 0 else 200
+        AnimatedVisibility(env.externalAccessEnabled, enter = expandVertically(tween(duration)), exit = shrinkVertically(tween(duration))) {
+        Column {
         SettingsDivider()
         SettingsRow("접속 주소", if (!env.externalAccessEnabled) "외부 접속 꺼짐" else state.lanEndpoints.firstOrNull()?.url?.removePrefix("http://")?.removeSuffix("/") ?: "주소 확인",
             mono = true, onClick = {
@@ -172,18 +199,25 @@ internal fun ServerLanRows(state: LauncherUiState, openEditor: (String) -> Unit,
         SettingsDivider()
         SettingsRow("로그인 요구", caption = if (env.perUserBasicAuth) "SillyTavern의 사용자별 인증을 사용하고 있어요" else "접속할 때 사용자 이름과 암호를 물어요", checked = env.basicAuthEnabled,
             onClick = { if (env.perUserBasicAuth) explain("사용자별 인증은 SillyTavern에서 관리해요. 런처에서는 변경하지 않아요.") else edit("toggle-auth") })
+        } }
     }
     SettingsCaption(if (env.processRunning) "서버를 미리 끌 필요는 없어요. 저장하면 잠시 멈췄다가 다시 시작해요."
         else "바꾼 내용은 다음 서버 시작부터 적용돼요.")
 }
 
 @Composable
-internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel) {
+internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, openEditor: (String) -> Unit) {
     val env = state.environment
     var dialog by rememberSaveable { mutableStateOf("") }
     var browserRevision by remember { mutableIntStateOf(0) }
     val preferred = remember(vm, env.port, browserRevision) { vm.preferredBrowser() }
-    var port by rememberSaveable(state.configuredPort) { mutableStateOf(state.configuredPort.toString()) }
+    LaunchedEffect(state.portEditorRequested) { if (state.portEditorRequested) dialog = "port" }
+    LaunchedEffect(state.lanAddressRequested) {
+        if (state.lanAddressRequested) {
+            if (env.externalAccessEnabled) { vm.refreshLanAddresses(); dialog = "address" }
+            vm.consumeLanAddressRequest()
+        }
+    }
     val clipboard = LocalClipboardManager.current
     val enabled = state.environmentChecked && env.sillyTavernInstalled && !state.isWorking
     SettingsHeading("이 기기")
@@ -193,22 +227,35 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel) {
         SettingsRow("포트", state.configuredPort.toString(), mono = true, enabled = enabled, onClick = { dialog = "port" })
     }
     var lanReason by rememberSaveable { mutableStateOf<String?>(null) }
-    ServerLanRows(state, { dialog = it }, { vm.refreshLanAddresses(); dialog = "address" }, { lanReason = it })
+    ServerLanRows(state, { action ->
+        if (action == "disable-listen") {
+            // Stopping exposure must also work with a legacy allow-list. Null preserves it on disk.
+            vm.saveLanSecurity(LanSecurityChange(false, null, env.basicAuthEnabled, null))
+        } else openEditor(action)
+    }, { vm.refreshLanAddresses(); dialog = "address" }, { lanReason = it })
     lanReason?.let { reason -> V2Explanation("외부 접속", reason) { lanReason = null } }
     SettingsGroup {
         SettingsRow("열 앱 선택", preferred?.label ?: "선택 안 함", onClick = { browserRevision++; dialog = "browser" })
         SettingsDivider()
         SettingsRow("시작 후 브라우저 자동 열기", checked = state.autoOpenBrowser, onClick = { vm.setAutoOpenBrowser(!state.autoOpenBrowser) })
     }
-    if (dialog in listOf("lan", "toggle-listen", "toggle-auth")) LANSecuritySettingsDialog(
-        LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
-        state.isWorking || env.operationActive, { dialog = "" }, { change -> vm.saveLanSecurity(change).also { if (it) dialog = "" } },
-        requestedListen = if (dialog == "toggle-listen") !env.externalAccessEnabled else env.externalAccessEnabled,
-        requestedBasicAuth = if (dialog == "toggle-auth") !env.basicAuthEnabled else env.basicAuthEnabled)
-    if (dialog == "address") AlertDialog(onDismissRequest = { dialog = "" }, title = { Text("같은 Wi-Fi 접속 주소") },
-        text = { Column(Modifier.verticalScroll(rememberScrollState())) { LanConnectionCard(env.externalAccessEnabled, state.lanEndpoints,
-            vm::refreshLanAddresses, { dialog = "lan" }, { clipboard.setText(AnnotatedString(it)); vm.showMessage("주소를 복사했어요.") }) } },
-        confirmButton = { TextButton(onClick = { dialog = "" }) { Text("닫기") } })
+    if (dialog == "address") V2BottomSheet(onClose = { dialog = "" }) {
+        Text("같은 Wi-Fi 접속 주소", style = MaterialTheme.typography.titleLarge)
+        if (!env.externalAccessEnabled) Text("외부 접속이 꺼져 있어요.")
+        else {
+            val addresses = state.lanEndpoints.take(16)
+            var chosen by rememberSaveable { mutableStateOf("") }
+            val endpoint = addresses.firstOrNull { it.url == chosen } ?: addresses.firstOrNull()
+            if (endpoint == null) Text(stringResource(R.string.lan_no_address))
+            else {
+                if (addresses.size > 1) addresses.forEach { SettingsRow(it.url, if (it == endpoint) "선택됨" else "", onClick = { chosen = it.url }) }
+                Text(endpoint.url)
+                LanQrImage(endpoint)
+                OutlinedButton(onClick = { clipboard.setText(AnnotatedString(endpoint.url)); vm.showMessage("주소를 복사했어요.") }) { Text("주소 복사") }
+            }
+            TextButton(onClick = vm::refreshLanAddresses) { Text("주소 새로고침") }
+        }
+    }
     if (dialog == "browser") {
         val choices by produceState<List<BrowserOption>>(emptyList(), vm, env.port) {
             value = withContext(Dispatchers.IO) { vm.browserOptions() }
@@ -226,19 +273,75 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel) {
         }
     }
     if (dialog == "port") {
-        val validPort = port.toIntOrNull()?.takeIf { it in 1024..65535 && it != state.configuredPort }
-        AlertDialog(onDismissRequest = { dialog = "" }, title = { Text("포트 번호") }, text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(port, { if (it.length <= 5 && it.all(Char::isDigit)) port = it }, singleLine = true,
-                    label = { Text("1024–65535") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                Text(if (env.processRunning) "저장하면 실행 중인 서버를 잠시 멈추고 다시 시작해요." else "다음 서버 시작부터 적용해요.")
-            }
-        }, confirmButton = { TextButton(enabled = enabled && validPort != null, onClick = {
-            validPort?.let { vm.saveServerConnection(it, env.externalAccessEnabled, env.whitelist.joinToString("\n")) }; dialog = ""
-        }) { Text(if (env.processRunning) "저장 후 재시작" else "저장") } },
-            dismissButton = { TextButton(onClick = { dialog = "" }) { Text("취소") } })
+        LaunchedEffect(state.portEditorRequested) { if (state.portEditorRequested) vm.consumePortEditorRequest() }
+        ServerPortDialog(state.configuredPort, env.configPort, env.processRunning, enabled, { dialog = "" }) {
+            vm.saveServerConnection(it, env.externalAccessEnabled, env.whitelist.joinToString("\n")); dialog = ""
+        }
     }
 }
+
+@Composable
+internal fun ServerPortDialog(port: Int, configPort: Int?, running: Boolean, enabled: Boolean, close: () -> Unit, save: (Int) -> Unit) {
+    val focus = remember { FocusRequester() }
+    val haptic = LocalHapticFeedback.current
+    var field by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(port.toString(), TextRange(0, port.toString().length)))
+    }
+    val value = field.text.toIntOrNull()?.takeIf { it in 1024..65535 }
+    var focused by remember { mutableStateOf(false) }
+    var showError by remember { mutableStateOf(false) }
+    fun validate() {
+        if (value == null && !showError) { showError = true; haptic.performHapticFeedback(HapticFeedbackType.Reject) }
+    }
+    fun submit() {
+        if (value == null) validate() else if (enabled && value != port) save(value)
+    }
+    val reduced = LocalV2ReducedMotion.current
+    val entrance = remember { Animatable(if (reduced) 1f else 0f) }
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        LaunchedEffect(reduced) { if (reduced) entrance.snapTo(1f) else entrance.animateTo(1f, tween(180, easing = LinearOutSlowInEasing)) }
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Spacer(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() },
+                indication = null, onClickLabel = "포트 입력 닫기", onClick = close))
+            // Live IME insets follow the device's keyboard animation (including floating keyboards);
+            // centering within the remaining space also works in landscape and split-screen.
+            Surface(Modifier.safeDrawingPadding().imePadding().padding(20.dp).widthIn(max = 420.dp).fillMaxWidth()
+                .graphicsLayer { alpha = entrance.value; scaleX = .96f + .04f * entrance.value; scaleY = scaleX },
+                shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            val keyboard = LocalSoftwareKeyboardController.current
+            Text("포트 번호", style = MaterialTheme.typography.titleLarge)
+            OutlinedTextField(field, {
+                if (it.text.length <= 8 && it.text.all { digit -> digit in '0'..'9' }) { field = it; showError = false }
+            }, Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged {
+                if (focused && !it.isFocused) validate()
+                focused = it.isFocused
+            }, singleLine = true, label = { Text("포트") }, isError = showError,
+                shape = RoundedCornerShape(12.dp), colors = settingsInputColors(),
+                supportingText = { if (showError) Text("1024–65535 사이로 입력해 주세요.") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submit() }))
+            if (value != null && configPort != null && configPort != value)
+                Text("config.yaml은 ${configPort}이에요. 런처로 시작하면 이 포트를 써요.", style = MaterialTheme.typography.bodySmall)
+            Text(if (running) "저장하면 실행 중인 서버를 잠시 멈추고 다시 시작해요." else "다음 서버 시작부터 적용해요.")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = close) { Text("취소") }
+                TextButton(enabled = enabled && value != null && value != port, onClick = ::submit) {
+                    Text(if (running) "저장하고 재시작" else "저장")
+                }
+            }
+            LaunchedEffect(Unit) { focus.requestFocus(); keyboard?.show() }
+        }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun settingsInputColors() = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = MaterialTheme.colorScheme.onSurface, unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+    cursorColor = MaterialTheme.colorScheme.secondary, focusedContainerColor = MaterialTheme.colorScheme.surface,
+    unfocusedContainerColor = MaterialTheme.colorScheme.surface)
 
 internal fun needsBackgroundAttention(state: LauncherUiState, sdk: Int) =
     !state.backgroundStatus.termuxBatteryUnrestricted || !state.backgroundStatus.wakeLockEnabled ||

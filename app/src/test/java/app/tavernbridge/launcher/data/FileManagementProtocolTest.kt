@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FileManagementProtocolTest {
+    @Test fun undoHighlightsOnlyValidPathsReportedByTheSuccessfulBackend() {
+        fun receipt(path: String) = "restored_b64=${encodeFileArgument(path)}"
+        assertEquals("data/한글.txt", FileManagementProtocol.restoredPath(receipt("data/한글.txt")))
+        listOf("/absolute", "../old", ".", "foo//bar", "").forEach { assertNull(FileManagementProtocol.restoredPath(receipt(it))) }
+        assertNull(FileManagementProtocol.restoredPath("restored_b64=?"))
+        assertNull(FileManagementProtocol.restoredPath("trash_id=abc"))
+    }
     @Test fun installationInspectionCarriesDestinationReplacementConsent() {
         val source = "/storage/emulated/0/Documents/SillyTavern"
         val destination = "/data/data/com.termux/files/home/SillyTavern"
