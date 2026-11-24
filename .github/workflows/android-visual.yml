@@ -38,8 +38,11 @@ jobs:
           PIXELS: ${{ matrix.pixels }}
         run: |
           set -euo pipefail
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           image='system-images;android-35;google_apis;x86_64'
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$image" emulator platform-tools
+          adb version
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n v2test -k "$image" -d pixel_6 --force
           sudo chgrp "$(id -gn)" /dev/kvm
           sudo chmod g+rw /dev/kvm
@@ -65,6 +68,7 @@ jobs:
         if: always()
         run: |
           mkdir -p visual-results
+          if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then cp "$RUNNER_TEMP/emulator.log" visual-results/emulator.log; fi
           if adb get-state 2>/dev/null | grep -q device; then
             for name in home setup-step-3 settings-index settings-display; do
               path="files/v2-visual/$name.png"
