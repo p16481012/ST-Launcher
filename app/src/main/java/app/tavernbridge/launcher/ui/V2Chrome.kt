@@ -146,7 +146,7 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
                     Column(Modifier.weight(1f).heightIn(min = 65.dp)
                         .selectable(active, role = Role.Tab, onClick = { onSelect(tab) }).padding(vertical = 6.dp),
                         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(tab.icon(), null, Modifier.size(21.dp), tint = ink)
+                        V2TabGlyph(tab, tab.icon(), ink, Modifier.size(21.dp))
                         Text(tab.label, style = MaterialTheme.typography.labelMedium, color = ink,
                             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium)
                     }

@@ -2,6 +2,9 @@ package app.tavernbridge.launcher.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.foundation.background
@@ -65,6 +68,7 @@ internal fun V2BackupScreen(
     requestedArchive: String?,
     onArchiveOpened: () -> Unit,
     onArchiveShortcutBack: () -> Unit,
+    archiveReturnToOrigin: Boolean = true,
 ) {
     LaunchedEffect(state.environment.managerConnected, state.termuxSetup.verified) {
         if (state.environment.managerConnected && state.termuxSetup.verified) onRefresh()
@@ -74,12 +78,12 @@ internal fun V2BackupScreen(
     val openScope = LocalBackupScopeOpener.current ?: { localScope = true }
     var fromAll by rememberSaveable { mutableStateOf(false) }
     var selectedName by rememberSaveable { mutableStateOf(requestedArchive) }
-    var openedFromHome by rememberSaveable { mutableStateOf(requestedArchive != null) }
+    var openedFromHome by rememberSaveable { mutableStateOf(requestedArchive != null && archiveReturnToOrigin) }
     LaunchedEffect(requestedArchive) {
         if (requestedArchive != null) {
             selectedName = requestedArchive
             fromAll = false
-            openedFromHome = true
+            openedFromHome = archiveReturnToOrigin
             pane = BackupPane.ARCHIVE
             onArchiveOpened()
         }
@@ -91,10 +95,19 @@ internal fun V2BackupScreen(
     val canImport = connected && !busy && !state.environment.processRunning
     val archives = state.backups
     val listFailed = state.backupListError.isNotBlank()
-    val firstLoad = !state.backupsLoaded && state.backupStorageReady != false && !listFailed && connected
+    var retryingError by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.backupListLoading, listFailed) {
+        if (!state.backupListLoading) retryingError = false
+    }
+    val firstLoad = (!state.backupsLoaded || retryingError) && state.backupStorageReady != false && !listFailed && connected
     var showSkeleton by remember(firstLoad) { mutableStateOf(false) }
     LaunchedEffect(firstLoad) { if (firstLoad) { kotlinx.coroutines.delay(300); showSkeleton = true } }
     val reduced = LocalV2ReducedMotion.current
+    var displayedReceipt by rememberSaveable { mutableStateOf(state.lastCreatedBackupName) }
+    val arrivingFile = state.lastCreatedBackupName?.takeIf { name ->
+        displayedReceipt != name && archives.firstOrNull()?.fileName == name
+    }
+    SideEffect { if (arrivingFile != null) displayedReceipt = arrivingFile }
     val pull = rememberPullToRefreshState()
     val refreshing = state.backupListLoading && state.backupsLoaded
     val estimate by produceState<Long?>(null, archives, state.backupAnnotations, state.displayPreferences.keepBackups, state.backupsLoaded, state.backupStorageReady) {
@@ -152,7 +165,7 @@ internal fun V2BackupScreen(
                             if (dual) "파일에서 가져오기" else if (state.backupsLoaded && !listFailed) "전체 ${archives.size}개" else "", if (dual) canImport else state.backupsLoaded,
                             if (dual) onImport else ({ pane = BackupPane.ALL }))
                     }
-                    val recent = if (listFailed || state.backupStorageReady == false) emptyList() else if (dual) archives else archives.take(2)
+                    val recent = if (listFailed || firstLoad || state.backupStorageReady == false) emptyList() else if (dual) archives else archives.take(2)
                     if (recent.isEmpty()) item {
                         when {
                             listFailed -> Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface) {
@@ -160,7 +173,7 @@ internal fun V2BackupScreen(
                                     val reason = state.backupListError.removePrefix("[${state.backupListErrorCode}]").trim().lineSequence().firstOrNull()
                                     Text(reason.orEmpty().ifBlank { "Termux 응답을 확인하지 못했어요. 잠시 뒤 다시 시도해 주세요." })
                                     Text(state.backupListErrorCode, fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium)
-                                    TextButton(onClick = onRefresh, enabled = connected && !busy) { Text("다시 시도") }
+                                    TextButton(onClick = { retryingError = true; onRefresh() }, enabled = connected && !busy) { Text("다시 시도") }
                                 }
                             }
                             !connected -> BackupBlank("홈에서 Termux 연결을 확인한 뒤 백업을 다시 열어 주세요.")
@@ -172,8 +185,14 @@ internal fun V2BackupScreen(
                     }
                     items(recent, key = { "backup:${it.fileName}" }) { entry ->
                         val selected = dual && (pane == BackupPane.OVERVIEW || pane == BackupPane.ARCHIVE) && entry.fileName == archive?.fileName
-                        Box(if (reduced) Modifier else Modifier.animateItem(fadeInSpec = tween(120), placementSpec = tween(200),
-                            fadeOutSpec = tween(120))) {
+                        val reveal = remember(entry.fileName) {
+                            MutableTransitionState(reduced || arrivingFile != entry.fileName).apply { targetState = true }
+                        }
+                        AnimatedVisibility(visibleState = reveal,
+                            modifier = if (reduced) Modifier else Modifier.animateItem(fadeInSpec = tween(120), placementSpec = tween(200),
+                                fadeOutSpec = tween(120)),
+                            enter = expandVertically(animationSpec = tween(if (reduced) 0 else 200), expandFrom = Alignment.Top) +
+                                fadeIn(tween(if (reduced) 0 else 120))) {
                             BackupArchiveRow(entry, entry === recent.first(), entry === recent.last(), selected = selected) { selectArchive(entry, false) }
                         }
                     }
@@ -278,8 +297,9 @@ private fun BackupSkeleton(reduced: Boolean) {
 
 @Composable
 private fun BackupBlank(text: String) {
-    Text(text, Modifier.fillMaxWidth().padding(vertical = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.bodyMedium)
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface) {
+        Text(text, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+    }
 }
 
 @Composable

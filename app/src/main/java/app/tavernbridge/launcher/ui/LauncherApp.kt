@@ -287,6 +287,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
     var welcomeAfterInstall by rememberSaveable { mutableStateOf(false) }
     var requestedArchive by rememberSaveable { mutableStateOf<String?>(null) }
+    var archiveReturnToOrigin by rememberSaveable { mutableStateOf(false) }
     val showWelcome = welcomeAfterInstall && state.environment.sillyTavernInstalled &&
         state.section in setOf(MainSection.HOME, MainSection.SETUP, MainSection.BACKUPS) &&
         state.lastOperationResult?.let { it.succeeded && it.operation in setOf("install", "import-install", "import-backup") } == true
@@ -454,7 +455,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     else { selectedBrowserPackage = null; browserPickerOpen = true }
                 }
                 op == "save-lan-security" -> viewModel.openLanAddressFromNotice()
-                archive != null -> { requestedArchive = archive.fileName; viewModel.openBackups() }
+                archive != null -> {
+                    archiveReturnToOrigin = viewModel.state.value.section != MainSection.BACKUPS
+                    requestedArchive = archive.fileName
+                    viewModel.openBackups()
+                }
             }
         }
     }
@@ -594,7 +599,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val useRail = chooseLauncherNavigation(maxWidth.value) == LauncherNavigationMode.RAIL
     val tab = if (section == MainSection.SETUP) MainSection.LOGS else section
+    val returnAnchors = remember { ReturnAnchors() }
+    androidx.compose.runtime.SideEffect { returnAnchors.route(state.navigation) }
     val selectTab: (MainSection) -> Unit = { target ->
+        returnAnchors.cancelTap()
         welcomeAfterInstall = false
         if (target == tab) viewModel.reselectTab(target)
         else if (target == MainSection.BACKUPS) viewModel.openBackups() else viewModel.selectSection(target)
@@ -613,6 +621,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         onDispose {}
     }
     androidx.compose.runtime.CompositionLocalProvider(LocalV2NoticeHost provides snackbarHostState,
+        LocalV2ReturnAnchors provides returnAnchors, LocalV2TabAttention provides state.tabAttention(),
         LocalV2BackProgress provides { backProgress.floatValue = it },
         LocalBackupScopeOpener provides { backupScopeOpen = true }) {
     V2BackHandler(!setupFullScreen && (state.navigation.previous.isNotEmpty() || section == MainSection.SETUP)) {
@@ -690,7 +699,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         setupCommand = viewModel.setupCommand,
                         onOpenPermissionSettings = viewModel::openPermissionSettings,
                         onOpenBackups = viewModel::openBackups,
-                        onOpenArchive = { name -> requestedArchive = name; viewModel.openBackups() },
+                        onOpenArchive = { name -> archiveReturnToOrigin = true; requestedArchive = name; viewModel.openBackups() },
                         onUpdate = { viewModel.selectTool(ToolPage.UPDATE) },
                         onLogs = { viewModel.openDiagnostics(DiagnosticPanel.SERVER_LOG) },
                         onHistory = { viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
@@ -715,6 +724,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             state = state,
                             panel = if (section == MainSection.BACKUPS) ManagementPanel.BACKUP else state.managementPanel,
                             requestedArchive = requestedArchive,
+                            archiveReturnToOrigin = archiveReturnToOrigin,
                             onArchiveOpened = { requestedArchive = null },
                             onArchiveShortcutBack = { viewModel.navigateBack() },
                             onSelectPanel = viewModel::selectManagementPanel,
@@ -929,11 +939,11 @@ private fun HomeScreen(
     } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         when {
+            env.recoveryPending -> RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
             state.shouldShowSetupGuide || (state.setupDeferred && !state.hasInstallationHistory) ->
                 EmptyHomeCard(state.setupDeferred, onSetup, onRefresh)
             !state.environmentChecked -> EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
                 setupCommand, onOpenPermissionSettings)
-            env.recoveryPending -> RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
             else -> EmptyHomeCard(state.setupDeferred, onSetup, onRefresh)
         }
         if (!env.recoveryPending) state.lastOperationResult?.let { OperationResultCard(it, onRetry) }
@@ -1357,6 +1367,7 @@ private fun ManagementScreen(
     onResetInstallation: () -> Unit,
     panel: ManagementPanel = state.managementPanel,
     requestedArchive: String?,
+    archiveReturnToOrigin: Boolean,
     onArchiveOpened: () -> Unit,
     onArchiveShortcutBack: () -> Unit,
 ) {
@@ -1366,7 +1377,7 @@ private fun ManagementScreen(
             onOpenBackupFolder, onOpenSafetyInventory, onInspectStorage, onPreviewCleanup,
             onSaveBackupAnnotation, onEncryptedBackup, onSelectiveRestore, onImportBackup,
             storageSetupCommand, onOpenTermux, onStorageCommandCopied, onRestoreBackup, onDeleteBackups,
-            requestedArchive, onArchiveOpened, onArchiveShortcutBack,
+            requestedArchive, onArchiveOpened, onArchiveShortcutBack, archiveReturnToOrigin,
         )
         return
     }
@@ -1691,7 +1702,7 @@ internal fun WorkingMiniBar(label: String, progress: app.tavernbridge.launcher.m
     val percent = progress?.measuredPercent.takeUnless { progress?.status == "success" }
     Surface(onClick = expand, color = MaterialTheme.colorScheme.surface) {
         Column {
-            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp),
+            Row(Modifier.fillMaxWidth().heightIn(min = 49.dp).padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
                 percent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono) }
@@ -1699,7 +1710,7 @@ internal fun WorkingMiniBar(label: String, progress: app.tavernbridge.launcher.m
             }
             if (percent != null) LinearProgressIndicator(progress = { percent / 100f },
                 color = MaterialTheme.colorScheme.secondary, modifier = Modifier.fillMaxWidth().height(3.dp))
-            else HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            else HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
 }

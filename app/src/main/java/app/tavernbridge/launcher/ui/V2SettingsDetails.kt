@@ -229,8 +229,7 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
     var lanReason by rememberSaveable { mutableStateOf<String?>(null) }
     ServerLanRows(state, { action ->
         if (action == "disable-listen") {
-            // Stopping exposure must also work with a legacy allow-list. Null preserves it on disk.
-            vm.saveLanSecurity(LanSecurityChange(false, null, env.basicAuthEnabled, null))
+            vm.saveLanSecurity(LanSecurityChange.disableExposure())
         } else openEditor(action)
     }, { vm.refreshLanAddresses(); dialog = "address" }, { lanReason = it })
     lanReason?.let { reason -> V2Explanation("외부 접속", reason) { lanReason = null } }

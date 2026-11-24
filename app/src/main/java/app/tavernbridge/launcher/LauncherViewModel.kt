@@ -519,6 +519,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     private val setupTrip = app.tavernbridge.launcher.model.SetupReturnGate()
     fun onSetupWindowPaused() = setupTrip.paused()
+    fun pendingSetupReturn() = setupTrip.waitingForReturn
+    fun restoreSetupReturn(wasAway: Boolean) = setupTrip.restoreReturn(wasAway)
 
     /** Only the onboarding launch is armed. Other shortcuts into Termux do not trigger a check. */
     fun openTermuxForSetup() {
@@ -1727,14 +1729,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val proposal = if (suggestCleanup) app.tavernbridge.launcher.model.BackupRetentionPolicy.afterCreation(
                 backups, annotations, state.value.displayPreferences.keepBackups) else null
             mutableState.update { it.copy(backups = backups, backupsLoaded = true, safetyCopyCount = safetyCount,
+                backupListError = "", backupListErrorCode = "",
                 backupAnnotations = annotations, backupCleanupPreview = proposal ?: it.backupCleanupPreview,
                 backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             // The preceding backup operation is already complete. A list refresh failure must
             // not relabel a successful import, restore, creation, or deletion as failed.
-            mutableState.update { it.copy(backupsLoaded = false) }
+            val detail = error.userMessage()
+            mutableState.update { it.copy(backupListError = detail,
+                backupListErrorCode = errorCodeFrom(detail).ifBlank { "BACKUP_LIST_FAILED" }) }
         }
     }
 

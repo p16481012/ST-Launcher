@@ -164,7 +164,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     dataNote: Boolean = false, onClick: (() -> Unit)? = null) {
     val cs = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().background(if (current) cs.surfaceContainerHigh else Color.Transparent)
-        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        .then(if (onClick != null) Modifier.v2RowTap("tool:$label", click = onClick) else Modifier)
         .heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         icon?.let { Icon(it, null, Modifier.size(20.dp), tint = if (danger) cs.error else cs.onSurfaceVariant) }

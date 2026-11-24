@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -33,6 +34,56 @@ class V2VisualTest {
         environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true, managerConnected = true,
             sillyTavernInstalled = true, branch = SillyBranch.RELEASE, sillyTavernVersion = "1.13.2",
             processRunning = true, serverReachable = true), backupReminder = BackupReminderState(enabled = false))
+
+    @Test fun backupScopeRequiresAnExplicitStartAndSupportsSubsets() {
+        var requests = 0
+        var chosen: Set<BackupCategory> = emptySet()
+        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
+            V2BackupScreen(fixture.copy(termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
+                backupsLoaded = true, backupStorageReady = true), { categories, _, _ -> chosen = categories; requests++ },
+                {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> }, {}, {}, {}, "", {}, {}, {}, {},
+                null, {}, {})
+        } }
+        compose.onNodeWithText("지금 백업").performClick()
+        compose.onNodeWithText("전체 설치").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(0, requests) }
+        compose.onNodeWithText("백업 시작").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, requests); assertEquals(setOf(BackupCategory.FULL), chosen) }
+    }
+
+    @Test fun failedBackupListOffersRetryInPlaceWithoutCreateAction() {
+        var reads = 0
+        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
+            V2BackupScreen(fixture.copy(termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
+                backupListError = "[TERMUX_TIMEOUT] Termux가 응답하지 않아요.", backupListErrorCode = "TERMUX_TIMEOUT"),
+                { _, _, _ -> }, { reads++ }, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> },
+                {}, {}, {}, "", {}, {}, {}, {}, null, {}, {})
+        } }
+        compose.onNodeWithText("TERMUX_TIMEOUT").assertExists()
+        compose.onNodeWithText("지금 백업").assertDoesNotExist()
+        val initial = compose.runOnIdle { reads }
+        compose.onNodeWithText("다시 시도").performClick()
+        compose.runOnIdle { assertEquals(initial + 1, reads) }
+    }
+
+    @Test fun resultOnBackupTabOpensArchiveButBackReturnsToItsList() {
+        val archive = BackupArchive("created.zip", 4096, "2026-11-24 14:05:00",
+            setOf(BackupCategory.USER_DATA), emptySet(), false, "1.2.3")
+        var leftTab = false
+        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
+            var request by remember { mutableStateOf<String?>(archive.fileName) }
+            Box(Modifier.fillMaxSize()) { Box(Modifier.widthIn(max = 400.dp).fillMaxHeight()) {
+                V2BackupScreen(fixture.copy(termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
+                    backupsLoaded = true, backups = listOf(archive), backupStorageReady = true),
+                    { _, _, _ -> }, {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> },
+                    {}, {}, {}, "", {}, {}, {}, {}, request, { request = null }, { leftTab = true }, archiveReturnToOrigin = false)
+            } }
+        } }
+        compose.onNodeWithText("백업 상세").assertExists()
+        compose.onNodeWithContentDescription("뒤로").performClick()
+        compose.onNodeWithText("지금 백업").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(!leftTab) }
+    }
 
     private fun capture(name: String) {
         compose.waitForIdle()

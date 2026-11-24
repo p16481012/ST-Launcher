@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -73,7 +74,7 @@ internal fun LauncherNavigationRail(
                 NavigationRailItem(
                     selected = selected == section,
                     onClick = { onSelect(section) },
-                    icon = { Icon(icon(section), contentDescription = null) },
+                    icon = { V2TabGlyph(section, icon(section), androidx.compose.material3.LocalContentColor.current, Modifier.size(24.dp)) },
                     label = { Text(section.label) },
                     modifier = Modifier.heightIn(min = 64.dp),
                     alwaysShowLabel = true,

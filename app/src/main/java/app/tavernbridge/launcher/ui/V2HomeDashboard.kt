@@ -234,7 +234,7 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
 
 @Composable
 private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit, blocked: (() -> Unit)? = null) {
-    Column(modifier.clickable(enabled = enabled || blocked != null, role = Role.Button, onClick = if (enabled) onClick else blocked ?: {}).heightIn(min = 72.dp).padding(4.dp),
+    Column(modifier.v2RowTap("home-action:$label", enabled = enabled || blocked != null, role = Role.Button, click = if (enabled) onClick else blocked ?: {}).heightIn(min = 72.dp).padding(4.dp),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else .54f)
         Icon(icon, null, Modifier.size(21.dp), tint = ink)
@@ -247,7 +247,7 @@ private fun HomeRule() = HorizontalDivider(Modifier.padding(start = 52.dp, end =
 
 @Composable
 private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).heightIn(min = 56.dp)
+    Row(Modifier.fillMaxWidth().v2RowTap("home-row:$label", role = Role.Button, click = onClick).heightIn(min = 56.dp)
         .padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)

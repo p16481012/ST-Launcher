@@ -22,6 +22,16 @@ class PrototypeInteractionTest {
         assertEquals(ToolPage.INDEX, top.toolPage)
         assertEquals(MainSection.HOME, top.previousScreen().section)
     }
+    @Test fun activityRecreationOnlyRestoresAnActualTrip() {
+        val gate = SetupReturnGate()
+        gate.launched()
+        assertFalse(gate.waitingForReturn)
+        gate.paused()
+        val recreated = SetupReturnGate()
+        recreated.restoreReturn(gate.waitingForReturn)
+        assertTrue(recreated.consume())
+        assertFalse(recreated.consume())
+    }
     @Test fun accessiblyTimedNoticesKeepActionsAvailableLonger() {
         assertEquals(8000L, noticeTimeout("휴지통으로 옮겼어요", "실행 취소"))
         assertEquals(2000L, noticeTimeout("되돌렸어요", null))

@@ -4,10 +4,16 @@ import app.tavernbridge.launcher.model.EphemeralBasicAuthCredentials
 import app.tavernbridge.launcher.model.LanSecurityChange
 import app.tavernbridge.launcher.model.LanWhitelist
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LanSecurityPayloadTest {
+    @Test fun disableExposureDoesNotSendCachedAuthOrWhitelist() {
+        LanSecurityChange.disableExposure().use { change ->
+            assertEquals("""{"protocol":2,"action":"disable-listen"}""", LanSecurityPayload.encode(change).toString(Charsets.UTF_8))
+        }
+    }
     @Test fun escapedCredentialsCannotInjectExtraJsonFields() {
         val credentials = EphemeralBasicAuthCredentials.create("user\"test", "비밀\\\"pass123")!!
         LanSecurityChange(true, LanWhitelist.loopbacks, true, credentials).use { change ->

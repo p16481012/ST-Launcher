@@ -99,6 +99,7 @@ function readRequest() {
     } finally { chunks.forEach(chunk => chunk.fill(0)); }
     try { request = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(secretBytes)); }
     catch (_) { fail('LAN_SETTINGS_INPUT_INVALID'); }
+    if (exactKeys(request, ['protocol', 'action']) && request.protocol === 2 && request.action === 'disable-listen') return;
     if (!exactKeys(request, ['protocol', 'listen', 'allowedNetworks', 'basicAuthEnabled', 'credentials']) || request.protocol !== 1 || typeof request.listen !== 'boolean' || typeof request.basicAuthEnabled !== 'boolean') fail('LAN_SETTINGS_INPUT_INVALID');
     if (request.allowedNetworks === null) { if (request.listen) fail('LAN_SETTINGS_INPUT_INVALID'); }
     else {
@@ -137,17 +138,23 @@ try {
         if (document.errors.length || !YAML.isMap(document.contents)) fail('LAN_SETTINGS_CONFIG_INVALID');
         document.toJS({ maxAliasCount: 50 }); // Bound malicious alias expansion before making changes.
     } catch (_) { fail('LAN_SETTINGS_CONFIG_INVALID'); }
-    const perUser = document.get('perUserBasicAuth') === true, wasBasicAuth = document.get('basicAuthMode') === true;
-    if (perUser && (request.credentials !== null || request.basicAuthEnabled !== wasBasicAuth)) fail('LAN_SETTINGS_PER_USER_AUTH');
-    if (request.basicAuthEnabled && !perUser && request.credentials === null) {
-        const existing = document.get('basicAuthUser');
-        if (!wasBasicAuth || !YAML.isMap(existing) || typeof existing.get('username') !== 'string' || !existing.get('username') || typeof existing.get('password') !== 'string' || !existing.get('password')) fail('LAN_SETTINGS_CREDENTIALS_REQUIRED');
-    }
-    document.set('listen', request.listen);
-    if (request.allowedNetworks !== null) { document.set('whitelistMode', true); document.set('whitelist', request.allowedNetworks); }
-    document.set('basicAuthMode', request.basicAuthEnabled);
-    if (request.credentials !== null) {
-        document.set('basicAuthUser', { username: request.credentials.username, password: request.credentials.password });
+    if (request.protocol === 2) {
+        // The user only disabled exposure. Never replay cached auth/allow-list state,
+        // and never require unrelated credentials to be usable before closing the listener.
+        document.set('listen', false);
+    } else {
+        const perUser = document.get('perUserBasicAuth') === true, wasBasicAuth = document.get('basicAuthMode') === true;
+        if (perUser && (request.credentials !== null || request.basicAuthEnabled !== wasBasicAuth)) fail('LAN_SETTINGS_PER_USER_AUTH');
+        if (request.basicAuthEnabled && !perUser && request.credentials === null) {
+            const existing = document.get('basicAuthUser');
+            if (!wasBasicAuth || !YAML.isMap(existing) || typeof existing.get('username') !== 'string' || !existing.get('username') || typeof existing.get('password') !== 'string' || !existing.get('password')) fail('LAN_SETTINGS_CREDENTIALS_REQUIRED');
+        }
+        document.set('listen', request.listen);
+        if (request.allowedNetworks !== null) { document.set('whitelistMode', true); document.set('whitelist', request.allowedNetworks); }
+        document.set('basicAuthMode', request.basicAuthEnabled);
+        if (request.credentials !== null) {
+            document.set('basicAuthUser', { username: request.credentials.username, password: request.credentials.password });
+        }
     }
     const replacement = Buffer.from(String(document), 'utf8'); privateBuffers.push(replacement);
     if (replacement.length > 1048576) fail('LAN_SETTINGS_CONFIG_INVALID');

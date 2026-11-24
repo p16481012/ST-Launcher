@@ -74,6 +74,27 @@ try {
         const parsed = YAML.parse(fs.readFileSync(f.configPath, 'utf8')); assert.equal(parsed.listen, false); assert.deepEqual(parsed.whitelist, ['*']);
         const rejected = fixture(); assert.notEqual(run(rejected, request({ allowedNetworks: null })).status, 0); unchanged(rejected);
     });
+    check('turning off only changes the current listen flag, not credentials, auth mode or legacy lists', () => {
+        const disable = { protocol: 2, action: 'disable-listen' };
+        for (const auth of [
+            { basicAuthMode: true, perUserBasicAuth: true, basicAuthUser: { username, password: secret } },
+            { basicAuthMode: true, perUserBasicAuth: false, basicAuthUser: 'legacy-malformed' },
+            { basicAuthMode: false, basicAuthUser: { username, password: secret } },
+            {},
+        ]) {
+            const f = fixture(); // What an earlier inspection saw, before an external edit.
+            const current = { ...auth, listen: true, whitelistMode: false, whitelist: ['*'], unrelated: { keep: 7 } };
+            const before = YAML.stringify(current);
+            fs.writeFileSync(f.configPath, before);
+            const result = run(f, disable);
+            assert.equal(result.status, 0, result.stderr);
+            assert.deepEqual(YAML.parse(fs.readFileSync(f.configPath, 'utf8')), { ...current, listen: false });
+            assert.equal(fs.readFileSync(path.join(f.owner, 'backups/network-settings', backups(f)[0]), 'utf8'), before);
+        }
+        const invalid = fixture();
+        const extra = run(invalid, { ...disable, basicAuthEnabled: false });
+        assert.notEqual(extra.status, 0); unchanged(invalid);
+    });
     check('per-user authentication cannot be replaced by single-account credentials', () => {
         const original = 'listen: true\nperUserBasicAuth: true\nbasicAuthMode: true\n';
         const f = fixture(original); failure(run(f), 'LAN_SETTINGS_PER_USER_AUTH', 95); unchanged(f);

@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.AnnotatedString
@@ -165,7 +166,12 @@ internal fun SetupScreen(
                                 CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text("확인하고 있어요")
                             }
                             TermuxSetupStatus.UNKNOWN -> Unit
-                            else -> TermuxSetupFeedback(state)
+                            else -> Text(state.termuxSetup.detail.ifBlank {
+                                if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED)
+                                    "외부 명령 허용이 꺼져 있어요. Termux에 명령을 붙여 넣고 Enter를 눌러 주세요."
+                                else "연결을 확인하지 못했어요. Termux에서 Enter를 누른 뒤 다시 확인해 주세요."
+                            }, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite })
                         }
                     }
                     step == 5 && !done -> {

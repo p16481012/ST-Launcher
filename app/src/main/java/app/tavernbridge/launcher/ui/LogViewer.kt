@@ -108,7 +108,7 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                         }
                     }
                 }
-                AnimatedVisibility(showJump, Modifier.align(Alignment.BottomEnd).padding(10.dp),
+                androidx.compose.animation.AnimatedVisibility(showJump, Modifier.align(Alignment.BottomEnd).padding(10.dp),
                     enter = fadeIn(tween(if (reduced) 0 else 150)), exit = fadeOut(tween(if (reduced) 0 else 150))) {
                     IconButton({ scope.launch {
                         if (reduced) scroll.scrollTo(scroll.maxValue) else scroll.animateScrollTo(scroll.maxValue, tween(300))

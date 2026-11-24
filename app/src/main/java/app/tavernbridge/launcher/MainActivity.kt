@@ -19,6 +19,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewModel.restoreSetupReturn(savedInstanceState?.getBoolean("pending-setup-trip") == true)
         enableEdgeToEdge()
         app.tavernbridge.launcher.entry.LauncherEntryIntents.consume(intent)?.let(viewModel::requestEntryAction)
         setContent {
@@ -50,6 +51,11 @@ class MainActivity : ComponentActivity() {
         viewModel.onSetupWindowPaused()
         window.decorView.removeCallbacks(refreshWhenForeground)
         super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean("pending-setup-trip", viewModel.pendingSetupReturn())
     }
 
     override fun onStop() {

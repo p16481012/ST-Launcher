@@ -14,6 +14,20 @@ import org.junit.Test
 
 class FileLogPrototypeTest {
     @get:Rule val ui = createComposeRule()
+    @Test fun backHighlightsOnlyTheLastTappedOriginAndNeverOnOrdinaryRecomposition() {
+        val links = ReturnAnchors()
+        val initial = LauncherUiState()
+        val log = initial.visit(MainSection.LOGS, ToolPage.LOGS)
+        links.route(initial.navigation, 1)
+        links.tap("home-action:로그", 2)
+        links.route(log.navigation, 3)
+        assertEquals(null, links.returning)
+        links.route(log.previousScreen().navigation, 4)
+        assertEquals("home-action:로그", links.returning)
+        links.clearHighlight("home-action:로그")
+        links.route(initial.navigation, 5)
+        assertEquals(null, links.returning)
+    }
     private fun entry(name: String) = TavernFileEntry(name, name, false, 100, "", false, "a".repeat(64))
     private fun files(names: List<String>, onTrash: (List<TavernFileEntry>) -> Unit = {}) {
         val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),

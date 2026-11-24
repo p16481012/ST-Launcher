@@ -34,7 +34,8 @@ internal fun V2ConfirmDialog(onDismissRequest: () -> Unit, title: @Composable ()
     Dialog(onDismissRequest = cancel) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
         LaunchedEffect(Unit) { progress.animateTo(1f, tween(if (reduced) 0 else 180, easing = LinearOutSlowInEasing)) }
-        SideEffect { window?.setDimAmount(.4f * progress.value) }
+        val dim = .4f * progress.value
+        SideEffect { window?.setDimAmount(dim) }
         Surface(Modifier.widthIn(max = 440.dp).fillMaxWidth().graphicsLayer {
             alpha = progress.value
             scaleX = if (reduced) 1f else .96f + .04f * progress.value

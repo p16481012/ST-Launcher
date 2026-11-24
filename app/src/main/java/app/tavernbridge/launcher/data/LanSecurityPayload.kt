@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream
 /** ASCII JSON escapes avoid constructing an immutable String containing the whole password. */
 object LanSecurityPayload {
     fun encode(change: LanSecurityChange): ByteArray {
+        if (change.disableOnly) return """{"protocol":2,"action":"disable-listen"}""".toByteArray(Charsets.US_ASCII)
         val output = SecretBuffer()
         try {
             fun raw(text: String) { output.write(text.toByteArray(Charsets.US_ASCII)) }
