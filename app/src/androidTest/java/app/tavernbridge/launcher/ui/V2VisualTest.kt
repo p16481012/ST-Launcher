@@ -165,7 +165,10 @@ class V2VisualTest {
                 ScreenChrome(section) {
                     when (section) {
                         MainSection.HOME -> V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-                        MainSection.SETTINGS -> V2DisplaySettings(state, {}, {}, wide)
+                        MainSection.SETTINGS -> V2SettingsLayout(state) { page, roomy ->
+                            check(page == SettingsPage.DISPLAY)
+                            V2DisplaySettings(state, { selectedTheme = it }, { selectedAccent = it.accent; contrast = it.highContrast }, roomy)
+                        }
                         MainSection.BACKUPS -> V2BackupScreen(state = state, onCreateBackup = { _,_,_ -> }, onRefresh = {},
                             onReminderChange = {}, onTransfer = { _,_ -> }, onOpenFolder = {}, onSafety = {}, onScan = {},
                             onPreviewCleanup = { _,_ -> }, onSaveAnnotation = { _,_,_ -> }, onEncrypted = {}, onSelective = {},
@@ -180,6 +183,10 @@ class V2VisualTest {
                 for (high in listOf(false, true))
                     for (accent in LauncherAccent.entries) {
                         compose.runOnIdle { section = screen; selectedTheme = brightness; selectedAccent = accent; contrast = high }
+                        if (screen == MainSection.SETTINGS && !wide &&
+                            compose.onAllNodesWithText("글자 크기").fetchSemanticsNodes().isEmpty())
+                            compose.onNodeWithText("화면").performClick()
+                        if (screen == MainSection.SETTINGS) compose.onNodeWithText("글자 크기").assertIsDisplayed()
                         capture("palette-${screen.name.lowercase()}-${brightness.name.lowercase()}-${if (high) "high" else "normal"}-${accent.name.lowercase()}")
                     }
     }
