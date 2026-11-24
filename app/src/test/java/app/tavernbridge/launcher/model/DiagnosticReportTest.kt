@@ -6,6 +6,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiagnosticReportTest {
+    @Test fun credentialsAreHiddenBeforeRenderingReportDetails() {
+        val source = DiagnosticItem("mirror", "미러", "https://user:password@example.test/a",
+            detail = "Authorization: Bearer example-secret-value", status = DiagnosticStatus.WARNING)
+        val visible = source.safeForDisplay()
+        assertTrue(!visible.value.contains("password") && !visible.detail.contains("example-secret-value"))
+        assertEquals(DiagnosticStatus.WARNING, visible.status)
+    }
+
     @Test fun settingsReportOnlyRunsExternalChecksAfterAllPrerequisites() {
         val connected = LauncherUiState(termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
             environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true, managerConnected = true))

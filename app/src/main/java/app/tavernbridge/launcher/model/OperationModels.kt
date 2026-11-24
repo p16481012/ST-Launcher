@@ -13,6 +13,7 @@ enum class RetryAction {
     BACKUP,
     REPAIR,
     DIAGNOSE,
+    SETTINGS_DIAGNOSE,
 }
 
 data class OperationResultSummary(

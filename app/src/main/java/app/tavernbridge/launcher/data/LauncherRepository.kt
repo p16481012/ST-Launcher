@@ -32,6 +32,7 @@ import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.CustomBackupFolder
 import app.tavernbridge.launcher.model.backupFolderLabel
 import app.tavernbridge.launcher.model.DiagnosticItem
+import app.tavernbridge.launcher.model.safeForDisplay
 import app.tavernbridge.launcher.model.DiagnosticReport
 import app.tavernbridge.launcher.model.DiagnosticStatus
 import app.tavernbridge.launcher.model.SillyBranch
@@ -731,7 +732,7 @@ class LauncherRepository(private val context: Context) {
                 recommendation = "파일 접근 문제가 있으면 Android 설정에서 Termux 저장소 권한과 termux-setup-storage 연결을 확인해 주세요.",
             )) else emptyList()
             report.copy(
-                items = report.items + (installation?.diagnosticItems() ?: emptyList()) + storageNotice,
+                items = (report.items + installation?.diagnosticItems().orEmpty() + storageNotice).map { it.safeForDisplay() },
                 copyOnlyDetails = report.copyOnlyDetails + (installation?.copyOnlyDetails() ?: emptyMap()),
             )
         } finally { if (allowTermuxChecks) localOperationProgress = null }

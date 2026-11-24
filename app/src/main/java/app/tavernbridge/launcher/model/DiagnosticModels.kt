@@ -25,6 +25,10 @@ data class DiagnosticItem(
     val recommendation: String = "",
 )
 
+/** Sanitize before either UI can render tool output, not only when copying it. */
+internal fun DiagnosticItem.safeForDisplay() = copy(value = redactSensitiveText(value, maxLength = null),
+    detail = redactSensitiveText(detail, maxLength = null), recommendation = redactSensitiveText(recommendation, maxLength = null))
+
 internal fun LauncherUiState.readyForTermuxDiagnostic(): Boolean =
     termuxSetup.verified && environment.termuxInstalled && environment.commandPermissionGranted && environment.managerConnected
 

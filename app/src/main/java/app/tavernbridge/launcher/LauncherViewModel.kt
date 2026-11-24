@@ -2229,7 +2229,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     succeeded = false,
                     startedAtMillis = operationStartedAt,
                     errorCode = errorCode,
-                    retryAction = retryActionAfterFailure(errorCode, RetryAction.DIAGNOSE),
+                    retryAction = retryActionAfterFailure(errorCode,
+                        if (fromSettings) RetryAction.SETTINGS_DIAGNOSE else RetryAction.DIAGNOSE),
                 )
                 mutableState.update {
                     it.copy(
@@ -2765,6 +2766,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             }
             RetryAction.REPAIR -> repair()
             RetryAction.DIAGNOSE -> runDiagnostics()
+            RetryAction.SETTINGS_DIAGNOSE -> makeSettingsReport()
         }
     }
 
