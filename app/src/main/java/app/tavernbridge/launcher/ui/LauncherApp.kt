@@ -135,6 +135,7 @@ import app.tavernbridge.launcher.model.visibleOperation
 import app.tavernbridge.launcher.model.canReadLiveServerLog
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
+import app.tavernbridge.launcher.ui.components.HomeStatusCard
 import app.tavernbridge.launcher.ui.components.OperationCancelControl
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import app.tavernbridge.launcher.ui.components.WorkElapsedTime
@@ -971,20 +972,21 @@ private fun EnvironmentCheckingScreen(
     setupCommand: String,
     onOpenPermissionSettings: () -> Unit,
 ) {
-    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), contentAlignment = Alignment.Center) {
         EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
             setupCommand, onOpenPermissionSettings)
     }
 }
 
 @Composable
-private fun EnvironmentCheckingCard(
+internal fun EnvironmentCheckingCard(
     state: LauncherUiState,
     onOpenTermuxSettings: () -> Unit,
     onOpenTermux: () -> Unit,
     onRefresh: () -> Unit,
     setupCommand: String,
     onOpenPermissionSettings: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val clipboard = LocalClipboardManager.current
     // Before the first resumed probe UNKNOWN is not a failed connection.
@@ -993,72 +995,68 @@ private fun EnvironmentCheckingCard(
     val wakeBlocked = state.termuxWakeBlocked
     val showPending = rememberProgressVisible(checking)
     if (checking && !showPending) return
-    Card(modifier = Modifier.padding(20.dp)) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                if (checking) {
-                    VisibleBusyIndicator(Modifier.size(24.dp), linear = false, strokeWidth = 2.5.dp)
-                } else {
-                    Icon(
-                        Icons.Outlined.WarningAmber,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-                Text(
-                    when {
-                        checking -> "기존 설치를 확인하고 있어요"
-                        wakeBlocked -> "Android가 Termux 실행을 막았어요"
-                        state.hasInstallationHistory -> "기존 설치에 다시 연결하지 못했어요"
-                        else -> "설치 상태를 확인하지 못했어요"
-                    },
-                    style = MaterialTheme.typography.titleMedium,
+    HomeStatusCard(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (checking) {
+                VisibleBusyIndicator(Modifier.size(24.dp), linear = false, strokeWidth = 2.5.dp)
+            } else {
+                Icon(
+                    Icons.Outlined.WarningAmber,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.error,
                 )
             }
             Text(
                 when {
-                    checking -> "확인이 끝날 때까지 설치 화면으로 전환하지 않습니다."
-                    wakeBlocked -> "Termux 앱 정보에서 배터리를 ‘제한 없음’으로 바꾸고 Termux를 한 번 연 뒤 다시 확인해 주세요. 기존 SillyTavern 데이터는 그대로입니다."
-                    else -> "기존 설치를 미설치로 처리하지 않았습니다. 다시 확인해 주세요."
+                    checking -> "기존 설치를 확인하고 있어요"
+                    wakeBlocked -> "Android가 Termux 실행을 막았어요"
+                    state.hasInstallationHistory -> "기존 설치에 다시 연결하지 못했어요"
+                    else -> "설치 상태를 확인하지 못했어요"
                 },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
             )
-            if (!checking) {
-                if (state.termuxSetup.detail.isNotBlank()) {
-                    SelectionContainer {
-                        Text(state.termuxSetup.detail, style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+        }
+        Text(
+            when {
+                checking -> "확인이 끝날 때까지 설치 화면으로 전환하지 않습니다."
+                wakeBlocked -> "Termux 앱 정보에서 배터리를 ‘제한 없음’으로 바꾸고 Termux를 한 번 연 뒤 다시 확인해 주세요. 기존 SillyTavern 데이터는 그대로입니다."
+                else -> "기존 설치를 미설치로 처리하지 않았습니다. 다시 확인해 주세요."
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (!checking) {
+            if (state.termuxSetup.detail.isNotBlank()) {
+                SelectionContainer {
+                    Text(state.termuxSetup.detail, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (wakeBlocked) {
-                    Button(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth()) {
-                        Text("Termux 배터리 설정 열기")
-                    }
+            }
+            if (wakeBlocked) {
+                Button(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("Termux 배터리 설정 열기")
                 }
-                if (state.termuxSetup.status == TermuxSetupStatus.PERMISSION_REQUIRED) {
-                    Button(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
-                        Text("런처 실행 권한 설정")
-                    }
+            }
+            if (state.termuxSetup.status == TermuxSetupStatus.PERMISSION_REQUIRED) {
+                Button(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("런처 실행 권한 설정")
                 }
-                if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED) {
-                    Button(onClick = {
-                        clipboard.setText(AnnotatedString(setupCommand))
-                        onOpenTermux()
-                    }, modifier = Modifier.fillMaxWidth()) {
-                        Text("연결 설정 명령 복사·Termux 열기")
-                    }
+            }
+            if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED) {
+                Button(onClick = {
+                    clipboard.setText(AnnotatedString(setupCommand))
+                    onOpenTermux()
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("연결 설정 명령 복사·Termux 열기")
                 }
-                OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {
-                    Text("Termux 한 번 열기")
-                }
-                TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                    Text("설치 상태 다시 확인")
-                }
+            }
+            OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {
+                Text("Termux 한 번 열기")
+            }
+            TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+                Text("설치 상태 다시 확인")
             }
         }
     }
