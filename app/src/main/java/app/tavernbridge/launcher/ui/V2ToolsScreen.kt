@@ -163,11 +163,12 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     danger: Boolean = false, current: Boolean = false, accent: Boolean = false, singleLine: Boolean = false,
     dataNote: Boolean = false, onClick: (() -> Unit)? = null) {
     val cs = MaterialTheme.colorScheme
-    Row(Modifier.fillMaxWidth().background(if (current) cs.surfaceContainerHigh else Color.Transparent)
+    Row(Modifier.fillMaxWidth().background(if (current) cs.secondaryContainer else Color.Transparent)
+        .v2SelectionEdge(current, cs.secondary)
         .then(if (onClick != null) Modifier.v2RowTap("tool:$label", click = onClick) else Modifier)
         .heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        icon?.let { Icon(it, null, Modifier.size(20.dp), tint = if (danger) cs.error else cs.onSurfaceVariant) }
+        icon?.let { Icon(it, null, Modifier.size(20.dp), tint = when { danger -> cs.error; current -> cs.onSecondaryContainer; else -> cs.onSurfaceVariant }) }
         Column(Modifier.weight(1f)) {
             Text(label, color = if (danger) cs.error else cs.onSurface, style = MaterialTheme.typography.bodyLarge,
                 maxLines = if (singleLine) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)

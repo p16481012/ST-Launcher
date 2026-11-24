@@ -15,6 +15,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -22,6 +24,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import kotlinx.coroutines.delay
@@ -80,6 +83,15 @@ internal fun Modifier.v2RowTap(key: String, enabled: Boolean = true, role: Role?
         if (focused && !down) drawRect(ink, style = Stroke(width = 2.dp.toPx()))
     }
         .clickable(interactionSource = interactions, indication = null, enabled = enabled, role = role) { links?.tap(key); click() }
+}
+
+/** A persistent shape as well as a tint; does not move text or change a row's hit target. */
+internal fun Modifier.v2SelectionEdge(active: Boolean, color: Color): Modifier = if (!active) this else drawWithContent {
+    drawContent()
+    val inset = 5.dp.toPx()
+    val x = if (layoutDirection == LayoutDirection.Ltr) inset else size.width - inset
+    val half = minOf(10.dp.toPx(), size.height / 4)
+    drawLine(color, Offset(x, center.y - half), Offset(x, center.y + half), strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
 }
 
 @Composable

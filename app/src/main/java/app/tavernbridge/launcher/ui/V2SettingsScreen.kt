@@ -232,6 +232,7 @@ internal fun SettingsRow(title: String, value: String = "", caption: String = ""
     val tokens = LocalLauncherColors.current
     val base = if (selected) tokens.accentWash else colors.surface
     Row(Modifier.fillMaxWidth().background(tokens.ink.copy(alpha = if (pressed) .08f else if (returned) .04f else 0f).compositeOver(base))
+        .v2SelectionEdge(selected, tokens.accent)
         .then(click).heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = if (selected) tokens.onAccentWash else colors.onSurfaceVariant)

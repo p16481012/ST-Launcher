@@ -1,6 +1,7 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.animation.core.*
 import androidx.compose.animation.*
 import androidx.compose.foundation.gestures.*
@@ -177,11 +178,13 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
                     Column(Modifier.weight(1f).heightIn(min = 65.dp)
                         .selectable(active, role = Role.Tab, onClick = { onSelect(tab) }).padding(vertical = 6.dp),
                         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(48.dp, 28.dp).background(if (active) MaterialTheme.colorScheme.secondaryContainer
-                            else Color.Transparent, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+                        val shape = RoundedCornerShape(14.dp)
+                        Box(Modifier.size(48.dp, 28.dp).then(if (active) Modifier
+                            .background(MaterialTheme.colorScheme.secondaryContainer, shape)
+                            .border(1.5.dp, MaterialTheme.colorScheme.secondary, shape) else Modifier), contentAlignment = Alignment.Center) {
                             V2TabGlyph(tab, tab.icon(), ink, Modifier.size(21.dp))
                         }
-                        Text(tab.label, style = MaterialTheme.typography.labelMedium, color = if (active) MaterialTheme.colorScheme.onSurface else ink,
+                        Text(tab.label, style = MaterialTheme.typography.labelMedium, color = ink,
                             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium)
                     }
                 }

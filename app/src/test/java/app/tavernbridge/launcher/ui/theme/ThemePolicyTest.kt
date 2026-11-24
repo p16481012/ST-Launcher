@@ -13,6 +13,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ThemePolicyTest {
+    @Test fun everySelectionKeepsAReadableAccentOnBothWashAndNavigationSurface() {
+        for (dark in listOf(false, true)) for (high in listOf(false, true)) for (accent in LauncherAccent.entries) {
+            val c = launcherColors(dark, accent, high)
+            assertNotEquals("Selected state silently turned neutral: $accent", c.ink, c.onAccentWash)
+            assertTrue(contrastRatio(c.onAccentWash, c.surface) >= 4.5)
+            assertTrue(contrastRatio(c.onAccentWash, c.accentWash) >= 4.5)
+            assertTrue(contrastRatio(c.accent, c.accentWash) >= 3.0)
+        }
+    }
+
     @Test fun explicitAccentHasReadableLightAndDarkVariants() {
         LauncherAccent.entries.forEach {
             assertTrue(statusColorContrast(statusColorLuminance(it.lightArgb), statusColorLuminance(0xfff4f5f7)) >= 4.5)

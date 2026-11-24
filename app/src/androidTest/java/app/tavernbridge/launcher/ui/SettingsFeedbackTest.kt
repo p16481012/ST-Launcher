@@ -2,6 +2,7 @@ package app.tavernbridge.launcher.ui
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.test.*
@@ -33,14 +34,17 @@ class SettingsFeedbackTest {
     @Test fun updateButtonsDoNotInstallOrLaunchTheOtherAction() {
         var checks = 0
         var url = ""
+        val busy = mutableStateOf(true)
         compose.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT) {
                 CompositionLocalProvider(LocalUriHandler provides object : UriHandler {
                     override fun openUri(uri: String) { url = uri }
-                }) { UpdateInformationCard(LauncherUiState()) { checks++ } }
+                }) { UpdateInformationCard(LauncherUiState(isWorking = busy.value)) { checks++ } }
             }
         }
-        compose.onNodeWithText("업데이트 정보 확인").performClick()
+        compose.onNodeWithText("업데이트 정보 확인").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(0, checks); busy.value = false }
+        compose.onNodeWithText("업데이트 정보 확인").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, checks); assertEquals("", url) }
         compose.onNodeWithText("GitHub 릴리스 열기").performClick()
         compose.runOnIdle { assertEquals(1, checks); assertEquals(LauncherReleaseClient.RELEASE_URL, url) }

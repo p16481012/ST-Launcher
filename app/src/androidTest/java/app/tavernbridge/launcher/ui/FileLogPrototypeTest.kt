@@ -1,6 +1,8 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
@@ -52,9 +54,12 @@ class FileLogPrototypeTest {
         val id = "1234567890123-11111111-2222-3333-4444-555555555555"
         val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true))
         ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) {
-            TavernFileManagerDialog(state, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, null, {},
+            // The real embedded route receives Scaffold's safe-area padding.
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                TavernFileManagerDialog(state, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, null, {},
                 embedded = true, readTrash = { TavernTrashPage(listOf(TavernTrashEntry(id, "data/기록.txt", false)), "", 0) },
                 onRestoreTrash = { captured += it })
+            }
         } }
         ui.onNodeWithText("휴지통").performClick()
         ui.onNodeWithText("SillyTavern/data/기록.txt").assertExists()

@@ -46,8 +46,9 @@ internal fun launcherColors(dark: Boolean, accent: LauncherAccent, highContrast:
     val ink3 = if (highContrast) pair(0xFF414750, 0xFFCFD4DB) else pair(0xFF6A717B, 0xFF8E949C)
     val accentColor = pair(accent.lightArgb, accent.darkArgb)
     val wash = pair(accent.lightWash, accent.darkWash)
-    // Use ink when the exact swatch fails 4.5:1 on its own wash (notably green).
-    val onWash = if (contrastRatio(accentColor, wash) >= 4.5) accentColor else ink
+    // The light green swatch on its pale wash is 4.45:1. Use a darker green (4.87:1)
+    // for glyphs and text without changing the user's swatch or turning a selection black.
+    val onWash = if (!dark && accent == LauncherAccent.GREEN) Color(0xFF18784D) else accentColor
     return LauncherColors(dark, highContrast,
         canvas = pair(0xFFF4F5F7, 0xFF111214), surface = pair(0xFFFFFFFF, 0xFF1A1C1F),
         sunken = pair(0xFFECEEF1, 0xFF24272B), ink = ink, onInk = pair(0xFFFFFFFF, 0xFF17191C),
