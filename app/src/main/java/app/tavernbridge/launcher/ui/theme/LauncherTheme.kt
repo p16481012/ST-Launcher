@@ -114,6 +114,10 @@ fun SillyTavernLauncherTheme(appTheme: AppTheme, preferences: DisplayPreferences
         }
     }
     CompositionLocalProvider(LocalDensity provides scaled, LocalLauncherColors provides tokens, LocalV2ReducedMotion provides reducedMotion) {
-        MaterialTheme(colorScheme = colors, typography = LauncherTypography, shapes = shapes, content = content)
+        MaterialTheme(colorScheme = colors, typography = LauncherTypography, shapes = shapes) {
+            // A Box/Column with a canvas background is not a Material Surface. Supply ink for
+            // unstyled headings/icons there as well; nested buttons/surfaces provide their own color.
+            CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides tokens.ink, content = content)
+        }
     }
 }

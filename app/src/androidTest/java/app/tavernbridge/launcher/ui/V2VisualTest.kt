@@ -7,6 +7,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -187,6 +188,19 @@ class V2VisualTest {
                             compose.onAllNodesWithText("글자 크기").fetchSemanticsNodes().isEmpty())
                             compose.onNodeWithText("화면").performClick()
                         if (screen == MainSection.SETTINGS) compose.onNodeWithText("글자 크기").assertIsDisplayed()
+                        val heading = when (screen) {
+                            MainSection.HOME -> "SillyTavern"
+                            MainSection.SETTINGS -> "글자 크기"
+                            else -> if (wide) "백업 목록" else "최근"
+                        }
+                        val glyph = compose.onNodeWithText(heading).captureToImage().asAndroidBitmap()
+                        val pixels = IntArray(glyph.width * glyph.height)
+                        glyph.getPixels(pixels, 0, glyph.width, 0, 0, glyph.width, glyph.height)
+                        val ink = app.tavernbridge.launcher.ui.theme.launcherColors(brightness == AppTheme.DARK, accent, high).ink.toArgb()
+                        fun nearInk(color: Int) = listOf(0, 8, 16).all { shift ->
+                            kotlin.math.abs((color ushr shift and 255) - (ink ushr shift and 255)) <= 16
+                        }
+                        assertTrue("Missing heading ink: $screen $brightness $high $accent", pixels.count(::nearInk) >= 6)
                         capture("palette-${screen.name.lowercase()}-${brightness.name.lowercase()}-${if (high) "high" else "normal"}-${accent.name.lowercase()}")
                     }
     }
