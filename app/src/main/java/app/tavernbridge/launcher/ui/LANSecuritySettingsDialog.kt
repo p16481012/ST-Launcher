@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -44,7 +46,7 @@ fun LANSecuritySettingsDialog(
     current: LanSecuritySnapshot,
     busy: Boolean = false,
     onDismiss: () -> Unit,
-    onConfirm: (LanSecurityChange) -> Unit,
+    onConfirm: (LanSecurityChange) -> Boolean,
     requestedListen: Boolean = current.listen,
     requestedBasicAuth: Boolean = current.basicAuthEnabled,
 ) {
@@ -55,6 +57,7 @@ fun LANSecuritySettingsDialog(
     var password by remember(current) { mutableStateOf("") }
     var acknowledged by remember(current) { mutableStateOf(false) }
     var submitted by remember { mutableStateOf(false) }
+    var rejected by remember { mutableStateOf(false) }
     val parsedNetworks = remember(whitelist) { LanWhitelist.parse(whitelist) }
     val replacingCredentials = username.isNotEmpty() || password.isNotEmpty()
     val needsCredentials = basicAuth && !current.perUserBasicAuth && (!current.basicAuthEnabled || replacingCredentials)
@@ -78,9 +81,10 @@ fun LANSecuritySettingsDialog(
                     Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth().toggleable(listen, enabled = !busy && !submitted, role = Role.Switch) { listen = it; acknowledged = false }
+                        .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(stringResource(R.string.lan_allow_external), modifier = Modifier.weight(1f))
-                        Switch(checked = listen, onCheckedChange = { listen = it; acknowledged = false }, enabled = !busy && !submitted)
+                        Switch(checked = listen, onCheckedChange = null, enabled = !busy && !submitted)
                     }
                     Text(stringResource(R.string.lan_security_notice), style = MaterialTheme.typography.bodyMedium)
                     Text(stringResource(R.string.lan_restart_notice), style = MaterialTheme.typography.bodyMedium)
@@ -101,11 +105,13 @@ fun LANSecuritySettingsDialog(
                         stringResource(R.string.lan_allowlist_preview, parsedNetworks.joinToString(", ")),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth().toggleable(basicAuth, enabled = !busy && !submitted && !current.perUserBasicAuth, role = Role.Switch) {
+                        basicAuth = it; username = ""; password = ""; acknowledged = false
+                    }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(stringResource(R.string.lan_basic_auth), modifier = Modifier.weight(1f))
                         Switch(
                             checked = basicAuth,
-                            onCheckedChange = { basicAuth = it; username = ""; password = ""; acknowledged = false },
+                            onCheckedChange = null,
                             enabled = !busy && !submitted && !current.perUserBasicAuth,
                         )
                     }
@@ -138,25 +144,36 @@ fun LANSecuritySettingsDialog(
                         )
                     }
                     Text(stringResource(R.string.lan_credential_storage_notice), style = MaterialTheme.typography.bodyMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth().toggleable(acknowledged, enabled = !busy && !submitted, role = Role.Checkbox) { acknowledged = it }
+                        .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Checkbox(
                             checked = acknowledged,
-                            onCheckedChange = { acknowledged = it },
+                            onCheckedChange = null,
                             enabled = !busy && !submitted,
                         )
                         Text(stringResource(R.string.lan_explicit_consent), modifier = Modifier.weight(1f))
                     }
                 }
+                val hint = when {
+                    busy -> "진행 중인 작업이 끝난 뒤 적용해 주세요."
+                    rejected -> "지금은 적용할 수 없어요. 연결 확인이나 다른 작업이 끝나면 다시 적용해 주세요."
+                    listen && parsedNetworks == null -> "허용 목록의 주소를 확인해 주세요."
+                    !credentialsValid -> "사용할 아이디와 암호를 입력해 주세요."
+                    !acknowledged -> "적용하려면 위의 접속 범위 확인란을 눌러 주세요."
+                    else -> null
+                }
+                if (hint != null) Text(hint, style = MaterialTheme.typography.bodySmall)
                 Button(
                     onClick = {
                         if (canSubmit) {
                             val credentials = if (needsCredentials) EphemeralBasicAuthCredentials.create(username, password) else null
                             if (!needsCredentials || credentials != null) {
                                 val change = LanSecurityChange(listen, parsedNetworks, basicAuth, credentials)
-                                username = ""
-                                password = ""
-                                submitted = true
-                                try { onConfirm(change) } catch (failure: Throwable) {
+                                try {
+                                    submitted = onConfirm(change)
+                                    rejected = !submitted
+                                    if (submitted) { username = ""; password = "" } else change.close()
+                                } catch (failure: Throwable) {
                                     change.close()
                                     throw failure
                                 }

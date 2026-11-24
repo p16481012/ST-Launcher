@@ -4,6 +4,7 @@ import kotlin.math.ceil
 
 /** Estimate only the current measured phase; never extrapolate an entire multi-phase operation. */
 internal class PhaseEta {
+    companion object { const val STALE_MS = 15_000L }
     private var start = -1L
     private var first = 0L
     private var last = 0L
@@ -17,7 +18,7 @@ internal class PhaseEta {
         }
         if (done > last) { last = done; advancedAt = now }
         val sampled = advancedAt - start
-        if (done <= first || sampled < 2_000 || now - advancedAt > 15_000) return null
+        if (done <= first || sampled < 2_000 || now - advancedAt > STALE_MS) return null
         val seconds = ceil((total - done).toDouble() / (done - first) * sampled / 1000)
         return seconds.toLong().coerceAtLeast(1).takeIf { it <= 7 * 86_400 }
     }

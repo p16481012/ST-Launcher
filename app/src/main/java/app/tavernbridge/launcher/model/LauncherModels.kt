@@ -109,6 +109,7 @@ data class BackgroundStatus(
 
 data class LauncherUiState(
     val section: MainSection = MainSection.HOME,
+    val navigation: LauncherNavigation = LauncherNavigation(),
     val setupDeferred: Boolean = false,
     val managementPanel: ManagementPanel = ManagementPanel.INSTALL,
     val settingsPanel: SettingsPanel = SettingsPanel.GENERAL,

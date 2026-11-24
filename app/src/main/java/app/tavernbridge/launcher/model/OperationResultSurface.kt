@@ -7,7 +7,6 @@ internal fun LauncherUiState.closeOperationDialogsForResult(): LauncherUiState {
     // Dialog windows sit above the Scaffold Snackbar. Keeping a selection dialog
     // alive would hide the terminal error when the working overlay disappears.
     return copy(
-        section = MainSection.HOME,
         selectiveRestore = null,
         previousVersions = null,
         extensionManagerOpen = false,

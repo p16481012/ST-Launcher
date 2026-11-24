@@ -3,6 +3,7 @@ package app.tavernbridge.launcher.ui
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -53,6 +54,7 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
         Column(Modifier.fillMaxWidth().border(1.dp, colors.outlineVariant, RoundedCornerShape(14.dp)).padding(12.dp)
             .clearAndSetSemantics { contentDescription = "글자 크기 미리보기: 대화 열기 · 마지막 백업 3일 전" },
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("미리보기", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             // Deliberately not clickable: this is a sample of a primary action, not a second server control.
             Surface(color = colors.primary, contentColor = colors.onPrimary, shape = RoundedCornerShape(14.dp)) {
                 Text("대화 열기", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
@@ -140,9 +142,47 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
 }
 
 @Composable
+internal fun ServerLanRows(state: LauncherUiState, openEditor: (String) -> Unit, openAddress: () -> Unit, explain: (String) -> Unit) {
+    val env = state.environment
+    val blocked = when {
+        state.isWorking || env.operationActive -> "진행 중인 작업이 끝나면 외부 접속 설정을 변경할 수 있어요."
+        !state.environmentChecked || !state.termuxSetup.verified || !env.managerConnected -> "홈에서 Termux 연결을 확인한 뒤 외부 접속을 설정해 주세요."
+        !env.sillyTavernInstalled -> "먼저 SillyTavern을 설치해 주세요."
+        else -> null
+    }
+    fun edit(page: String) { if (blocked == null) openEditor(page) else explain(blocked) }
+    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "외부 접속 설명") {
+        explain(blocked ?: "같은 Wi-Fi의 다른 기기에서 접속하려면 허용을 켜고 기기 주소를 등록해 주세요. 실행 중인 서버는 설정을 저장할 때 잠시 멈췄다가 다시 시작해요.")
+    }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("외부 접속", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        Icon(Icons.Outlined.Info, "외부 접속 설명")
+    }
+    SettingsGroup {
+        SettingsRow("같은 Wi-Fi에서 접속 허용", caption = blocked ?: "허용한 기기만 들어올 수 있어요", checked = env.externalAccessEnabled,
+            onClick = { edit("toggle-listen") })
+        SettingsDivider()
+        SettingsRow("접속 주소", if (!env.externalAccessEnabled) "외부 접속 꺼짐" else state.lanEndpoints.firstOrNull()?.url?.removePrefix("http://")?.removeSuffix("/") ?: "주소 확인",
+            mono = true, onClick = {
+                if (!env.externalAccessEnabled) explain("먼저 ‘같은 Wi-Fi에서 접속 허용’을 켜고 저장해 주세요. 그 뒤 다른 기기에서 쓸 주소를 볼 수 있어요.")
+                else if (blocked != null) explain(blocked) else openAddress()
+            })
+        SettingsDivider()
+        SettingsRow("허용한 기기", env.whitelist.filterNot { it in LanWhitelist.loopbacks }.joinToString(", ").ifBlank { "이 기기만" },
+            mono = true, onClick = { edit("lan") })
+        SettingsDivider()
+        SettingsRow("로그인 요구", caption = if (env.perUserBasicAuth) "SillyTavern의 사용자별 인증을 사용하고 있어요" else "접속할 때 사용자 이름과 암호를 물어요", checked = env.basicAuthEnabled,
+            onClick = { if (env.perUserBasicAuth) explain("사용자별 인증은 SillyTavern에서 관리해요. 런처에서는 변경하지 않아요.") else edit("toggle-auth") })
+    }
+    SettingsCaption(if (env.processRunning) "서버를 미리 끌 필요는 없어요. 저장하면 잠시 멈췄다가 다시 시작해요."
+        else "바꾼 내용은 다음 서버 시작부터 적용돼요.")
+}
+
+@Composable
 internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel) {
     val env = state.environment
     var dialog by rememberSaveable { mutableStateOf("") }
+    var browserRevision by remember { mutableIntStateOf(0) }
+    val preferred = remember(vm, env.port, browserRevision) { vm.preferredBrowser() }
     var port by rememberSaveable(state.configuredPort) { mutableStateOf(state.configuredPort.toString()) }
     val clipboard = LocalClipboardManager.current
     val enabled = state.environmentChecked && env.sillyTavernInstalled && !state.isWorking
@@ -152,29 +192,17 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel) {
         SettingsDivider()
         SettingsRow("포트", state.configuredPort.toString(), mono = true, enabled = enabled, onClick = { dialog = "port" })
     }
-    SettingsHeading("외부 접속")
+    var lanReason by rememberSaveable { mutableStateOf<String?>(null) }
+    ServerLanRows(state, { dialog = it }, { vm.refreshLanAddresses(); dialog = "address" }, { lanReason = it })
+    lanReason?.let { reason -> V2Explanation("외부 접속", reason) { lanReason = null } }
     SettingsGroup {
-        SettingsRow("같은 Wi-Fi에서 접속 허용", caption = "허용한 기기만 들어올 수 있어요", checked = env.externalAccessEnabled,
-            enabled = enabled, onClick = { dialog = "toggle-listen" })
-        SettingsDivider()
-        SettingsRow("접속 주소", state.lanEndpoints.firstOrNull()?.url?.removePrefix("http://")?.removeSuffix("/") ?: "주소 확인",
-            mono = true, enabled = enabled && env.externalAccessEnabled, onClick = { vm.refreshLanAddresses(); dialog = "address" })
-        SettingsDivider()
-        SettingsRow("허용한 기기", env.whitelist.filterNot { it in LanWhitelist.loopbacks }.joinToString(", ").ifBlank { "이 기기만" },
-            mono = true, enabled = enabled, onClick = { dialog = "lan" })
-        SettingsDivider()
-        SettingsRow("로그인 요구", caption = "접속할 때 사용자 이름과 암호를 물어요", checked = env.basicAuthEnabled,
-            enabled = enabled && !env.perUserBasicAuth, onClick = { dialog = "toggle-auth" })
-    }
-    SettingsCaption("바꾼 내용은 서버를 다시 시작하면 적용돼요.")
-    SettingsGroup {
-        SettingsRow("열 앱 선택", vm.preferredBrowser()?.label ?: "선택 안 함", onClick = { dialog = "browser" })
+        SettingsRow("열 앱 선택", preferred?.label ?: "선택 안 함", onClick = { browserRevision++; dialog = "browser" })
         SettingsDivider()
         SettingsRow("시작 후 브라우저 자동 열기", checked = state.autoOpenBrowser, onClick = { vm.setAutoOpenBrowser(!state.autoOpenBrowser) })
     }
     if (dialog in listOf("lan", "toggle-listen", "toggle-auth")) LANSecuritySettingsDialog(
         LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
-        state.isWorking, { dialog = "" }, { dialog = ""; vm.saveLanSecurity(it) },
+        state.isWorking || env.operationActive, { dialog = "" }, { change -> vm.saveLanSecurity(change).also { if (it) dialog = "" } },
         requestedListen = if (dialog == "toggle-listen") !env.externalAccessEnabled else env.externalAccessEnabled,
         requestedBasicAuth = if (dialog == "toggle-auth") !env.basicAuthEnabled else env.basicAuthEnabled)
     if (dialog == "address") AlertDialog(onDismissRequest = { dialog = "" }, title = { Text("같은 Wi-Fi 접속 주소") },
@@ -182,15 +210,17 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel) {
             vm::refreshLanAddresses, { dialog = "lan" }, { clipboard.setText(AnnotatedString(it)); vm.showMessage("주소를 복사했어요.") }) } },
         confirmButton = { TextButton(onClick = { dialog = "" }) { Text("닫기") } })
     if (dialog == "browser") {
-        val choices = remember(env.port) { vm.browserOptions() }
-        val selected = vm.preferredBrowser()?.packageName
+        val choices by produceState<List<BrowserOption>>(emptyList(), vm, env.port) {
+            value = withContext(Dispatchers.IO) { vm.browserOptions() }
+        }
+        val selected = preferred?.packageName
         V2BottomSheet(onClose = { dialog = "" }) {
             Text("열 앱 선택", style = MaterialTheme.typography.titleLarge)
-            SettingsRow("열 때마다 선택", if (selected == null) "선택됨" else "", onClick = { vm.clearPreferredBrowser(); dialog = "" })
+            SettingsRow("열 때마다 선택", if (selected == null) "선택됨" else "", onClick = { vm.clearPreferredBrowser(); browserRevision++; dialog = "" })
             choices.forEach { option ->
                 SettingsDivider()
                 SettingsRow(option.label, if (selected == option.packageName) "선택됨" else "", onClick = {
-                    vm.savePreferredBrowser(option.packageName); dialog = ""
+                    vm.savePreferredBrowser(option.packageName); browserRevision++; dialog = ""
                 })
             }
         }
@@ -315,7 +345,8 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel) {
             if (dialog == "update") UpdateInformationCard(state, vm::checkUpdateInformation) else {
                 LauncherEntrySettingsCard()
                 SettingsRow("SillyTavern 폴더 관리", enabled = state.environment.sillyTavernInstalled, onClick = { dialog = ""; vm.openSillyTavernFolder() })
-                SettingsRow("확장 프로그램 관리", enabled = state.environment.sillyTavernInstalled && !state.isWorking, onClick = { dialog = ""; vm.openExtensions() })
+                SettingsRow("확장 프로그램 관리", enabled = state.environment.sillyTavernInstalled && !state.isWorking,
+                    onClick = { dialog = ""; vm.selectTool(app.tavernbridge.launcher.model.ToolPage.EXTENSIONS) })
                 SettingsRow("런처 앱 상세 설정 열기", onClick = vm::openLauncherAppSettings)
             }
         } }, confirmButton = { TextButton(onClick = { dialog = "" }) { Text("닫기") } })

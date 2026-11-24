@@ -80,8 +80,11 @@ jobs:
           adb install -r -t app/build/outputs/apk/debug/app-debug.apk
           adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           mkdir -p visual-results
-          adb shell am instrument -w -r -e class app.tavernbridge.launcher.ui.V2VisualTest app.tavernbridge.stlauncher.debug.test/androidx.test.runner.AndroidJUnitRunner | tee visual-results/instrumentation.txt
-          grep -q 'OK (6 tests)' visual-results/instrumentation.txt
+          adb shell am instrument -w -r -e package app.tavernbridge.launcher.ui app.tavernbridge.stlauncher.debug.test/androidx.test.runner.AndroidJUnitRunner | tee visual-results/instrumentation.txt
+          grep -Eq '^OK \([1-9][0-9]* tests?\)' visual-results/instrumentation.txt
+          for required in homeLogReturnsHomeAndToolsLogReturnsTools briefReadNeverFlashesAndLongReadShowsUntilCompletion tapOnlyHandleFoldsAndMiniBarReopens runningServerAllowsOpeningAndSavingFromLabelAfterAcknowledgement; do
+            grep -Fq "test=$required" visual-results/instrumentation.txt
+          done
       - name: Collect screenshots
         if: always()
         run: |

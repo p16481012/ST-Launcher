@@ -61,7 +61,7 @@ class V2VisualTest {
         compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
             ScreenChrome(MainSection.HOME) {
                 V2HomeDashboard(fixture, onOpen = { opens++ }, onStart = {}, onStop = {}, onRestart = {}, onBackups = {},
-                    onUpdate = {}, onLogs = {}, onHistory = {}, onReadHistory = {}, onRefresh = {}, onRetry = {}, onSnooze = {})
+                    onUpdate = {}, onLogs = {}, onHistory = {}, onReadHistory = {}, onRefresh = {}, onRetry = {}, onSnooze = {}, onOpenArchive = {})
             }
         } }
         compose.onNodeWithText("대화 열기").assertIsDisplayed().performClick()
@@ -126,6 +126,17 @@ class V2VisualTest {
         assertEquals(saved, reopened.loadDisplay())
     }
 
+    @Test fun tappingExternalAccessWhileServerRunsExplainsWithoutChangingIt() {
+        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
+            V2HomeDashboard(fixture, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+        } }
+        compose.onNodeWithText("외부 접속").performScrollTo().performClick()
+        compose.onNodeWithText("실행 중인 서버가 잠시 멈췄다가 다시 시작해요.", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("확인").performClick()
+        compose.onNodeWithContentDescription("외부 접속 설명").performClick()
+        compose.onNodeWithText("현재 외부 접속은 꺼져 있어요.", substring = true).assertIsDisplayed()
+    }
+
     @Test fun noticeReplacesActionsAndDismissDoesNotUndo() {
         lateinit var host: androidx.compose.material3.SnackbarHostState
         var undo = 0
@@ -151,6 +162,28 @@ class V2VisualTest {
         compose.runOnIdle { assertEquals(1, undo) }
     }
 
+    @Test fun recentBackupShortcutOpensTheChosenArchiveAndReturnsHome() {
+        val first = BackupArchive("new.zip", 2048, "2026-11-21 14:02:00",
+            setOf(BackupCategory.USER_DATA), emptySet(), false, "1.2.3")
+        val second = first.copy(fileName = "old.zip", createdAt = "2026-11-19 11:12:00", sillyTavernVersion = "1.0.9")
+        val roomy = wide
+        val state = fixture.copy(backups = listOf(first, second), backupsLoaded = true, backupStorageReady = true)
+        compose.setContent {
+            var home by remember { mutableStateOf(roomy) }
+            var request by remember { mutableStateOf(if (roomy) null else second.fileName) }
+            SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
+                if (home) V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+                    onOpenArchive = { request = it; home = false })
+                else V2BackupScreen(state, { _, _, _ -> }, {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> },
+                    {}, {}, {}, "", {}, {}, {}, {}, request, { request = null }, { home = true })
+            }
+        }
+        if (roomy) compose.onNodeWithText(second.createdAt).performScrollTo().performClick()
+        compose.onNodeWithText("SillyTavern 1.0.9", substring = true).assertExists()
+        compose.onNodeWithContentDescription("뒤로").performClick()
+        compose.onNodeWithText("대화 열기").assertExists()
+    }
+
     @Test fun captureRealScreensAcrossEveryPalette() {
         var selectedTheme by mutableStateOf(AppTheme.LIGHT)
         var selectedAccent by mutableStateOf(LauncherAccent.AMBER)
@@ -160,12 +193,12 @@ class V2VisualTest {
             setOf(BackupCategory.USER_DATA), emptySet(), false, "1.13.2", branch = "release")
         compose.setContent {
             val display = prefs.copy(accent = selectedAccent, highContrast = contrast)
-            val state = fixture.copy(theme = selectedTheme, displayPreferences = display,
+            val state = fixture.copy(theme = selectedTheme, displayPreferences = display, termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
                 backups = listOf(archive), backupsLoaded = true, backupStorageReady = true)
             SillyTavernLauncherTheme(selectedTheme, display) {
                 ScreenChrome(section) {
                     when (section) {
-                        MainSection.HOME -> V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                        MainSection.HOME -> V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                         MainSection.SETTINGS -> V2SettingsLayout(state) { page, roomy ->
                             check(page == SettingsPage.DISPLAY)
                             V2DisplaySettings(state, { selectedTheme = it }, { selectedAccent = it.accent; contrast = it.highContrast }, roomy)
@@ -173,7 +206,8 @@ class V2VisualTest {
                         MainSection.BACKUPS -> V2BackupScreen(state = state, onCreateBackup = { _,_,_ -> }, onRefresh = {},
                             onReminderChange = {}, onTransfer = { _,_ -> }, onOpenFolder = {}, onSafety = {}, onScan = {},
                             onPreviewCleanup = { _,_ -> }, onSaveAnnotation = { _,_,_ -> }, onEncrypted = {}, onSelective = {},
-                            onImport = {}, storageSetupCommand = "", onTermux = {}, onCopied = {}, onRestore = {}, onDelete = {})
+                            onImport = {}, storageSetupCommand = "", onTermux = {}, onCopied = {}, onRestore = {}, onDelete = {},
+                            requestedArchive = null, onArchiveOpened = {}, onArchiveShortcutBack = {})
                         else -> error("Unexpected screen")
                     }
                 }

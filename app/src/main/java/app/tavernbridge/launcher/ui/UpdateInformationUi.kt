@@ -12,6 +12,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -22,6 +26,7 @@ import app.tavernbridge.launcher.model.LauncherUiState
 @Composable
 internal fun UpdateInformationCard(state: LauncherUiState, onCheck: () -> Unit) {
     val uriHandler = LocalUriHandler.current
+    var linkFailed by rememberSaveable { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("업데이트 정보", style = MaterialTheme.typography.titleMedium)
@@ -43,7 +48,8 @@ internal fun UpdateInformationCard(state: LauncherUiState, onCheck: () -> Unit) 
             if (state.updateInfoError.isNotBlank()) Text(state.updateInfoError, color = MaterialTheme.colorScheme.error)
             if (state.updateInfoLoading) V2BusyIndicator(linear = false)
             TextButton(onClick = onCheck, enabled = !state.updateInfoLoading && !state.isWorking) { Text("업데이트 정보 확인") }
-            TextButton(onClick = { runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) } }) { Text("공식 저장소 릴리스 열기") }
+            TextButton(onClick = { linkFailed = runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) }.isFailure }) { Text("공식 저장소 릴리스 열기") }
+            if (linkFailed) Text("릴리스 페이지를 열 수 없어요. 브라우저 앱을 확인해 주세요.", color = MaterialTheme.colorScheme.error)
         }
     }
 }

@@ -41,7 +41,6 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.HealthAndSafety
 import androidx.compose.material.icons.outlined.InstallMobile
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestartAlt
@@ -83,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,7 +106,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.LauncherViewModel
@@ -201,6 +200,11 @@ private fun backupPickerIntent(): Intent {
 @Composable
 fun LauncherApp(viewModel: LauncherViewModel) {
     val state by viewModel.state.collectAsState()
+    LauncherScreen(state, viewModel)
+}
+
+@Composable
+internal fun LauncherScreen(state: LauncherUiState, viewModel: LauncherViewModel) {
     LaunchedEffect(
         state.environment.processRunning,
         state.environment.serverReachable,
@@ -215,10 +219,7 @@ fun LauncherApp(viewModel: LauncherViewModel) {
     }
     LaunchedEffect(state.section, state.toolPage, state.diagnosticPanel, state.environment.processRunning, state.isWorking) {
         if (state.section == MainSection.LOGS && state.toolPage == ToolPage.LOGS && state.diagnosticPanel == DiagnosticPanel.SERVER_LOG && !state.isWorking) {
-            while (true) {
-                viewModel.refreshLogsSilently()
-                delay(2_000)
-            }
+            watchServerLog(state.environment.processRunning, viewModel::refreshLogsSilently)
         }
     }
     SillyTavernLauncherTheme(state.theme, state.displayPreferences) {
@@ -232,9 +233,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     BackupTransferHost(state.backupTransfer, viewModel)
     EncryptedBackupHost(state, viewModel)
     val localTransfer = localTransferProgress(state.backupTransfer, state.encryptedBackup)
+    val showLocalProgress = rememberProgressVisible(localTransfer != null, localTransfer?.key)
+    val showWorkProgress = rememberProgressVisible(state.isWorking, state.workingStartedAtMillis)
     var localFolded by rememberSaveable(localTransfer?.key) { mutableStateOf(false) }
     val localStarted = rememberSaveable(localTransfer?.key) { System.currentTimeMillis() }
-    if (localTransfer != null && !localFolded) {
+    if (localTransfer != null && showLocalProgress && !localFolded) {
         WorkingOverlay(localTransfer.work.phase, localTransfer.work, localStarted, localTransfer.work.cancellationRequested,
             onCancel = if (localTransfer.encrypted) viewModel::cancelEncryptedBackup else viewModel::cancelBackupTransfer,
             onFold = { localFolded = true })
@@ -258,6 +261,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
     var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
     var welcomeAfterInstall by rememberSaveable { mutableStateOf(false) }
+    var requestedArchive by rememberSaveable { mutableStateOf<String?>(null) }
     val showWelcome = welcomeAfterInstall && state.environment.sillyTavernInstalled &&
         state.section in setOf(MainSection.HOME, MainSection.SETUP, MainSection.BACKUPS) &&
         state.lastOperationResult?.let { it.succeeded && it.operation in setOf("install", "import-install", "import-backup") } == true
@@ -436,7 +440,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
 
     if (browserPickerOpen) {
-        val browsers = viewModel.browserOptions()
+        // PackageManager crosses into the OS and resolves app labels. Query once per open dialog.
+        val browsers = remember(viewModel, state.environment.port) { viewModel.browserOptions() }
         val selected = selectedBrowserPackage ?: browsers.firstOrNull()?.packageName
         AlertDialog(
             onDismissRequest = {
@@ -509,8 +514,19 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         welcomeAfterInstall = false
         if (target == MainSection.BACKUPS) viewModel.openBackups() else viewModel.selectSection(target)
     }
-    BackHandler(section == MainSection.SETUP && !setupFullScreen && !state.isWorking) {
-        selectTab(MainSection.LOGS)
+    BackHandler(!setupFullScreen && (state.navigation.previous.isNotEmpty() || section == MainSection.SETUP)) {
+        viewModel.navigateBack()
+    }
+    // Restore the originating Settings subpage, Backup detail, list position, etc.
+    // only when Back returns to that visit. Opening a screen afresh starts fresh.
+    val savedScreens = rememberSaveableStateHolder()
+    val knownKeys = remember { mutableSetOf<Long>() }
+    androidx.compose.runtime.DisposableEffect(state.navigation) {
+        val live = state.navigation.previous.mapTo(mutableSetOf()) { it.id }.apply { add(state.navigation.entryId) }
+        (knownKeys - live).forEach { savedScreens.removeState(it) }
+        knownKeys.clear()
+        knownKeys.addAll(live)
+        onDispose {}
     }
     androidx.compose.runtime.CompositionLocalProvider(LocalV2NoticeHost provides snackbarHostState) {
     Scaffold(
@@ -534,6 +550,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             Row(Modifier.fillMaxSize()) {
             if (useRail && !setupFullScreen) LauncherNavigationRail(tab, selectTab, { it.icon() })
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+            savedScreens.SaveableStateProvider(state.navigation.entryId) {
             androidx.compose.runtime.key(section) {
                 when (section) {
                     MainSection.HOME -> HomeScreen(
@@ -543,7 +560,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             if (preferred != null) {
                                 viewModel.openBrowser(preferred.packageName)
                             } else {
-                                selectedBrowserPackage = viewModel.browserOptions().firstOrNull()?.packageName
+                                selectedBrowserPackage = null // Dialog selects the first available handler.
                                 browserPickerOpen = true
                             }
                         },
@@ -559,6 +576,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         setupCommand = viewModel.setupCommand,
                         onOpenPermissionSettings = viewModel::openPermissionSettings,
                         onOpenBackups = viewModel::openBackups,
+                        onOpenArchive = { name -> requestedArchive = name; viewModel.openBackups() },
                         onUpdate = { viewModel.selectTool(ToolPage.UPDATE) },
                         onLogs = { viewModel.openDiagnostics(DiagnosticPanel.SERVER_LOG) },
                         onHistory = { viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
@@ -582,6 +600,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         ManagementScreen(
                             state = state,
                             panel = if (section == MainSection.BACKUPS) ManagementPanel.BACKUP else state.managementPanel,
+                            requestedArchive = requestedArchive,
+                            onArchiveOpened = { requestedArchive = null },
+                            onArchiveShortcutBack = { viewModel.navigateBack() },
                             onSelectPanel = viewModel::selectManagementPanel,
                             onCheckUpdate = viewModel::checkForUpdates,
                             onAutoBackupChange = viewModel::setAutoBackupBeforeUpdate,
@@ -632,7 +653,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             state = state,
                             onLeave = {
                                 welcomeAfterInstall = false
-                                if (state.environment.sillyTavernInstalled) viewModel.selectSection(MainSection.HOME)
+                                if (state.environment.sillyTavernInstalled) viewModel.finishSetup()
                                 else viewModel.deferSetup()
                             },
                             setupCommand = viewModel.setupCommand,
@@ -669,6 +690,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         })
                     MainSection.SETTINGS -> V2SettingsScreen(state, viewModel)
                 }
+            }
             }
             }
             }
@@ -733,7 +755,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onClose = viewModel::closeSillyTavernFolder,
                 )
             }
-            if (state.isWorking && !progressFolded) {
+            if (showWorkProgress && !progressFolded) {
                 WorkingOverlay(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
                     state.cancellationRequested, viewModel::cancelCurrentOperation) { progressFolded = true }
             }
@@ -759,6 +781,7 @@ private fun HomeScreen(
     setupCommand: String,
     onOpenPermissionSettings: () -> Unit,
     onOpenBackups: () -> Unit,
+    onOpenArchive: (String) -> Unit,
     onUpdate: () -> Unit,
     onLogs: () -> Unit,
     onHistory: () -> Unit,
@@ -768,7 +791,7 @@ private fun HomeScreen(
     val env = state.environment
     if (state.environmentChecked && env.sillyTavernInstalled && !env.recoveryPending) {
         V2HomeDashboard(state, onOpen, onStart, onStop, onRestart, onOpenBackups,
-            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder)
+            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder, onOpenArchive)
     } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         when {
@@ -841,8 +864,12 @@ private fun EnvironmentCheckingCard(
     onOpenPermissionSettings: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
-    val checking = state.isWorking || state.termuxSetup.status == TermuxSetupStatus.CHECKING
+    // Before the first resumed probe UNKNOWN is not a failed connection.
+    val checking = state.isWorking || state.termuxSetup.status == TermuxSetupStatus.CHECKING ||
+        (state.termuxSetup.status == TermuxSetupStatus.UNKNOWN && !state.termuxWakeBlocked && state.error == null)
     val wakeBlocked = state.termuxWakeBlocked
+    val showPending = rememberProgressVisible(checking)
+    if (checking && !showPending) return
     Card(modifier = Modifier.padding(20.dp)) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -850,7 +877,7 @@ private fun EnvironmentCheckingCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 if (checking) {
-                    DirectSpinner(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
+                    VisibleBusyIndicator(Modifier.size(24.dp), linear = false, strokeWidth = 2.5.dp)
                 } else {
                     Icon(
                         Icons.Outlined.WarningAmber,
@@ -931,14 +958,6 @@ private fun EmptyHomeCard(onSetup: () -> Unit) {
 @Composable
 private fun InfoRow(label: String, value: String, monospace: Boolean = false) {
     AdaptiveInfoRow(label, value, monospace)
-}
-
-@Composable
-private fun DirectSpinner(
-    modifier: Modifier = Modifier,
-    strokeWidth: Dp = 2.dp,
-) {
-    V2BusyIndicator(modifier = modifier, linear = false, strokeWidth = strokeWidth)
 }
 
 @Composable
@@ -1194,6 +1213,9 @@ private fun ManagementScreen(
     onRepair: () -> Unit,
     onResetInstallation: () -> Unit,
     panel: ManagementPanel = state.managementPanel,
+    requestedArchive: String?,
+    onArchiveOpened: () -> Unit,
+    onArchiveShortcutBack: () -> Unit,
 ) {
     if (panel == ManagementPanel.BACKUP) {
         V2BackupScreen(
@@ -1201,6 +1223,7 @@ private fun ManagementScreen(
             onOpenBackupFolder, onOpenSafetyInventory, onInspectStorage, onPreviewCleanup,
             onSaveBackupAnnotation, onEncryptedBackup, onSelectiveRestore, onImportBackup,
             storageSetupCommand, onOpenTermux, onStorageCommandCopied, onRestoreBackup, onDeleteBackups,
+            requestedArchive, onArchiveOpened, onArchiveShortcutBack,
         )
         return
     }
@@ -1448,7 +1471,7 @@ private fun ManagementScreen(
 
 
 @Composable
-private fun WorkingOverlay(
+internal fun WorkingOverlay(
     label: String,
     progress: app.tavernbridge.launcher.model.WorkProgress?,
     startedAtMillis: Long,
@@ -1473,14 +1496,16 @@ private fun WorkingOverlay(
     val tracker = remember(startedAtMillis, progress?.phaseStartedAtMillis, progress?.phase, progress?.progressMode,
         progress?.totalBytes, progress?.totalFiles) { app.tavernbridge.launcher.model.PhaseEta() }
     var eta by remember(tracker) { mutableStateOf<Long?>(null) }
-    LaunchedEffect(tracker, progress?.completedBytes, progress?.completedFiles, measuredPercent) {
-        while (true) {
-            eta = if (measuredPercent == null || progress == null) null else {
-                val bytes = progress.progressMode == "bytes"
-                tracker.observe(android.os.SystemClock.elapsedRealtime(), if (bytes) progress.completedBytes else progress.completedFiles,
-                    if (bytes) progress.totalBytes else progress.totalFiles)
-            }
-            kotlinx.coroutines.delay(2_000)
+    val done = when (progress?.progressMode) { "bytes" -> progress.completedBytes; "files" -> progress.completedFiles; else -> null }
+    val total = when (progress?.progressMode) { "bytes" -> progress.totalBytes; "files" -> progress.totalFiles; else -> null }
+    LaunchedEffect(tracker, done, total, measuredPercent != null) {
+        eta = if (measuredPercent != null && done != null && total != null) {
+            tracker.observe(android.os.SystemClock.elapsedRealtime(), done, total)
+        } else null
+        // Only a new measured sample can improve an estimate. One timer hides a stale one.
+        if (eta != null) {
+            kotlinx.coroutines.delay(app.tavernbridge.launcher.model.PhaseEta.STALE_MS + 1)
+            eta = null
         }
     }
     val title = label.ifBlank { phase }
@@ -1490,13 +1515,10 @@ private fun WorkingOverlay(
         else if (!reduce) LinearProgressIndicator(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth().height(4.dp))
         else HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.outlineVariant)
     }
-    V2BottomSheet(onClose = onFold) {
+    V2BottomSheet(onClose = onFold, handleLabel = stringResource(R.string.ui_collapse_progress)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             measuredPercent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono, style = MaterialTheme.typography.titleLarge) }
-            IconButton(onClick = onFold) {
-                Icon(Icons.Outlined.KeyboardArrowDown, stringResource(R.string.ui_collapse_progress))
-            }
         }
         bar()
         if (phase != title) Text(phase, style = MaterialTheme.typography.bodyMedium)
@@ -1516,7 +1538,7 @@ private fun WorkingOverlay(
     }
 }
 @Composable
-private fun WorkingMiniBar(label: String, progress: app.tavernbridge.launcher.model.WorkProgress?, expand: () -> Unit) {
+internal fun WorkingMiniBar(label: String, progress: app.tavernbridge.launcher.model.WorkProgress?, expand: () -> Unit) {
     val percent = progress?.measuredPercent.takeUnless { progress?.status == "success" }
     Surface(onClick = expand, color = MaterialTheme.colorScheme.surface) {
         Column {

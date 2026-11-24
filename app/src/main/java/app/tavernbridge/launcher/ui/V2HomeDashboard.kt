@@ -33,7 +33,8 @@ import java.util.Locale
 @Composable
 internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart: () -> Unit, onStop: () -> Unit,
     onRestart: () -> Unit, onBackups: () -> Unit, onUpdate: () -> Unit, onLogs: () -> Unit, onHistory: () -> Unit,
-    onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit, onSnooze: () -> Unit) {
+    onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit, onSnooze: () -> Unit,
+    onOpenArchive: (String) -> Unit) {
     val env = state.environment
     var info by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedResult by remember { mutableStateOf<OperationResultSummary?>(null) }
@@ -85,7 +86,7 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
                             }
                             val list = state.backups.sortedByDescending { it.createdAt }.take(2)
                             if (list.isEmpty()) HomeRow(Icons.Outlined.FileDownload, if (state.backupsLoaded) "백업 없음" else "백업 목록 보기", "", onBackups)
-                            else list.forEach { HomeRow(Icons.Outlined.FileDownload, it.createdAt.ifBlank { it.fileName }, formatBackupBytes(it.sizeBytes), onBackups) }
+                            else list.forEach { entry -> HomeRow(Icons.Outlined.FileDownload, entry.createdAt.ifBlank { entry.fileName }, formatBackupBytes(entry.sizeBytes)) { onOpenArchive(entry.fileName) } }
                         }
                         val activities: @Composable () -> Unit = {
                             Text("최근 활동", style = MaterialTheme.typography.titleMedium)
@@ -111,8 +112,12 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
         }
     }
     info?.let { title ->
-        V2Explanation(title, if (title == "외부 접속")
-            "다른 기기가 이 서버에 연결할 수 있는지는 네트워크와 허용 목록 설정에 따라 달라요. 설정 › 서버 연결에서 접속 범위를 확인할 수 있어요."
+        V2Explanation(title, if (title == "외부 접속") {
+            val status = if (env.externalAccessEnabled) "켜져" else "꺼져"
+            val apply = if (env.processRunning) "변경을 저장하면 실행 중인 서버가 잠시 멈췄다가 다시 시작해요."
+                else "변경한 내용은 다음 서버 시작부터 적용돼요."
+            "현재 외부 접속은 ${status} 있어요. 설정 → 서버 연결에서 같은 Wi-Fi 접속과 허용할 기기를 변경할 수 있어요.\n\n$apply"
+        }
         else listOfNotNull(env.branch?.label, env.sillyTavernVersion.takeIf(String::isNotBlank), env.commit.take(8).takeIf(String::isNotBlank)).joinToString(" · ") +
             "\n이 주소로 이 기기의 SillyTavern을 열어요.",
             onDismiss = { info = null })

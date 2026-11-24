@@ -4,7 +4,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class OperationResultSurfaceTest {
-    @Test fun acceptedModalWorkExposesThePersistentHomeResultInsteadOfReopeningItsDialog() {
+    @Test fun acceptedModalWorkExposesTheResultWithoutMovingTheUsersScreen() {
         val cases = listOf(
             LauncherUiState(selectiveRestore = SelectiveRestoreUiState("backup.zip")),
             LauncherUiState(previousVersions = PreviousVersionUiState()),
@@ -15,7 +15,7 @@ class OperationResultSurfaceTest {
         cases.forEach { initial ->
             val before = initial.copy(section = MainSection.SETUP)
             val after = before.closeOperationDialogsForResult()
-            assertEquals(MainSection.HOME, after.section)
+            assertEquals(before.section, after.section)
             assertNull(after.selectiveRestore)
             assertNull(after.previousVersions)
             assertFalse(after.extensionManagerOpen)

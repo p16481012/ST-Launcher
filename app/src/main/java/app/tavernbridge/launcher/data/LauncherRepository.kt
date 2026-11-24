@@ -1172,8 +1172,8 @@ class LauncherRepository(private val context: Context) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             context.startActivity(intent)
-        } catch (_: ActivityNotFoundException) {
-            if (fallbackPackage != null) openAppSettings(fallbackPackage)
+        } catch (missing: ActivityNotFoundException) {
+            if (fallbackPackage != null) openAppSettings(fallbackPackage) else throw missing
         }
     }
 

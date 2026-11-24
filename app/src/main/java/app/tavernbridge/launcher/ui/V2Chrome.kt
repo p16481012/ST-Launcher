@@ -18,6 +18,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import kotlinx.coroutines.delay
@@ -30,12 +31,28 @@ import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun V2BottomSheet(onClose: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+internal fun V2BottomSheet(onClose: () -> Unit, handleLabel: String = "시트 닫기", content: @Composable ColumnScope.() -> Unit) {
+    val reduced = LocalV2ReducedMotion.current
+    val latestClose by rememberUpdatedState(onClose)
+    val handle: @Composable () -> Unit = {
+        // In the animated sheet Material owns the drag gesture; only the static dialog needs a recognizer.
+        val drag = if (!reduced) Modifier else Modifier.pointerInput(Unit) {
+            var dy = 0f
+            detectVerticalDragGestures(onDragStart = { dy = 0f }, onDragEnd = {
+                if (dy > 20.dp.toPx()) latestClose()
+            }) { _, distance -> dy += distance }
+        }
+        Box(Modifier.fillMaxWidth().height(48.dp).then(drag)
+            .clickable(role = Role.Button) { latestClose() }
+            .semantics { contentDescription = handleLabel }, contentAlignment = Alignment.Center) {
+            Spacer(Modifier.size(36.dp, 4.dp).background(MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp)))
+        }
+    }
     val body: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
     }
-    if (LocalV2ReducedMotion.current) {
+    if (reduced) {
         Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                 val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
@@ -43,14 +60,7 @@ internal fun V2BottomSheet(onClose: () -> Unit, content: @Composable ColumnScope
                 Surface(Modifier.widthIn(max = 640.dp).fillMaxWidth(),
                     shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), color = MaterialTheme.colorScheme.surface) {
                     Column(Modifier.navigationBarsPadding()) {
-                        Box(Modifier.fillMaxWidth().height(40.dp).pointerInput(onClose) {
-                            var dy = 0f
-                            detectVerticalDragGestures(onDragStart = { dy = 0f }, onDragEnd = {
-                                if (dy > 20.dp.toPx()) onClose()
-                            }) { _, distance -> dy += distance }
-                        }, contentAlignment = Alignment.Center) {
-                            Spacer(Modifier.size(36.dp, 4.dp).background(MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp)))
-                        }
+                        handle()
                         body()
                     }
                 }
@@ -58,7 +68,10 @@ internal fun V2BottomSheet(onClose: () -> Unit, content: @Composable ColumnScope
         }
     } else ModalBottomSheet(onDismissRequest = onClose, containerColor = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), tonalElevation = 0.dp,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) { body() }
+        dragHandle = null, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        handle()
+        body()
+    }
 }
 
 @Composable

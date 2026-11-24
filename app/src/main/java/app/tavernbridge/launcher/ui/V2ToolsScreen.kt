@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -44,8 +46,8 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
         val twoFileColumns = wide && (maxWidth - masterWidth).value / LocalDensity.current.fontScale.coerceAtLeast(1f) >= 560f
         val selected = state.toolPage
         val displayed = if (wide && selected == ToolPage.INDEX) ToolPage.UPDATE else selected
-        val goBack = { viewModel.selectTool(ToolPage.INDEX) }
-        BackHandler(selected != ToolPage.INDEX && !state.isWorking) { goBack() }
+        val goBack = viewModel::navigateBack
+        BackHandler(selected != ToolPage.INDEX, onBack = goBack)
         Row(Modifier.fillMaxSize()) {
             if (wide || selected == ToolPage.INDEX) {
                 Column((if (wide) Modifier.width(masterWidth) else Modifier.weight(1f))
@@ -74,7 +76,8 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
             if (wide) VerticalDivider()
             if (displayed != ToolPage.INDEX) key(displayed) {
                 Column(Modifier.weight(1f).fillMaxHeight().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
-                    if (displayed != ToolPage.FILES && !wide) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                    val crossSection = state.navigation.previous.lastOrNull()?.section?.let { it != MainSection.LOGS } == true
+                    if (displayed != ToolPage.FILES && (!wide || crossSection)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
                         Text(displayed.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
@@ -193,9 +196,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                 if (r.modifiedFiles.isNotEmpty()) "수정된 파일 ${r.modifiedFiles.size}개를 별도로 보관한 후 업데이트해요." else null).joinToString("\n")
             if (warning.isNotBlank()) Text(warning, color = MaterialTheme.colorScheme.error)
         }
-        ToolGroup { Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("업데이트 전에 자동 백업", Modifier.weight(1f)); Switch(state.autoBackupBeforeUpdate, vm::setAutoBackupBeforeUpdate)
-        } }
+        ToolGroup { SettingsRow("업데이트 전에 자동 백업", checked = state.autoBackupBeforeUpdate,
+            onClick = { vm.setAutoBackupBeforeUpdate(!state.autoBackupBeforeUpdate) }) }
         TextButton(onClick = { details = !details }) { Text(if (details) "추가 옵션 접기" else "설치 정보·이전 버전 및 추가 옵션") }
         if (details) ToolGroup {
             ToolRow("설치 정보·가져오기·브랜치", onClick = onInstall)
@@ -237,7 +239,9 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
             }
             if (info.isNotEmpty()) ToolGroup("참고") { info.forEach { item -> ToolRow(item.title, item.value, onClick = { itemId = item.id }) } }
         }
-        TermuxProcessHelpCard(Build.VERSION.SDK_INT, vm::openTermuxAppSettings, vm::openBatteryOptimizationSettings) { runCatching { uriHandler.openUri(it) } }
+        TermuxProcessHelpCard(Build.VERSION.SDK_INT, vm::openTermuxAppSettings, vm::openBatteryOptimizationSettings) { url ->
+            runCatching { uriHandler.openUri(url) }.onFailure { vm.showMessage("도움말 링크를 열 수 없어요. 브라우저 앱을 확인해 주세요.") }
+        }
     }
     report?.items?.firstOrNull { it.id == itemId }?.let { item ->
         V2BottomSheet(onClose = { itemId = null }) {
@@ -274,7 +278,11 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                     icon = Icons.Outlined.RemoveCircleOutline, danger = true)
             } }
             ToolGroup("남는 것") { ToolRow("Download의 백업 파일", trailing = impact?.backups?.let { "${it}개" } ?: if (state.backupsLoaded) "${state.backups.size}개" else "미확인", icon = Icons.Outlined.Check) }
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(protect, { protect = it }); Text("초기화 전에 전체 백업하기") }
+            Row(Modifier.fillMaxWidth().toggleable(value = protect, role = Role.Checkbox) { protect = it }
+                .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Checkbox(protect, onCheckedChange = null); Text("초기화 전에 전체 백업하기")
+            }
         } else {
             Lead("실행 파일만 다시 맞춰요", "약 3–5분 · 인터넷 필요 (기기·네트워크에 따라 더 걸릴 수 있어요)")
             Text("✓  캐릭터·채팅·설정은 건드리지 않아요")
