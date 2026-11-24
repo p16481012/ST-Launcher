@@ -1,5 +1,13 @@
 package app.tavernbridge.launcher
 import app.tavernbridge.launcher.model.canReadLiveServerLog
+import app.tavernbridge.launcher.model.ManagedExtension
+import app.tavernbridge.launcher.model.ExtensionAction
+import app.tavernbridge.launcher.model.ExtensionInventory
+import app.tavernbridge.launcher.model.ExtensionUpdateMetadata
+import app.tavernbridge.launcher.model.ExtensionCheckIssue
+import app.tavernbridge.launcher.model.extensionUpdateReceipt
+import app.tavernbridge.launcher.model.sameCheckTarget
+import app.tavernbridge.launcher.data.ExtensionVersionClient
 
 import app.tavernbridge.launcher.model.reselectRoot
 
@@ -76,6 +84,7 @@ import app.tavernbridge.launcher.model.reconnectingAfterTimeout
 import app.tavernbridge.launcher.model.resolveWorkingStartedAtMillis
 import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
 import app.tavernbridge.launcher.model.retryActionAfterFailure
+import app.tavernbridge.launcher.model.readyForTermuxDiagnostic
 import app.tavernbridge.launcher.model.ExistingInstallation
 import app.tavernbridge.launcher.model.InstallationImportMode
 import app.tavernbridge.launcher.model.protectBeforeReplacement
@@ -85,6 +94,7 @@ import app.tavernbridge.launcher.termux.TermuxCommandResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -277,6 +287,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun selectSettingsPanel(panel: SettingsPanel) {
         mutableState.update { it.copy(settingsPanel = panel) }
+    }
+
+    fun openInstallationFromAbout() {
+        // Capture the originating settings visit first, then choose the installation panel
+        // explicitly. A previously opened backup tab must never decide this shortcut.
+        selectSection(MainSection.SETUP)
+        selectManagementPanel(ManagementPanel.INSTALL)
     }
 
     fun openDiagnostics(panel: DiagnosticPanel) {
@@ -1873,29 +1890,67 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun checkExtensionVersions() {
-        if (state.value.isWorking || state.value.extensionLoading) return
+        if (commandEntryBlocked() || state.value.extensionLoading) return
         val snapshot = state.value.extensionInventory ?: return
-        val supported = snapshot.items.filter { app.tavernbridge.launcher.data.ExtensionVersionClient.compareUrl(it) != null }
-        val entries = supported.sortedBy { it.remoteAhead != null }.take(40)
-        if (entries.isEmpty()) { showMessage("새 버전을 확인할 수 있는 공개 GitHub 확장이 없습니다."); return }
         val generation = ++extensionListGeneration
         mutableState.update { it.copy(extensionLoading = true, extensionError = "") }
         viewModelScope.launch {
             try {
-                val results = mutableMapOf<Pair<String, String>, app.tavernbridge.launcher.model.ExtensionUpdateMetadata?>()
-                for (batch in entries.chunked(4)) {
+                // SillyTavern itself can update/remove an extension since this screen was opened.
+                // Re-read the installed pages; never compare a new remote against a stale local HEAD.
+                var cursor = 0
+                val fresh = linkedMapOf<String, ManagedExtension>()
+                var skipped = 0
+                lateinit var page: ExtensionInventory
+                do {
                     if (generation != extensionListGeneration) return@launch
-                    results += coroutineScope { batch.map { item -> async {
-                        (item.id to item.revision) to app.tavernbridge.launcher.data.ExtensionVersionClient.inspect(item)
+                    page = repository.listExtensions(cursor)
+                    skipped += page.skipped
+                    page.items.forEach { fresh[it.id] = it }
+                    val next = page.nextCursor ?: break
+                    check(next > cursor) { "확장 목록 위치가 올바르지 않습니다." }
+                    cursor = next
+                } while (fresh.size < snapshot.items.size && fresh.size < 1000)
+                val previous = snapshot.items.associateBy { it.id }
+                val all = fresh.values.map { item ->
+                    val old = previous[item.id]
+                    if (old != null && item.sameCheckTarget(old)) item.copy(remoteAhead = old.remoteAhead,
+                        remoteVersion = old.remoteVersion, checkIssue = old.checkIssue) else item
+                }
+                val supported = all.filter { ExtensionVersionClient.refUrl(it) != null }
+                val start = snapshot.nextCheckOffset.takeIf { it in supported.indices } ?: 0
+                val batch = (supported.drop(start) + supported.take(start)).take(40)
+                val results = mutableMapOf<String, ExtensionUpdateMetadata>()
+                for (group in batch.chunked(4)) {
+                    if (generation != extensionListGeneration) return@launch
+                    val checks = coroutineScope { group.map { item -> async {
+                        item.id to ExtensionVersionClient.inspect(item)
                     } }.awaitAll() }
+                    results.putAll(checks)
+                    if (checks.any { it.second.issue == ExtensionCheckIssue.RATE_LIMIT }) break
                 }
-                mutableState.update { ui ->
-                    if (generation != extensionListGeneration) ui else ui.copy(extensionInventory = ui.extensionInventory?.let { list ->
-                        list.copy(items = list.items.map { item -> if (results.containsKey(item.id to item.revision))
-                            results[item.id to item.revision].let { item.copy(remoteAhead = it?.ahead, remoteVersion = it?.version) } else item })
-                    }, extensionError = if (results.values.any { it == null } || entries.size < supported.size)
-                        "확인된 ${results.values.count { it != null }}개만 표시해요. 미확인 항목은 최신으로 간주하지 않아요. 한 번에 최대 40개까지 확인해요." else "")
-                }
+                val inventory = page.copy(skipped = skipped, items = all.map { item ->
+                    val result = results[item.id]
+                    when {
+                        result != null -> item.copy(remoteAhead = result.ahead, remoteVersion = result.version, checkIssue = result.issue)
+                        batch.any { it.id == item.id } -> item.copy(remoteAhead = null, remoteVersion = null, checkIssue = null)
+                        else -> item
+                    }
+                }, nextCheckOffset = if (supported.size > 40) (start + results.size) % supported.size else 0)
+                mutableState.update { ui -> if (generation != extensionListGeneration) ui else ui.copy(
+                    extensionInventory = inventory, extensionError = when {
+                        supported.isEmpty() -> "원격 브랜치를 확인할 수 있는 공개 GitHub 확장이 없습니다."
+                        results.values.any { it.issue == ExtensionCheckIssue.RATE_LIMIT } -> "GitHub의 요청 한도에 도달했어요. 잠시 후 다시 확인해 주세요."
+                        results.values.any { it.issue != null } -> "확인하지 못한 항목은 최신으로 표시하지 않아요. 항목을 열면 이유를 볼 수 있어요."
+                        else -> ""
+                    }) }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (e: Exception) {
+                mutableState.update { ui -> if (generation != extensionListGeneration) ui else ui.copy(
+                    extensionError = "확장 검사 실패: ${e.userMessage()}",
+                    extensionInventory = ui.extensionInventory?.let { inv -> inv.copy(items = inv.items.map {
+                        it.copy(remoteAhead = null, remoteVersion = null, checkIssue = null)
+                    }) }) }
             } finally { mutableState.update { if (generation == extensionListGeneration) it.copy(extensionLoading = false) else it } }
         }
     }
@@ -1907,13 +1962,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             items.isEmpty() || items.size > 1000 || items.distinctBy { it.id }.size != items.size ||
             items.any { !it.canUpdate || (it.remoteAhead ?: 0) <= 0 || it !in inventory.items }) return
         var completed = 0
-        perform("extension-update", "확장 ${items.size}개 업데이트", "선택한 확장을 업데이트했습니다.",
+        var changed = 0
+        var identical = 0
+        perform("extension-update", "확장 ${items.size}개 업데이트", "확장 작업을 완료했어요.",
+            successMessageForResult = {
+                listOfNotNull("업데이트 ${changed}개".takeIf { changed > 0 }, "변경 없이 동일 ${identical}개".takeIf { identical > 0 },
+                    "변경 여부 미확인 ${completed - changed - identical}개".takeIf { completed > changed + identical }).joinToString(" · ")
+            },
             onFinished = { if (state.value.toolPage == ToolPage.EXTENSIONS && !state.value.isWorking) loadExtensions() }) {
             var last: TermuxCommandResult? = null
             for (item in items) {
                 operationCheckpoint()
                 last = repository.changeExtension(item, app.tavernbridge.launcher.model.ExtensionAction.UPDATE)
                 if (!last.isSuccess) throw IllegalStateException("${completed}/${items.size}개 완료 · ${item.name}: ${last.readableError()}")
+                when (extensionUpdateReceipt(last.stdout)) { "updated" -> changed++; "already-current" -> identical++ }
                 completed++
             }
             requireNotNull(last)
@@ -1922,10 +1984,23 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun changeExtension(item: app.tavernbridge.launcher.model.ManagedExtension, action: app.tavernbridge.launcher.model.ExtensionAction) {
         if (state.value.environment.processRunning) { showMessage("확장을 변경하려면 서버를 먼저 종료해 주세요."); return }
-        perform("extension-${action.argument}", "확장 ${action.label}", "확장 ${action.label} 작업을 완료했습니다.") {
+        val defaultMessage = "확장 ${action.label} 작업을 완료했습니다."
+        perform("extension-${action.argument}", "확장 ${action.label}", defaultMessage, successMessageForResult = { result ->
+            if (action != ExtensionAction.UPDATE) defaultMessage else when (extensionUpdateReceipt(result.stdout)) {
+                "updated" -> "${item.name}: 새 커밋으로 업데이트했어요."
+                "already-current" -> "${item.name}: 이미 원격 브랜치와 같아 변경하지 않았어요."
+                else -> "${item.name}: 작업은 완료됐지만 변경 여부를 확인하지 못했어요."
+            }
+        }) {
             repository.changeExtension(item, action).also { result ->
                 if (result.isSuccess) runCatching { withoutOperationCancellation { repository.listExtensions() } }.onSuccess { inventory ->
-                    mutableState.update { it.copy(extensionInventory = inventory) }
+                    val checkedCommit = result.stdout.lineSequence().filter { it.startsWith("extension_commit=") }
+                        .singleOrNull()?.substringAfter('=')
+                    mutableState.update { it.copy(extensionInventory = inventory.copy(items = inventory.items.map { fresh ->
+                        if (action == ExtensionAction.UPDATE && extensionUpdateReceipt(result.stdout) != null && checkedCommit == fresh.commit &&
+                            fresh.id == item.id && fresh.gitHubRepository == item.gitHubRepository && fresh.gitBranch == item.gitBranch)
+                            fresh.copy(remoteAhead = 0) else fresh
+                    })) }
                 }
             }
         }
@@ -2081,9 +2156,31 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         request.start()
     }
 
-    fun runDiagnostics() {
-        if (commandEntryBlocked()) return
-        openDiagnostics(DiagnosticPanel.OVERVIEW)
+    fun runDiagnostics() = runDiagnostics(fromSettings = false)
+
+    fun makeSettingsReport() = runDiagnostics(fromSettings = true)
+
+    private var androidOnlyReportJob: Job? = null
+
+    private fun runDiagnostics(fromSettings: Boolean) {
+        if (androidOnlyReportJob?.isActive == true) return
+        // A settings report can be useful *because* permissions or setup are missing. Only
+        // the normal Tools workflow may route the user to setup; never initiate a first probe here.
+        if (commandEntryBlocked(checkTermuxPrerequisites = !fromSettings)) return
+        if (fromSettings && !state.value.readyForTermuxDiagnostic()) {
+            androidOnlyReportJob = viewModelScope.launch {
+                try {
+                    val report = withContext(Dispatchers.IO) { repository.diagnose(allowTermuxChecks = false) }
+                    mutableState.update { it.copy(diagnosticReport = report, message = "Android 항목만 확인했어요. Termux 내부 검사는 실행하지 않았어요.") }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    mutableState.update { it.copy(error = error.userMessage()) }
+                }
+            }
+            return
+        }
+        if (!fromSettings) openDiagnostics(DiagnosticPanel.OVERVIEW)
         viewModelScope.launch {
             val operationStartedAt = System.currentTimeMillis()
             progressLogHistory.clear()
@@ -2092,6 +2189,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     isWorking = true,
                     workingLabel = "전체 환경 진단 중",
                     workingStartedAtMillis = operationStartedAt,
+                    settingsDiagnosticStartedAtMillis = operationStartedAt.takeIf { fromSettings },
                     workProgress = null,
                 )
             }
@@ -2220,7 +2318,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     fileBrowserLoading = true,
                     fileListReadFailed = false,
                     fileBrowserError = "",
-                    fileBrowserEntries = emptyList(),
+                    fileBrowserEntries = if (it.fileBrowserPath == relativePath) it.fileBrowserEntries else emptyList(),
                 )
             }
             try {
@@ -2322,6 +2420,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
             }
         }
+
+    suspend fun readSillyTavernTrash(cursor: String) = repository.readTrashPage(cursor)
+
+    fun restoreTrashedFile(id: String) {
+        if (!app.tavernbridge.launcher.model.tavernTrashId.matches(id)) return
+        mutateTavernFiles("restore-st-trash", "휴지통 항목 복구", "원래 위치로 복구했어요.") {
+            repository.restoreSillyTavernEntry(id).also { result ->
+                if (result.isSuccess) mutableState.update { it.copy(lastTrashedEntryId = repository.lastTrashedEntryId(),
+                    restoredFilePaths = setOfNotNull(app.tavernbridge.launcher.data.FileManagementProtocol.restoredPath(result.stdout))) }
+            }
+        }
+    }
 
     fun undoLastTrashedEntry() {
         val ids = repository.trashReceipts().asReversed().ifEmpty { return }
@@ -2680,7 +2790,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             appInForeground && s.environment.managerConnected && s.termuxSetup.verified && visible(s)
         }, read)
 
-    private fun commandEntryBlocked(requireManager: Boolean = true, allowWhileWorking: Boolean = false, notifyBusy: Boolean = true): Boolean {
+    private fun commandEntryBlocked(requireManager: Boolean = true, allowWhileWorking: Boolean = false,
+        notifyBusy: Boolean = true, checkTermuxPrerequisites: Boolean = true): Boolean {
         val current = state.value
         val busyReason = when {
             current.backupTransfer != null || current.encryptedBackup != null -> "백업 파일 작업을 마친 뒤 다시 눌러 주세요."
@@ -2692,6 +2803,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             if (notifyBusy) showMessage(busyReason)
             return true
         }
+        if (!checkTermuxPrerequisites) return false
         if (!current.termuxSetup.verified || !current.environment.termuxInstalled ||
             !current.environment.commandPermissionGranted || (requireManager && !current.environment.managerConnected)) {
             mutableState.update { it.visit(MainSection.SETUP) }

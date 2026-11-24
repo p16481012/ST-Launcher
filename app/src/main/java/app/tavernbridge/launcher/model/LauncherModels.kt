@@ -98,7 +98,7 @@ data class EnvironmentStatus(
 }
 
 data class BackgroundStatus(
-    val termuxBatteryUnrestricted: Boolean = false,
+    val termuxBatteryUnrestricted: Boolean? = null,
     val wakeLockEnabled: Boolean = false,
     val wakeLockActive: Boolean = false,
     val manufacturer: String = "",
@@ -127,6 +127,7 @@ data class LauncherUiState(
     val cancellationRequested: Boolean = false,
     val workingLabel: String = "환경 확인 중",
     val workingStartedAtMillis: Long = 0L,
+    val settingsDiagnosticStartedAtMillis: Long? = null,
     // Match the dispatch timestamp: nested commands (e.g. stop during backup) are not Home controls.
     val dispatchedOperation: String = "",
     val dispatchedAtMillis: Long = -1L,

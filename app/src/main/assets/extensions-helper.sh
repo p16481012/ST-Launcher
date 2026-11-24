@@ -139,11 +139,14 @@ async function fetchCandidate(target, info) {
     });
     checkpoint();
 }
-function gitInfo(target) {
+function gitInfo(target, listing = false) {
     const gd = path.join(target, '.git');
     if (!exists(gd) || !stat(gd).isDirectory() || stat(gd).isSymbolicLink()) fail('EXTENSION_UNSUPPORTED', '독립된 Git 폴더가 있는 확장만 업데이트할 수 있습니다.');
-    for (const p of ['commondir', 'gitdir', 'objects/info/alternates', 'objects/info/http-alternates', 'info/grafts', 'refs/replace', 'config.worktree', 'index.lock', 'HEAD.lock', 'shallow'])
+    for (const p of ['commondir', 'gitdir', 'objects/info/alternates', 'objects/info/http-alternates', 'info/grafts', 'refs/replace', 'config.worktree', 'index.lock', 'HEAD.lock'])
         if (exists(path.join(gd, p))) fail('EXTENSION_UNSUPPORTED', '특수 Git 구성은 자동 업데이트하지 않습니다.');
+    const shallow = exists(path.join(gd, 'shallow'));
+    if (shallow && (!listing || stat(path.join(gd, 'shallow')).isSymbolicLink() || !stat(path.join(gd, 'shallow')).isFile()))
+        fail('EXTENSION_UNSUPPORTED', '얕은 복제는 원격 버전만 확인할 수 있습니다.');
     // Never ask Git to interpret a local include, credential helper, URL rewrite or executable filter.
     read(path.join(gd, 'config'), 65536);
     const cfg = git(target, ['config', '--file', path.join(gd, 'config'), '--no-includes', '--null', '--list']);
@@ -158,12 +161,18 @@ function gitInfo(target) {
         fail('EXTENSION_UNSUPPORTED', 'HTTPS GitHub 원본을 확인할 수 있는 확장만 업데이트합니다.');
     const canonical = p => { const resolved = fs.realpathSync.native(p); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; };
     if (canonical(git(target, ['rev-parse', '--show-toplevel']).trim()) !== canonical(target)) fail('EXTENSION_UNSUPPORTED', '다른 Git 저장소에 포함된 확장은 업데이트하지 않습니다.');
-    const branch = git(target, ['symbolic-ref', '--quiet', '--short', 'HEAD']).trim();
+    const local = git(target, ['symbolic-ref', '--quiet', '--short', 'HEAD']).trim();
+    // Use the configured origin upstream for BOTH comparison and fetch. Never silently compare
+    // the similarly named branch at origin when the checkout actually follows another ref.
+    const tracking = git(target, ['for-each-ref', '--format=%(upstream:remotename)%09%(upstream:remoteref)', `refs/heads/${local}`]).trim();
+    const mapped = tracking && /^origin\trefs\/heads\/(.+)$/.exec(tracking);
+    if (tracking && !mapped) fail('EXTENSION_UNSUPPORTED', 'origin의 추적 브랜치를 확인할 수 없습니다.');
+    const branch = mapped ? mapped[1] : local;
     if (!branch || branch.startsWith('-') || git(target, ['check-ref-format', '--branch', branch], { allowFailure: true }) === null) fail('EXTENSION_UNSUPPORTED', '현재 브랜치를 확인할 수 없습니다.');
     const commit = git(target, ['rev-parse', 'HEAD']).trim();
     if (!/^[a-f0-9]{40,64}$/.test(commit)) fail('EXTENSION_UNSUPPORTED', 'Git 커밋을 확인할 수 없습니다.');
     const state = git(target, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching']);
-    return { branch, commit, origin: values.get('remote.origin.url'), clean: !state.trim() };
+    return { branch, commit, origin: values.get('remote.origin.url'), clean: !state.trim(), shallow };
 }
 function revision(target, m) {
     const gd = path.join(target, '.git'), fields = [root, target, ident(stat(target)), ident(stat(m.file)), sha(m.bytes)];
@@ -429,13 +438,14 @@ function list() {
     for (const relative of candidates.slice(cursor, cursor + PAGE)) try {
         if (processed > cursor && Date.now() >= deadline) break;
         const target = extensionPath(relative); directory(target); const m = manifest(target); let info, restriction = '';
-        try { info = gitInfo(target); if (!info.clean) restriction = '수정·추가·무시된 파일이 있어 자동 업데이트하지 않습니다.'; }
+        try { info = gitInfo(target, true); if (info.shallow) restriction = '얕은 복제여서 원격 버전만 확인할 수 있습니다.';
+            else if (!info.clean) restriction = '수정·추가·무시된 파일이 있어 자동 업데이트하지 않습니다.'; }
         catch (e) { restriction = e.message; }
         if (m.disabled) restriction = '런처에서 비활성화한 확장은 다시 사용한 뒤 업데이트하세요.';
         const row = ['extension', b64(relative), revision(target, m), b64(cleanText(m.data.display_name, 256) || path.basename(target)),
             b64(cleanText(m.data.version, 80)), b64(relative.startsWith('public/') ? '공용 · 모든 계정' : `사용자 ${relative.split('/')[1]}`),
             m.disabled ? 'disabled' : 'enabled', info ? info.clean ? 'clean' : 'dirty' : 'unsupported', info?.commit || '',
-            info?.clean && !m.disabled && r.status === 'none' ? '1' : '0', b64(restriction),
+            info?.clean && !info.shallow && !m.disabled && r.status === 'none' ? '1' : '0', b64(restriction),
             b64(info ? info.origin.slice('https://github.com/'.length).replace(/\.git$/i, '') : ''), b64(info?.branch || '')].join('\t');
         if (rowBytes + Buffer.byteLength(row) > 40 * 1024) break;
         rows.push(row); rowBytes += Buffer.byteLength(row) + 1; processed++;
@@ -463,7 +473,7 @@ async function update(item) {
     progress('확장 원격 확인', 'GitHub 원본에서 현재 브랜치 정보를 받고 있습니다.');
     await fetchCandidate(candidate, info);
     const next = git(candidate, ['rev-parse', 'FETCH_HEAD']).trim();
-    if (next === info.commit) { recover(false); ownedWork = null; console.log('extension_result=already-current'); return; }
+    if (next === info.commit) { recover(false); ownedWork = null; console.log(`extension_result=already-current\nextension_commit=${next}`); return; }
     if (git(candidate, ['merge-base', '--is-ancestor', 'HEAD', 'FETCH_HEAD'], { allowFailure: true }) === null) fail('EXTENSION_UNSUPPORTED', '브랜치가 갈라져 있어 자동 병합하지 않습니다.');
     const tree = git(candidate, ['ls-tree', '-r', '-z', 'FETCH_HEAD'], { maxBuffer: 4 * 1024 * 1024 });
     for (const entry of tree.split('\0').filter(Boolean)) if (!/^100(?:644|755) blob [a-f0-9]+\t/.test(entry) || entry.slice(entry.indexOf('\t') + 1).split('/').some(p => !safeName(p) || p.toLowerCase() === '.git'))
@@ -489,7 +499,7 @@ async function update(item) {
     progress('확장 교체', '원본을 휴지통에 보호하고 검사가 끝난 새 폴더로 교체합니다.');
     renameNoReplace(item.target, trash.item); renameNoReplace(candidate, item.target);
     finishJournal({ container: trash.container, work: ownedWork }); ownedWork = null;
-    console.log(`extension_result=updated\nprotected_trash_id=${trash.id}`);
+    console.log(`extension_result=updated\nextension_commit=${next}\nprotected_trash_id=${trash.id}`);
 }
 (async () => { try {
     root = rootDirectory(rootArg); launcher = rootDirectory(launcherArg);

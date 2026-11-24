@@ -31,7 +31,28 @@ data class TavernTextFile(
 
 fun validTavernEntryName(name: String): Boolean =
     name.isNotBlank() && name != "." && name != ".." &&
+        name.toByteArray(Charsets.UTF_8).size <= 255 &&
         name.none { it == '/' || it == '\\' || it.isISOControl() }
+
+data class TavernTrashEntry(val id: String, val relativePath: String, val isDirectory: Boolean)
+data class TavernTrashPage(val entries: List<TavernTrashEntry>, val next: String, val unavailable: Int)
+internal val tavernTrashId = Regex("[0-9]{1,16}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
+
+/** Suggest an alternate sibling name but never rename automatically or overwrite the existing item. */
+internal fun availableTavernName(name: String, occupied: Set<String>, directory: Boolean): String? {
+    if (!validTavernEntryName(name) || name !in occupied) return null
+    val dot = if (directory) -1 else name.lastIndexOf('.')
+    val suffix = if (dot > 0) name.substring(dot) else ""
+    val stem = name.removeSuffix(suffix)
+    return (1..occupied.size + 1).asSequence().map { index ->
+        val tail = " ($index)$suffix"
+        var base = stem
+        while (base.isNotEmpty() && (base + tail).toByteArray(Charsets.UTF_8).size > 255) {
+            base = base.dropLast(Character.charCount(base.codePointBefore(base.length)))
+        }
+        base + tail
+    }.firstOrNull { validTavernEntryName(it) && it !in occupied }
+}
 
 fun LauncherUiState.canModifyTavernFiles(): Boolean =
     environment.managerConnected && !isWorking && !environment.operationActive && !environment.recoveryPending &&

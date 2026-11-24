@@ -29,13 +29,16 @@ class ExtensionOutputParserTest {
     @Test fun newProtocolEnablesReadOnlyCompareButNeverAssumesAnUpdate() {
         val item = ExtensionOutputParser.parse(header + row() + "\t" + b64("owner/example") + "\t" + b64("fix/ui")).items.single()
         assertNull(item.remoteAhead)
-        assertEquals("https://api.github.com/repos/owner/example/compare/${"b".repeat(40)}...fix%2Fui?per_page=1",
-            ExtensionVersionClient.compareUrl(item)?.toString())
-        assertNull(ExtensionVersionClient.compareUrl(item.copy(canUpdate = false)))
-        assertNull(ExtensionVersionClient.compareUrl(item.copy(gitHubRepository = "../example")))
-        assertEquals("https://api.github.com/repos/owner/example/contents/manifest.json?ref=fix%2Fui", ExtensionVersionClient.manifestUrl(item)?.toString())
-        assertNull(ExtensionVersionClient.manifestUrl(item.copy(gitHubRepository="https://untrusted.invalid/x")))
-        assertNull(ExtensionVersionClient.compareUrl(ExtensionOutputParser.parse(header + row()).items.single()))
+        val remote = "c".repeat(40)
+        assertEquals("https://api.github.com/repos/owner/example/git/ref/heads/fix/ui", ExtensionVersionClient.refUrl(item)?.toString())
+        assertEquals("https://api.github.com/repos/owner/example/compare/${item.commit}...$remote?per_page=1",
+            ExtensionVersionClient.compareUrl(item, remote)?.toString())
+        assertEquals(ExtensionVersionClient.refUrl(item), ExtensionVersionClient.refUrl(item.copy(canUpdate = false)))
+        assertNull(ExtensionVersionClient.refUrl(item.copy(gitHubRepository = "../example")))
+        assertNull(ExtensionVersionClient.refUrl(item.copy(gitBranch = "../main")))
+        assertEquals("https://api.github.com/repos/owner/example/contents/manifest.json?ref=$remote", ExtensionVersionClient.manifestUrl(item, remote)?.toString())
+        assertNull(ExtensionVersionClient.manifestUrl(item.copy(gitHubRepository="https://untrusted.invalid/x"), remote))
+        assertNull(ExtensionVersionClient.refUrl(ExtensionOutputParser.parse(header + row()).items.single()))
     }
 
     @Test fun duplicatedAndMalformedValuesFailClosed() {

@@ -1,6 +1,5 @@
 package app.tavernbridge.launcher.ui
 
-import android.os.Build
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.border
@@ -62,6 +61,19 @@ internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewMod
         when (mode) {
             ABOUT_MANAGEMENT -> V2AppManagementSettings(state, viewModel)
             ABOUT_UPDATE -> UpdateInformationCard(state, viewModel::checkUpdateInformation)
+            ABOUT_REPORT -> {
+                if (state.runningSettingsDiagnostic) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        V2BusyIndicator(linear = false)
+                        Text(state.workProgress?.phase?.takeIf { it.isNotBlank() } ?: "진단 보고서를 만들고 있어요.",
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        app.tavernbridge.launcher.ui.components.OperationCancelControl(state.workProgress,
+                            state.cancellationRequested, state.workingStartedAtMillis, viewModel::cancelCurrentOperation)
+                    }
+                }
+                DiagnosticDetail(state, viewModel, Modifier.fillMaxSize(), viewModel::makeSettingsReport)
+            }
             else -> {
                 val env = state.environment
                 LanSecuritySettingsPage(LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
@@ -84,6 +96,9 @@ internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewMod
 
 internal const val ABOUT_MANAGEMENT = "about-management"
 internal const val ABOUT_UPDATE = "about-update"
+internal const val ABOUT_REPORT = "about-report"
+internal val LauncherUiState.runningSettingsDiagnostic: Boolean
+    get() = isWorking && settingsDiagnosticStartedAtMillis == workingStartedAtMillis
 
 @Composable
 internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, closeNested: () -> Unit = {},
@@ -115,14 +130,14 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                             val summary = when (page) {
                                 SettingsPage.DISPLAY -> "${state.displayPreferences.textSize.label} · ${settingsThemeName(state.theme)}"
                                 SettingsPage.SERVER -> if (state.environment.externalAccessEnabled) "같은 Wi-Fi" else "이 기기만"
-                                SettingsPage.BACKGROUND -> if (needsBackgroundAttention(state, Build.VERSION.SDK_INT)) "확인 필요" else "정상"
+                                SettingsPage.BACKGROUND -> state.backgroundAssessment().label
                                 SettingsPage.BACKUP -> if (state.backupReminder.enabled) state.backupReminder.interval.label else "꺼짐"
                                 SettingsPage.ABOUT -> BuildConfig.VERSION_NAME
                             }
                             val active = wide && selected == page
                             SettingsRow(page.title, value = summary, icon = page.icon, selected = active, returned = !wide && returned == page,
                                 mono = page == SettingsPage.ABOUT,
-                                valueColor = if (page == SettingsPage.BACKGROUND && needsBackgroundAttention(state, Build.VERSION.SDK_INT))
+                                valueColor = if (page == SettingsPage.BACKGROUND && state.backgroundAssessment() == BackgroundAssessment.ATTENTION)
                                     (if (active) colors.onSecondaryContainer else colors.secondary) else colors.onSurfaceVariant,
                                 onClick = { if (selected != page || !wide || nested != null) {
                                     if (wide && selected != page) holder.removeState("detail-" + page.name)
@@ -150,7 +165,8 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                 if (page == null) holder.SaveableStateProvider("settings-index") { index(Modifier.fillMaxWidth()) }
                 else holder.SaveableStateProvider(if (child == null) "detail-" + page.name else "child-" + child) {
                 Column(Modifier.fillMaxSize().background(if (wide) colors.surface else colors.background)
-                    .verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
+                    .then(if (child == ABOUT_REPORT) Modifier else Modifier.verticalScroll(rememberScrollState()))
+                    .padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (!wide || child != null) {
@@ -162,6 +178,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                             null -> page.title
                             ABOUT_MANAGEMENT -> "바로가기 · 앱 관리"
                             ABOUT_UPDATE -> "업데이트 정보"
+                            ABOUT_REPORT -> "진단 보고서"
                             else -> "외부 접속·인증 설정"
                         }, style = if (wide) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
                             modifier = Modifier.padding(vertical = 12.dp).semantics { heading() })
@@ -213,11 +230,11 @@ internal fun SettingsRow(title: String, value: String = "", caption: String = ""
     }
     val stack = LocalDensity.current.fontScale >= 1.3f
     val tokens = LocalLauncherColors.current
-    val base = if (selected) tokens.sunken else colors.surface
+    val base = if (selected) tokens.accentWash else colors.surface
     Row(Modifier.fillMaxWidth().background(tokens.ink.copy(alpha = if (pressed) .08f else if (returned) .04f else 0f).compositeOver(base))
         .then(click).heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = colors.onSurfaceVariant)
+        if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = if (selected) tokens.onAccentWash else colors.onSurfaceVariant)
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge,
                 color = if (enabled) colors.onSurface else tokens.disabledInk)
@@ -272,7 +289,9 @@ internal fun <T> SettingsSegments(options: List<T>, selected: T, label: (T) -> S
         val position by animateDpAsState(cell * options.indexOf(selected).coerceAtLeast(0),
             tween(if (LocalV2ReducedMotion.current) 0 else 200, easing = LinearOutSlowInEasing), label = "selected segment")
         Box(Modifier.matchParentSize()) {
-            Box(Modifier.offset(x = position).width(cell).fillMaxHeight().background(colors.surface, RoundedCornerShape(9.dp)))
+            Box(Modifier.offset(x = position).width(cell).fillMaxHeight()
+                .background(colors.secondaryContainer, RoundedCornerShape(9.dp))
+                .border(1.dp, colors.secondary, RoundedCornerShape(9.dp)))
         }
         Row(Modifier.fillMaxWidth().selectableGroup()) {
         options.forEach { value ->
@@ -284,7 +303,7 @@ internal fun <T> SettingsSegments(options: List<T>, selected: T, label: (T) -> S
                 .heightIn(min = 42.dp).padding(horizontal = 2.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
                 Text(label(value), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium,
                     fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                    color = when { !enabled -> LocalLauncherColors.current.disabledInk; active -> colors.onSurface; else -> colors.onSurfaceVariant })
+                    color = when { !enabled -> LocalLauncherColors.current.disabledInk; active -> colors.onSecondaryContainer; else -> colors.onSurfaceVariant })
             }
         }
         }

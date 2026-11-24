@@ -46,6 +46,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
@@ -705,6 +706,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     } else if (!showWelcome && state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
                         ManagementScreen(
                             state = state,
+                            onBack = if (state.navigation.previous.lastOrNull()?.section == MainSection.SETTINGS) viewModel::navigateBack else null,
                             panel = if (section == MainSection.BACKUPS) ManagementPanel.BACKUP else state.managementPanel,
                             requestedArchive = requestedArchive,
                             archiveReturnToOrigin = archiveReturnToOrigin,
@@ -821,6 +823,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 error = state.extensionError, onRefresh = { viewModel.loadExtensions() },
                 onMore = { viewModel.loadExtensions(true) }, onRecover = viewModel::recoverExtension,
                 onAction = viewModel::changeExtension, onClose = viewModel::closeExtensions,
+                onCheckUpdates = viewModel::checkExtensionVersions, onUpdateAll = viewModel::updateCheckedExtensions,
             )
             state.selectiveRestore?.takeUnless { state.isWorking }?.let { selection ->
                 SelectiveRestoreDialog(selection,
@@ -848,6 +851,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onCreateFile = viewModel::createSillyTavernFile,
                     onRename = viewModel::renameSillyTavernEntry,
                     onTrash = viewModel::trashSillyTavernEntry,
+                    readTrash = viewModel::readSillyTavernTrash,
+                    onRestoreTrash = viewModel::restoreTrashedFile,
                     onTrashMany = viewModel::trashSillyTavernEntries,
                     onPreview = viewModel::previewSillyTavernFile,
                     preview = state.filePreview,
@@ -868,7 +873,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 V2BackupFlowSheet(state, scope, viewModel::createBackup, viewModel::cancelCurrentOperation) {
                     if (backupWork) progressFolded = true else backupScopeOpen = false
                 }
-            } else if (showWorkProgress && !progressFolded && !commandAtHome) {
+            } else if (showWorkProgress && !progressFolded && !commandAtHome &&
+                !(state.section == MainSection.SETTINGS && state.runningSettingsDiagnostic)) {
                 WorkingOverlay(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
                     state.cancellationRequested, viewModel::cancelCurrentOperation) { progressFolded = true }
             }
@@ -1185,6 +1191,7 @@ internal fun formatBackupBytes(bytes: Long): String = when {
 @Composable
 private fun ManagementScreen(
     state: LauncherUiState,
+    onBack: (() -> Unit)?,
     onSelectPanel: (ManagementPanel) -> Unit,
     onCheckUpdate: () -> Unit,
     onAutoBackupChange: (Boolean) -> Unit,
@@ -1239,7 +1246,10 @@ private fun ManagementScreen(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("관리", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로") }
+                Text("관리", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+            }
             SectionTabs(ManagementPanel.entries, selectedPanel, onSelectPanel) { it.label }
         }
         LazyColumn(

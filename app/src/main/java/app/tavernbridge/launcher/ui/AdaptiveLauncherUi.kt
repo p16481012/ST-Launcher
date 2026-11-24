@@ -79,8 +79,8 @@ internal fun LauncherNavigationRail(
                     modifier = Modifier.heightIn(min = 64.dp),
                     alwaysShowLabel = true,
                     colors = androidx.compose.material3.NavigationRailItemDefaults.colors(
-                        indicatorColor = MaterialTheme.colorScheme.surface,
-                        selectedIconColor = MaterialTheme.colorScheme.onSurface,
+                        indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                        selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         selectedTextColor = MaterialTheme.colorScheme.onSurface,
                         unselectedIconColor = MaterialTheme.colorScheme.outline,
                         unselectedTextColor = MaterialTheme.colorScheme.outline,

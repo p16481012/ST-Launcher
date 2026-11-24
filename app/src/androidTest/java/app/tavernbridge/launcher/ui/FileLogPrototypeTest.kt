@@ -29,6 +29,62 @@ class FileLogPrototypeTest {
         assertEquals(null, links.returning)
     }
     private fun entry(name: String) = TavernFileEntry(name, name, false, 100, "", false, "a".repeat(64))
+    @Test fun createConflictNamesTheExistingTypeAndOffersANewNameBeforeSubmitting() {
+        val created = mutableListOf<String>()
+        val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),
+            fileBrowserEntries = listOf(entry("notes").copy(isDirectory = true)))
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) {
+            TavernFileManagerDialog(state, {}, {}, {}, {}, {}, {}, {}, { created += it }, { _, _ -> }, {},
+                {}, {}, {}, {}, {}, null, {}, embedded = true)
+        } }
+        ui.onNodeWithText("새로 만들기").performClick()
+        ui.onNodeWithText("새 파일").performClick()
+        ui.onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextInput("notes")
+        ui.onNodeWithText("같은 이름의 폴더가 있어요.", substring = true).assertExists()
+        ui.onNodeWithText("확인").assertIsNotEnabled()
+        ui.onNodeWithText("제안 이름 사용: notes (1)").performClick()
+        ui.onNodeWithText("확인").performClick()
+        ui.runOnIdle { assertEquals(listOf("notes (1)"), created) }
+    }
+
+    @Test fun trashHasVisibleEntryPointAndRestoresTheSelectedReceiptNotJustLastUndo() {
+        val captured = mutableListOf<String>()
+        val id = "1234567890123-11111111-2222-3333-4444-555555555555"
+        val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true))
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) {
+            TavernFileManagerDialog(state, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, null, {},
+                embedded = true, readTrash = { TavernTrashPage(listOf(TavernTrashEntry(id, "data/기록.txt", false)), "", 0) },
+                onRestoreTrash = { captured += it })
+        } }
+        ui.onNodeWithText("휴지통").performClick()
+        ui.onNodeWithText("SillyTavern/data/기록.txt").assertExists()
+        captureModalWindowSnapshot("files-trash")
+        ui.onNodeWithText("복구").performClick()
+        ui.runOnIdle { assertEquals(listOf(id), captured) }
+        ui.onNodeWithContentDescription("파일 목록으로 돌아가기").performClick()
+        ui.onNodeWithText("빈 폴더예요").assertExists()
+    }
+
+    @Test fun navigatingToFolderNeverShowsALinearBarAndSlowReadsShowInlineStatus() {
+        val state = mutableStateOf(LauncherUiState(fileBrowserOpen = true, isWorking = false,
+            environment = EnvironmentStatus(managerConnected = true), fileBrowserEntries = listOf(entry("data").copy(isDirectory = true))))
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            TavernFileManagerDialog(state.value, { path -> state.value = state.value.copy(fileBrowserPath = path,
+                fileBrowserEntries = emptyList(), fileBrowserLoading = true) }, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {},
+                {}, {}, {}, {}, {}, null, {}, embedded = true)
+        } }
+        ui.mainClock.autoAdvance = false
+        ui.onNodeWithText("data").performClick()
+        ui.mainClock.advanceTimeBy(128)
+        ui.onNodeWithText("목록을 불러오는 중…").assertDoesNotExist()
+        ui.onAllNodes(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo)).assertCountEquals(0)
+        ui.mainClock.advanceTimeBy(500)
+        ui.onNodeWithText("목록을 불러오는 중…").assertExists()
+        ui.runOnIdle { state.value = state.value.copy(fileBrowserLoading = false) }
+        ui.mainClock.advanceTimeBy(32)
+        ui.onNodeWithText("목록을 불러오는 중…").assertDoesNotExist()
+        ui.mainClock.autoAdvance = true
+    }
     private fun files(names: List<String>, onTrash: (List<TavernFileEntry>) -> Unit = {}) {
         val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),
             fileBrowserEntries = names.map(::entry))

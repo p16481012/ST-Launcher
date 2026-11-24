@@ -70,7 +70,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                             val hint = when (page) {
                                 ToolPage.UPDATE -> state.updatePreflight?.let { if (it.updateAvailable) "새 버전 ${it.targetVersion}".trim() else "최신" }
                                 ToolPage.EXTENSIONS -> state.extensionInventory?.let { "${it.items.size}개${if (it.nextCursor != null) "+" else ""}" }
-                                ToolPage.DIAGNOSTICS -> state.diagnosticReport?.let { if (it.warningCount + it.errorCount > 0) "확인 필요" else "정상" }
+                                ToolPage.DIAGNOSTICS -> state.diagnosticReport?.indexLabel
                                 else -> null
                             }
                             ToolRow(page.label, icon = toolIcon(page), trailing = hint.orEmpty(),
@@ -241,34 +241,33 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun DiagnosticDetail(state: LauncherUiState, vm: LauncherViewModel, mod: Modifier) {
+@Composable internal fun DiagnosticDetail(state: LauncherUiState, vm: LauncherViewModel, mod: Modifier, onRun: () -> Unit = vm::runDiagnostics) {
     val report = state.diagnosticReport
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
-    var all by rememberSaveable { mutableStateOf(false) }
     var itemId by rememberSaveable { mutableStateOf<String?>(null) }
     DetailLayout(mod, footer = {
         OutlinedButton({ report?.let { clipboard.setText(AnnotatedString(it.copyText())); vm.showMessage("진단 보고서를 복사했습니다.") } },
             Modifier.weight(1f).heightIn(min = 52.dp), enabled = report != null, shape = RoundedCornerShape(14.dp)) { Text("보고서 복사") }
-        Button(vm::runDiagnostics, Modifier.weight(1f).heightIn(min = 52.dp), enabled = !state.isWorking, shape = RoundedCornerShape(14.dp)) { Text(if (report == null) "진단 시작" else "다시 진단") }
+        Button(onRun, Modifier.weight(1f).heightIn(min = 52.dp), enabled = !state.isWorking, shape = RoundedCornerShape(14.dp)) { Text(if (report == null) "진단 시작" else "다시 진단") }
     }) {
-        Lead(report?.let { "${it.items.size}개 중 ${it.okCount}개 정상" } ?: "환경을 진단해요",
-            report?.let { "${it.checkedAt} 진단" } ?: "저장 공간과 Termux, 서버 실행 환경을 확인해요.")
+        Lead(report?.checkTitle ?: "환경을 진단해요",
+            report?.let { "${it.statusSummary}\n${it.checkedAt} 진단" } ?: "저장 공간과 Termux, 서버 실행 환경을 확인해요.")
         if (report != null) {
-            val issues = report.items.filter { it.status == DiagnosticStatus.ERROR || it.status == DiagnosticStatus.WARNING }
-                .sortedBy { if (it.status == DiagnosticStatus.ERROR) 0 else 1 }
-            val normal = report.items.filter { it.status == DiagnosticStatus.OK }
-            val info = report.items.filter { it.status == DiagnosticStatus.INFO }
-            if (issues.isNotEmpty()) ToolGroup("확인 필요") { issues.forEachIndexed { index, item ->
-                ToolRow(item.title, item.value, "해결", Icons.Outlined.ErrorOutline, danger = true, onClick = { itemId = item.id })
-                if (index < issues.lastIndex) ToolDivider()
-            } }
-            if (normal.isNotEmpty()) ToolGroup("정상", if (all) "접기" else "${normal.size}개 모두", { all = !all }) {
-                if (all) normal.forEachIndexed { index, item ->
-                    if (index != 0) ToolDivider(); ToolRow(item.title, trailing = item.value, onClick = { itemId = item.id })
+            listOf(DiagnosticStatus.ERROR, DiagnosticStatus.WARNING, DiagnosticStatus.OK, DiagnosticStatus.INFO).forEach { status ->
+                val rows = report.rows(status)
+                if (rows.isNotEmpty()) ToolGroup("${status.label} ${rows.size}개" +
+                    if (status == DiagnosticStatus.INFO) " · 검사 수에서 제외" else "") {
+                    rows.forEachIndexed { index, item ->
+                        if (index != 0) ToolDivider()
+                        val issue = status == DiagnosticStatus.ERROR || status == DiagnosticStatus.WARNING
+                        ToolRow(item.title, note = item.value,
+                            trailing = if (issue) "자세히" else "",
+                            icon = if (issue) Icons.Outlined.ErrorOutline else null,
+                            danger = status == DiagnosticStatus.ERROR, onClick = { itemId = item.id })
+                    }
                 }
             }
-            if (info.isNotEmpty()) ToolGroup("참고") { info.forEach { item -> ToolRow(item.title, item.value, onClick = { itemId = item.id }) } }
         }
         TermuxProcessHelpCard(Build.VERSION.SDK_INT, vm::openTermuxAppSettings, vm::openBatteryOptimizationSettings) { url ->
             runCatching { uriHandler.openUri(url) }.onFailure { vm.showMessage("도움말 링크를 열 수 없어요. 브라우저 앱을 확인해 주세요.") }
@@ -377,5 +376,5 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         { runCatching { file.launch(arrayOf("*/*")) }.onFailure { vm.showMessage("파일 선택 화면을 열 수 없습니다.") } },
         { runCatching { folder.launch(null) }.onFailure { vm.showMessage("폴더 선택 화면을 열 수 없습니다.") } }, back,
         vm::trashSillyTavernEntries, vm::previewSillyTavernFile, state.filePreview, vm::closeFilePreview,
-        embedded = true, sideBySide = twoColumns)
+        embedded = true, sideBySide = twoColumns, readTrash = vm::readSillyTavernTrash, onRestoreTrash = vm::restoreTrashedFile)
 }

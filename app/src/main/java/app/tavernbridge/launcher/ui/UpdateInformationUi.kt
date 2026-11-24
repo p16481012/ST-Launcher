@@ -5,6 +5,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -27,30 +38,43 @@ import app.tavernbridge.launcher.model.LauncherUiState
 internal fun UpdateInformationCard(state: LauncherUiState, onCheck: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     var linkFailed by rememberSaveable { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("업데이트 정보", style = MaterialTheme.typography.titleMedium)
-            Text("직접 확인할 때만 조회합니다. 앱이나 패키지를 자동으로 설치하지 않습니다.", style = MaterialTheme.typography.bodySmall)
-            state.launcherUpdateInfo?.let { info ->
-                Text("런처 설치 ${info.installedVersion} · 공개 ${info.publishedVersion}")
-                Text(when (info.newerVersionAvailable) {
-                    true -> "새 버전이 공개되었습니다."
-                    false -> "더 높은 공개 버전이 없습니다. 같은 버전 번호로 교체된 APK는 구분하지 않습니다."
-                    null -> "버전 번호를 자동 비교할 수 없습니다. 릴리스 페이지를 확인해 주세요."
-                }, style = MaterialTheme.typography.bodySmall)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SettingsHeading("설치된 버전")
+        SettingsGroup {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.launcherUpdateInfo == null) Text("런처 ${app.tavernbridge.launcher.BuildConfig.VERSION_NAME}")
+                state.launcherUpdateInfo?.let { info ->
+                    Text("런처 설치 ${info.installedVersion} · 공개 ${info.publishedVersion}")
+                    Text(when (info.newerVersionAvailable) {
+                        true -> "새 버전이 공개되었습니다."
+                        false -> "더 높은 공개 버전이 없습니다. 같은 버전 번호로 교체된 APK는 구분하지 않습니다."
+                        null -> "버전 번호를 자동 비교할 수 없습니다. 릴리스 페이지를 확인해 주세요."
+                    }, style = MaterialTheme.typography.bodySmall)
+                }
+                state.nodePackageInfo?.let { info ->
+                    Text("Node.js 패키지 설치: ${info.installed.ifBlank { "확인 불가" }}")
+                    Text("패키지 목록의 후보: ${info.candidate.ifBlank { "확인 불가" }}", style = MaterialTheme.typography.bodySmall)
+                    Text("기기에 저장된 패키지 목록 기준입니다. 목록이 오래되었을 수 있으며 호환성을 보장하는 정보는 아닙니다.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            state.nodePackageInfo?.let { info ->
-                Text("Node.js 패키지 설치: ${info.installed.ifBlank { "확인 불가" }}")
-                Text("패키지 목록의 후보: ${info.candidate.ifBlank { "확인 불가" }}", style = MaterialTheme.typography.bodySmall)
-                Text("기기에 저장된 패키지 목록 기준입니다. 목록이 오래되었을 수 있으며 호환성을 보장하는 정보는 아닙니다.",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (state.updateInfoError.isNotBlank()) Text(state.updateInfoError, color = MaterialTheme.colorScheme.error)
-            if (state.updateInfoLoading) V2BusyIndicator(linear = false)
-            TextButton(onClick = onCheck, enabled = !state.updateInfoLoading && !state.isWorking) { Text("업데이트 정보 확인") }
-            TextButton(onClick = { linkFailed = runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) }.isFailure }) { Text("공식 저장소 릴리스 열기") }
-            if (linkFailed) Text("릴리스 페이지를 열 수 없어요. 브라우저 앱을 확인해 주세요.", color = MaterialTheme.colorScheme.error)
         }
+        if (state.updateInfoError.isNotBlank()) Text(state.updateInfoError, color = MaterialTheme.colorScheme.error)
+        Button(onClick = onCheck, enabled = !state.updateInfoLoading && !state.isWorking, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            shape = RoundedCornerShape(14.dp)) {
+            if (state.updateInfoLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(if (state.updateInfoLoading) "확인 중…" else "업데이트 정보 확인")
+        }
+        SettingsCaption("이 앱 안에서 런처와 Node.js 버전 정보를 조회해요. 자동으로 설치하지 않아요.")
+        OutlinedButton(onClick = { linkFailed = runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) }.isFailure },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) {
+            Icon(Icons.Outlined.OpenInNew, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("GitHub 릴리스 열기")
+        }
+        if (linkFailed) Text("릴리스 페이지를 열 수 없어요. 브라우저 앱을 확인해 주세요.", color = MaterialTheme.colorScheme.error)
     }
 }
 

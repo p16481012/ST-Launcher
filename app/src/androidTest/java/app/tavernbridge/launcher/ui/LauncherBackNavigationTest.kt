@@ -49,6 +49,24 @@ class LauncherBackNavigationTest {
         compose.runOnIdle { assertEquals("", vm.state.value.dispatchedOperation) }
     }
 
+    @Test fun aboutReportHasVisibleBackAndInstallationShortcutIgnoresPreviousBackupPanel() {
+        val vm = launchExistingInstallation(readyBackupStorage = true)
+        compose.runOnIdle { vm.selectManagementPanel(ManagementPanel.BACKUP) }
+        compose.onNode(hasText("설정") and hasClickAction()).performClick()
+        compose.onNode(hasText("앱 정보") and hasClickAction()).performScrollTo().performClick()
+        compose.onNodeWithText("진단 보고서 만들기").performScrollTo().performClick()
+        compose.onNodeWithText("진단 보고서").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(MainSection.SETTINGS, vm.state.value.section) }
+        compose.onNodeWithContentDescription("뒤로").performClick()
+        compose.onNodeWithText("설치 정보 확인").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(MainSection.SETUP, vm.state.value.section)
+            assertEquals(ManagementPanel.INSTALL, vm.state.value.managementPanel)
+        }
+        compose.onNodeWithContentDescription("뒤로").performClick()
+        compose.onNodeWithText("설치 정보 확인").performScrollTo().assertIsDisplayed()
+    }
+
     @Test fun homeLogReturnsHomeAndToolsLogReturnsTools() {
         val vm = launchExistingInstallation()
         compose.onNodeWithText("로그").performClick()

@@ -179,7 +179,10 @@ internal fun TavernFileManagerDialog(
     onClosePreview: () -> Unit,
     embedded: Boolean = false,
     sideBySide: Boolean = false,
+    readTrash: suspend (String) -> TavernTrashPage = { TavernTrashPage(emptyList(), "", 0) },
+    onRestoreTrash: (String) -> Unit = {},
 ) {
+    var trashOpen by rememberSaveable { mutableStateOf(false) }
     var selected by remember(state.fileBrowserPath) { mutableStateOf<TavernFileEntry?>(null) }
     var renameTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
     var trashTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
@@ -194,7 +197,7 @@ internal fun TavernFileManagerDialog(
     var selectedPaths by remember(state.fileBrowserPath) { mutableStateOf(emptySet<String>()) }
     var batchConfirmation by remember { mutableStateOf<List<TavernFileEntry>?>(null) }
     var moreMenu by remember { mutableStateOf(false) }
-    BackHandler(embedded && !state.fileBrowserMutating && (selectionMode || state.fileBrowserPath.isNotEmpty())) {
+    BackHandler(embedded && !trashOpen && !state.fileBrowserMutating && (selectionMode || state.fileBrowserPath.isNotEmpty())) {
         if (selectionMode) { selectionMode = false; selectedPaths = emptySet() }
         else onNavigate(state.fileBrowserPath.substringBeforeLast('/', ""))
     }
@@ -242,6 +245,10 @@ internal fun TavernFileManagerDialog(
         if (!canModify) { selectionMode = false; selectedPaths = emptySet() }
     }
     ToolPaneHost(embedded, onClose) {
+        if (trashOpen) {
+            TavernTrashScreen(state, readTrash, onRestoreTrash, onBack = { trashOpen = false })
+            return@ToolPaneHost
+        }
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -262,6 +269,11 @@ internal fun TavernFileManagerDialog(
                         },
                             enabled = canModify && visiblePaths.isNotEmpty()) { Text(if (allSelected) "선택 해제" else "모두 선택") }
                     } else {
+                        TextButton(onClick = { trashOpen = true }, enabled = !state.fileBrowserMutating) {
+                            Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("휴지통")
+                        }
                         Box {
                             IconButton(onClick = { moreMenu = true }) { Icon(Icons.Outlined.MoreVert, "파일 더보기") }
                             DropdownMenu(moreMenu, { moreMenu = false }) {
@@ -355,11 +367,11 @@ internal fun TavernFileManagerDialog(
                     Text(state.fileBrowserNotice, Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (state.fileBrowserLoading) {
-                    V2BusyIndicator(Modifier.fillMaxWidth())
-                }
+                val slowFolder = rememberProgressVisible(state.fileBrowserLoading, state.fileBrowserPath)
                 Row(Modifier.weight(1f).fillMaxWidth()) {
-                    LazyColumn(Modifier.weight(if (sideBySide && !selectionMode) 1.3f else 1f).fillMaxHeight(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    LazyColumn(Modifier.weight(if (sideBySide && !selectionMode) 1.3f else 1f).fillMaxHeight(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (slowFolder) item { Text("목록을 불러오는 중…", Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         if (state.fileListReadFailed) item {
                             Column(Modifier.fillMaxWidth().padding(vertical = 20.dp), horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -376,7 +388,8 @@ internal fun TavernFileManagerDialog(
                             }
                         }
                         items(visibleEntries, key = { it.relativePath }) { entry ->
-                            Surface(Modifier.fillMaxWidth(), color =
+                            Surface(Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp), color =
                                 if (entry.relativePath in highlighted || entry.relativePath in selectedPaths) MaterialTheme.colorScheme.secondaryContainer
                                 else if (sideBySide && selected?.relativePath == entry.relativePath) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surface) {
                                 CompositionLocalProvider(LocalViewConfiguration provides rowTouch) {
@@ -410,7 +423,6 @@ internal fun TavernFileManagerDialog(
                                 }
                                 }
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
                     }
                     if (sideBySide && !selectionMode) {
@@ -485,13 +497,13 @@ internal fun TavernFileManagerDialog(
                 confirmButton = { V2DialogAction(onClick = { externalFile = null; onOpenFile(entry.relativePath) }) { Text("앱 선택") } },
                 dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { externalFile = null }) { Text("취소") } })
         }
-        if (newFolder) EntryNameDialog("새 폴더", "", onDismiss = { newFolder = false }) {
+        if (newFolder) EntryNameDialog("새 폴더", "", state.fileBrowserEntries, directory = true, onDismiss = { newFolder = false }) {
             newFolder = false; onCreateFolder(it)
         }
-        if (newFile) EntryNameDialog("새 파일", "", onDismiss = { newFile = false }, nameHint = "예: memo.txt") {
+        if (newFile) EntryNameDialog("새 파일", "", state.fileBrowserEntries, directory = false, onDismiss = { newFile = false }, nameHint = "예: memo.txt") {
             newFile = false; onCreateFile(it)
         }
-        renameTarget?.let { entry -> EntryNameDialog("이름 변경", entry.name, onDismiss = { renameTarget = null }) {
+        renameTarget?.let { entry -> EntryNameDialog("이름 변경", entry.name, state.fileBrowserEntries, entry.isDirectory, onDismiss = { renameTarget = null }) {
             renameTarget = null; onRename(entry.relativePath, it)
         } }
         trashTarget?.let { entry ->
@@ -572,13 +584,23 @@ private fun InlineFilePreview(preview: TavernFilePreview) {
 
 
 @Composable
-private fun EntryNameDialog(title: String, initial: String, onDismiss: () -> Unit, nameHint: String? = null,
+private fun EntryNameDialog(title: String, initial: String, entries: List<TavernFileEntry>, directory: Boolean, onDismiss: () -> Unit, nameHint: String? = null,
     onConfirm: (String) -> Unit) {
-    var name by remember(initial) { mutableStateOf(initial) }
-    V2AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
+    var name by rememberSaveable(initial) { mutableStateOf(initial) }
+    val siblings = remember(entries) { entries.associateBy { it.name } }
+    val collision = siblings[name]?.takeUnless { name == initial }
+    val alternate = remember(name, siblings, directory) { if (collision == null) null else availableTavernName(name, siblings.keys, directory) }
+    V2AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = { Column {
         OutlinedTextField(value = name, onValueChange = { name = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("이름") },
+            isError = collision != null || name.isNotEmpty() && !validTavernEntryName(name),
             placeholder = { nameHint?.let { Text(it) } })
-    }, confirmButton = { V2DialogAction(onClick = { onConfirm(name) }, enabled = validTavernEntryName(name)) { Text("확인") } },
+        if (collision != null) {
+            Text("같은 이름의 ${if (collision.isDirectory) "폴더가" else "파일이"} 있어요. 같은 위치에서는 파일과 폴더도 이름이 달라야 해요.",
+                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            if (alternate != null) TextButton(onClick = { name = alternate }) { Text("제안 이름 사용: $alternate") }
+        } else if (name.isNotEmpty() && !validTavernEntryName(name))
+            Text("경로 기호 없이 255바이트 이하의 이름을 입력해 주세요.", color = MaterialTheme.colorScheme.error)
+    } }, confirmButton = { V2DialogAction(onClick = { onConfirm(name) }, enabled = validTavernEntryName(name) && name != initial && collision == null) { Text("확인") } },
         dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onDismiss) { Text("취소") } })
 }
 

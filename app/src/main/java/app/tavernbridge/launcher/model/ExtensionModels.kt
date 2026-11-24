@@ -19,9 +19,40 @@ data class ManagedExtension(
     val gitBranch: String = "",
     val remoteAhead: Int? = null,
     val remoteVersion: String? = null,
+    val checkIssue: ExtensionCheckIssue? = null,
 )
 
-internal data class ExtensionUpdateMetadata(val ahead: Int, val version: String? = null)
+enum class ExtensionCheckIssue(val label: String) {
+    NETWORK("원격 확인 실패"), RATE_LIMIT("GitHub 요청 제한"), UNAVAILABLE("원본·브랜치 접근 불가"),
+    DIVERGED("설치본과 원격 이력 다름"), UNVERIFIED("비교 결과 미확인"),
+}
+
+internal data class ExtensionUpdateMetadata(val ahead: Int? = null, val version: String? = null, val issue: ExtensionCheckIssue? = null)
+
+internal fun ManagedExtension.checkLabel() = when {
+    checkIssue != null -> checkIssue.label
+    remoteAhead == 0 -> "원격과 동일"
+    remoteAhead != null && remoteAhead > 0 -> "새 커밋 ${remoteAhead}개"
+    gitHubRepository.isBlank() || gitBranch.isBlank() -> "원본 미확인"
+    else -> "검사 전"
+}
+
+internal fun extensionCheckSummary(items: List<ManagedExtension>): String {
+    if (items.isEmpty()) return "확인 대상 없음"
+    val updates = items.count { (it.remoteAhead ?: 0) > 0 }
+    val identical = items.count { it.remoteAhead == 0 }
+    val unknown = items.size - identical - updates
+    return listOfNotNull("업데이트 ${updates}개".takeIf { updates > 0 },
+        "원격과 동일 ${identical}개".takeIf { identical > 0 }, "미확인 ${unknown}개".takeIf { unknown > 0 }).joinToString(" · ")
+}
+
+internal fun ManagedExtension.sameCheckTarget(other: ManagedExtension) =
+    id == other.id && commit == other.commit && gitHubRepository == other.gitHubRepository &&
+        gitBranch == other.gitBranch && revision == other.revision
+
+internal fun extensionUpdateReceipt(output: String): String? = output.lineSequence().filter {
+    it.startsWith("extension_result=")
+}.singleOrNull()?.substringAfter('=')?.takeIf { it == "already-current" || it == "updated" }
 
 internal fun extensionDisplayOrder(items: List<ManagedExtension>): List<ManagedExtension> =
     items.sortedWith(compareBy<ManagedExtension> {
@@ -38,6 +69,7 @@ internal fun extensionVersionLabel(item: ManagedExtension): String = when {
 data class ExtensionInventory(
     val items: List<ManagedExtension>, val nextCursor: Int?, val skipped: Int,
     val recoveryStatus: String = "none", val recoveryMessage: String = "",
+    val nextCheckOffset: Int = 0,
 )
 
 fun extensionActionExplanation(item: ManagedExtension, action: ExtensionAction): String = when (action) {

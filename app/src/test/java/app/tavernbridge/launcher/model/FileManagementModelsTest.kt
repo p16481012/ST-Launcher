@@ -5,6 +5,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FileManagementModelsTest {
+    @Test fun collisionSuggestsUnusedNameWithoutRewritingExtensionsOrFolders() {
+        val names = setOf("memo.txt", "memo (1).txt", ".env", "folder.name")
+        org.junit.Assert.assertEquals("memo (2).txt", availableTavernName("memo.txt", names, false))
+        org.junit.Assert.assertEquals("folder.name (1)", availableTavernName("folder.name", names, true))
+        org.junit.Assert.assertEquals(".env (1)", availableTavernName(".env", names, false))
+        org.junit.Assert.assertNull(availableTavernName("free", names, false))
+        val longest = "가".repeat(85)
+        assertTrue(validTavernEntryName(availableTavernName(longest, setOf(longest), true)!!))
+    }
     @Test fun entryNamesRejectTraversalAndControlCharacters() {
         listOf("", " ", ".", "..", "../data", "nested/file", "nested\\file", "a\nb", "a\u0000b")
             .forEach { assertFalse(it, validTavernEntryName(it)) }

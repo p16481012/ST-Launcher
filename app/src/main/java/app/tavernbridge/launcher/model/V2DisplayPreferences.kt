@@ -11,6 +11,8 @@ enum class LauncherAccent(val label: String, val lightArgb: Long, val darkArgb: 
     GREEN("초록", 0xFF1A7F51, 0xFF72D7A1, 0xFFE7F5ED, 0xFF1A3328),
     WINE("와인", 0xFF9E2E45, 0xFFFFA0B2, 0xFFFBEAF0, 0xFF3B242C),
     SLATE("슬레이트", 0xFF5C636E, 0xFFBBC5D3, 0xFFEBEDF0, 0xFF2B3038),
+    BLUE("블루", 0xFF245AA5, 0xFF93C2FF, 0xFFE8F0FF, 0xFF203146),
+    VIOLET("바이올렛", 0xFF6944A1, 0xFFCCAEFF, 0xFFF0EBFF, 0xFF33283F),
 }
 
 enum class BackupKeep(val label: String, val count: Int?) {

@@ -1,6 +1,6 @@
 // Isolated local fixtures only. Fetch is redirected to a local fixture by a test-only child_process shim.
 const fs = require('fs'), os = require('os'), path = require('path'), cp = require('child_process'), assert = require('assert');
-const helper = fs.readFileSync(path.join(__dirname, '../app/src/main/assets/extensions-helper.sh'), 'utf8').split("<<'NODE'\n")[1]?.replace(/\nNODE\s*$/, '').replace('const code = e.extensionCode', 'console.error(e.stack); const code = e.extensionCode');
+const helper = fs.readFileSync(path.join(__dirname, '../app/src/main/assets/extensions-helper.sh'), 'utf8').replace(/\r\n/g, '\n').split("<<'NODE'\n")[1]?.replace(/\nNODE\s*$/, '').replace('const code = e.extensionCode', 'console.error(e.stack); const code = e.extensionCode');
 assert(helper, 'embedded helper');
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'st-extension-test-'));
 const root = path.join(base, 'SillyTavern'), launcher = path.join(base, 'launcher'), globalRoot = path.join(root, 'public/scripts/extensions/third-party');
@@ -37,6 +37,15 @@ try {
     assert.deepStrictEqual(ok(run('reset-summary')).trim().split(/\r?\n/), ['characters=2','chats=2','extensions=2']); checks++;
     assert.strictEqual(Buffer.from(row('clean')[11], 'base64').toString(), 'fixture/extensions');
     assert.strictEqual(Buffer.from(row('clean')[12], 'base64').toString(), 'main'); checks++;
+    git(clean, 'config', 'branch.main.remote', 'origin'); git(clean, 'config', 'branch.main.merge', 'refs/heads/release/mobile');
+    assert.strictEqual(Buffer.from(row('clean')[12], 'base64').toString(), 'release/mobile');
+    git(clean, 'config', '--remove-section', 'branch.main'); checks++;
+    const shallowFile = path.join(clean, '.git', 'shallow');
+    fs.writeFileSync(shallowFile, git(clean, 'rev-parse', 'HEAD') + '\n');
+    const shallowItem = row('clean'); assert.strictEqual(shallowItem[9], '0');
+    assert.strictEqual(shallowItem[8], git(clean, 'rev-parse', 'HEAD'));
+    assert.strictEqual(Buffer.from(shallowItem[11], 'base64').toString(), 'fixture/extensions');
+    assert.strictEqual(action('update', 'clean').status, 74); fs.unlinkSync(shallowFile); checks++;
     const original = fs.readFileSync(path.join(clean, 'manifest.json'));
     ok(action('disable', 'clean')); assert(!fs.existsSync(path.join(clean, 'manifest.json'))); assert.deepStrictEqual(fs.readFileSync(path.join(clean, '.st-launcher-disabled-manifest.json')), original);
     assert.strictEqual(row('clean')[6], 'disabled'); assert.strictEqual(row('clean')[9], '0'); ok(action('enable', 'clean')); checks++;
@@ -118,7 +127,10 @@ fs.renameSync = function(from,to) {
     const result = ok(action('update', 'clean', env)); assert(result.includes('extension_result=updated')); assert.strictEqual(fs.readFileSync(path.join(clean, 'index.js'), 'utf8'), 'updated');
     const protection = /protected_trash_id=(.+)/.exec(result)[1]; assert.strictEqual(fs.readFileSync(path.join(launcher, 'file-trash', protection, 'item', 'index.js'), 'utf8'), 'old');
     assert(!fs.existsSync(path.join(launcher, 'extension-update-journal.json'))); checks++;
-    assert(ok(action('update', 'clean', env)).includes('already-current')); checks++;
+    const noChange = ok(action('update', 'clean', env)), nowInstalled = git(clean, 'rev-parse', 'HEAD');
+    assert.strictEqual(nowInstalled, git(incoming, 'rev-parse', 'HEAD'));
+    assert(result.includes('extension_commit=' + nowInstalled));
+    assert(noChange.includes('extension_result=already-current\nextension_commit=' + nowInstalled)); checks++;
     const fetchCancel = path.join(base, 'fetch-cancel'); const cancelledAt = Date.now();
     const cancelledFetch = action('update', 'clean', { ...env, ST_TEST_WAIT_FETCH: fetchCancel, ST_CANCEL_REQUEST_FILE: fetchCancel });
     assert.strictEqual(cancelledFetch.status, 130, cancelledFetch.stderr); assert(Date.now() - cancelledAt < 15000);

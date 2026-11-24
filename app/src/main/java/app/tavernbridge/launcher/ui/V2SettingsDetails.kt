@@ -54,6 +54,7 @@ import app.tavernbridge.launcher.ui.theme.V2Mono
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Unit, onDisplay: (DisplayPreferences) -> Unit, wide: Boolean) {
     val prefs = state.displayPreferences
@@ -65,16 +66,7 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
         IconButton(onClick = { info = true }) { Icon(Icons.Outlined.Info, "글자 크기 설명", Modifier.size(18.dp)) }
     }
     val preview: @Composable () -> Unit = {
-        Column(Modifier.fillMaxWidth().border(1.dp, colors.outlineVariant, RoundedCornerShape(14.dp)).padding(12.dp)
-            .clearAndSetSemantics { contentDescription = "글자 크기 미리보기: 대화 열기 · 마지막 백업 3일 전" },
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("미리보기", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-            // Deliberately not clickable: this is a sample of a primary action, not a second server control.
-            Surface(color = colors.primary, contentColor = colors.onPrimary, shape = RoundedCornerShape(14.dp)) {
-                Text("대화 열기", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
-            }
-            Text("마지막 백업 3일 전", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-        }
+        AppearanceTextPreview(prefs.accent.label)
     }
     val sizes: @Composable () -> Unit = { SettingsSegments(LauncherTextSize.entries, prefs.textSize, { it.label },
         { onDisplay(prefs.copy(textSize = it)) }) }
@@ -92,7 +84,7 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
     val accents: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SettingsHeading("강조색")
-            Row(Modifier.selectableGroup()) {
+            FlowRow(Modifier.fillMaxWidth().selectableGroup()) {
                 LauncherAccent.entries.forEach { accent ->
                     val chosen = prefs.accent == accent
                     val source = remember { MutableInteractionSource() }
@@ -319,46 +311,43 @@ internal fun settingsInputColors() = OutlinedTextFieldDefaults.colors(
     cursorColor = MaterialTheme.colorScheme.secondary, focusedContainerColor = MaterialTheme.colorScheme.surface,
     unfocusedContainerColor = MaterialTheme.colorScheme.surface)
 
-internal fun needsBackgroundAttention(state: LauncherUiState, sdk: Int) =
-    !state.backgroundStatus.termuxBatteryUnrestricted || !state.backgroundStatus.wakeLockEnabled ||
-        state.backupStorageReady != true || TermuxProcessHelp.includesAndroid12ProcessLimit(sdk)
-
 @Composable
 internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel) {
     val bg = state.backgroundStatus
     var help by rememberSaveable { mutableStateOf(false) }
     val tokens = LocalLauncherColors.current
-    val checks = listOf(bg.termuxBatteryUnrestricted, bg.wakeLockEnabled, state.backupStorageReady == true)
-    val processLimit = TermuxProcessHelp.includesAndroid12ProcessLimit(Build.VERSION.SDK_INT)
-    listOf(false, true).forEach { normal ->
-        val rows = checks.indices.filter { checks[it] == normal }
-        if (rows.isNotEmpty() || (!normal && processLimit)) {
-            SettingsHeading(if (normal) "정상" else "확인이 필요해요")
-            SettingsGroup {
-                rows.forEachIndexed { index, row ->
-                    if (index != 0) SettingsDivider()
-                    val tint = if (normal) tokens.live else tokens.accent
-                    when (row) {
-                        0 -> SettingsRow("배터리 사용 제한 해제", if (normal) "정상" else "확인 필요", caption = "Termux가 백그라운드에서 멈추지 않게 해요",
-                            valueColor = tint, onClick = vm::openDeviceBatterySettings)
-                        1 -> SettingsRow("화면이 꺼져도 계속 실행", if (normal) "정상" else "꺼짐", checked = bg.wakeLockEnabled,
-                            caption = "서버 실행 중 CPU·Wi-Fi 절전을 막아요", valueColor = tint, onClick = { vm.setWakeLockEnabled(!bg.wakeLockEnabled) })
-                        else -> SettingsRow("저장소 접근", when (state.backupStorageReady) { true -> "정상"; false -> "연결 필요"; null -> "확인 전" },
-                            caption = "백업을 Download 폴더에 저장해요", valueColor = tint, onClick = vm::openBackups)
-                    }
-                }
-                if (!normal && processLimit) {
-                    if (rows.isNotEmpty()) SettingsDivider()
-                    SettingsRow("하위 프로세스 제한", "확인 필요", caption = "Android 12 이상에서 긴 작업이 중간에 멈출 수 있어요",
-                        valueColor = tokens.accent, onClick = { help = true })
-                }
-            }
+    val installed = state.environment.termuxInstalled
+    val battery = bg.termuxBatteryUnrestricted.takeIf { installed }
+    val storage = state.backupStorageReady.takeIf { installed }
+    val pending = if (!installed && state.environmentChecked) "Termux 미설치" else "확인 전"
+    SettingsHeading("실행 설정")
+    SettingsGroup {
+        SettingsRow("배터리 사용 제한 해제", when (battery) { true -> "정상"; false -> "최적화 대상"; null -> pending },
+            caption = "Termux가 백그라운드에서 멈추지 않게 해요",
+            valueColor = when (battery) { true -> tokens.live; false -> tokens.accent; null -> tokens.ink2 },
+            enabled = installed, onClick = vm::openDeviceBatterySettings)
+        SettingsDivider()
+        SettingsRow("화면이 꺼져도 계속 실행", if (bg.wakeLockEnabled) "켜짐" else "꺼짐", checked = bg.wakeLockEnabled,
+            caption = "필요할 때 켜세요. 서버 실행 중 절전을 막아요.",
+            enabled = installed, onClick = { vm.setWakeLockEnabled(!bg.wakeLockEnabled) })
+        SettingsDivider()
+        SettingsRow("저장소 접근", when (storage) { true -> "정상"; false -> "연결 필요"; null -> pending },
+            caption = "백업을 Download 폴더에 저장해요",
+            valueColor = when (storage) { true -> tokens.live; false -> tokens.accent; null -> tokens.ink2 },
+            onClick = vm::openBackups)
+    }
+    if (TermuxProcessHelp.includesAndroid12ProcessLimit(Build.VERSION.SDK_INT)) {
+        SettingsHeading("도움말")
+        SettingsGroup {
+            SettingsRow("하위 프로세스 제한", "안내", caption = "작업이 반복해서 강제 종료될 때 참고하세요.",
+                onClick = { help = true })
         }
     }
     if (help) {
         val uri = LocalUriHandler.current
         V2BottomSheet(onClose = { help = false }) {
                 Text("백그라운드 실행 도움말", style = MaterialTheme.typography.titleLarge)
+                Text("Android 12 이상에 표시되는 안내예요. 런처가 이 기기의 실제 하위 프로세스 제한 설정을 검사한 결과는 아니에요.")
                 Text(TermuxProcessHelp.explanation(Build.VERSION.SDK_INT))
                 Text(if (bg.isSamsung) "배터리 설정 → 백그라운드 사용 제한 → 절전·초절전 앱에서 Termux를 제거하세요. 절전 예외에 추가하고, Termux 앱 정보 → 배터리에서 제한 없음을 선택하세요."
                     else "Termux 앱 정보에서 알림을 허용하고 배터리 제한을 확인하세요. Wake lock은 기기의 강제 종료까지 막지는 못해요.")
@@ -374,7 +363,6 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
 internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, openDetail: (String) -> Unit) {
     val context = LocalContext.current
     val uri = LocalUriHandler.current
-    val clipboard = LocalClipboardManager.current
     var dialog by rememberSaveable { mutableStateOf("") }
     val termux by produceState<TermuxInstallationInfo?>(null, state.environment.termuxInstalled) {
         value = withContext(Dispatchers.IO) { TermuxInstallationInspector(context.applicationContext).inspect() }
@@ -401,10 +389,10 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
     }
     SettingsHeading("지원")
     SettingsGroup {
-        SettingsRow(if (state.diagnosticReport == null) "진단 보고서 만들기" else "진단 보고서 복사", enabled = !state.isWorking, onClick = {
-            val report = state.diagnosticReport
-            if (report != null) { clipboard.setText(AnnotatedString(report.copyText())); vm.showMessage("진단 보고서를 복사했어요.") }
-            else { vm.openDiagnostics(DiagnosticPanel.OVERVIEW); vm.runDiagnostics() }
+        SettingsRow(if (state.diagnosticReport == null && !state.runningSettingsDiagnostic) "진단 보고서 만들기" else "진단 보고서 보기",
+            enabled = !state.isWorking || state.runningSettingsDiagnostic || state.diagnosticReport != null, onClick = {
+            openDetail(ABOUT_REPORT)
+            if (state.diagnosticReport == null && !state.isWorking) vm.makeSettingsReport()
         })
         SettingsDivider()
         SettingsRow("GitHub 저장소", onClick = { runCatching { uri.openUri("https://github.com/p16481012/ST-Launcher") }.onFailure { vm.showMessage("저장소 링크를 열 수 없어요.") } })
@@ -412,14 +400,17 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
         SettingsRow("오픈소스 라이선스", onClick = { dialog = "licenses" })
     }
     SettingsGroup {
-        SettingsRow("처음 설정 · 설치 확인", onClick = { vm.selectSection(MainSection.SETUP) })
+        val installed = state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected
+        SettingsRow(if (installed) "설치 정보 확인" else "처음 설정 · 설치 확인",
+            caption = if (installed) "현재 버전과 설치 위치를 확인해요. 다시 설치하지 않아요." else "Termux 연결과 SillyTavern 설치 상태를 확인해요.",
+            onClick = vm::openInstallationFromAbout)
         SettingsDivider()
         SettingsRow("업데이트 정보", onClick = { openDetail(ABOUT_UPDATE) })
         SettingsDivider()
         SettingsRow("바로가기 · 앱 관리", onClick = { openDetail(ABOUT_MANAGEMENT) })
     }
     if (dialog == "licenses") LicenseDialog { dialog = "" }
-    SettingsCaption("깡통 커뮤니티에서 만든 비공식 런처예요. SillyTavern·Termux 공식 프로젝트와는 관련이 없어요.")
+    SettingsCaption("깡통 커뮤니티에서 만든 비공식 런처예요.\nSillyTavern·Termux 공식 프로젝트와는 관련이 없어요.")
 }
 
 @Composable

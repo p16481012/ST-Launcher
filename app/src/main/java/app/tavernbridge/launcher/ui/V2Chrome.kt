@@ -173,12 +173,15 @@ internal fun V2TabBar(current: MainSection, onSelect: (MainSection) -> Unit) {
             Row(Modifier.fillMaxWidth().selectableGroup()) {
                 launcherTabs.forEach { tab ->
                     val active = tab == current
-                    val ink = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline
+                    val ink = if (active) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.outline
                     Column(Modifier.weight(1f).heightIn(min = 65.dp)
                         .selectable(active, role = Role.Tab, onClick = { onSelect(tab) }).padding(vertical = 6.dp),
                         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                        V2TabGlyph(tab, tab.icon(), ink, Modifier.size(21.dp))
-                        Text(tab.label, style = MaterialTheme.typography.labelMedium, color = ink,
+                        Box(Modifier.size(48.dp, 28.dp).background(if (active) MaterialTheme.colorScheme.secondaryContainer
+                            else Color.Transparent, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+                            V2TabGlyph(tab, tab.icon(), ink, Modifier.size(21.dp))
+                        }
+                        Text(tab.label, style = MaterialTheme.typography.labelMedium, color = if (active) MaterialTheme.colorScheme.onSurface else ink,
                             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium)
                     }
                 }

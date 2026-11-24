@@ -6,6 +6,42 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiagnosticReportTest {
+    @Test fun settingsReportOnlyRunsExternalChecksAfterAllPrerequisites() {
+        val connected = LauncherUiState(termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
+            environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true, managerConnected = true))
+        assertTrue(connected.readyForTermuxDiagnostic())
+        assertFalse(connected.copy(termuxSetup = TermuxSetupState()).readyForTermuxDiagnostic())
+        assertFalse(connected.copy(environment = connected.environment.copy(commandPermissionGranted = false)).readyForTermuxDiagnostic())
+        assertFalse(connected.copy(environment = connected.environment.copy(termuxInstalled = false)).readyForTermuxDiagnostic())
+        assertFalse(connected.copy(environment = connected.environment.copy(managerConnected = false)).readyForTermuxDiagnostic())
+    }
+
+    private fun item(id: String, status: DiagnosticStatus) = DiagnosticItem(id, id, id, status = status)
+
+    @Test fun groupRowsAndCopiedSummaryCountActualResultsNotMetadata() {
+        val report = DiagnosticReport("today", listOf(item("version", DiagnosticStatus.INFO),
+            item("first", DiagnosticStatus.OK), item("error", DiagnosticStatus.ERROR),
+            item("skipped", DiagnosticStatus.INFO), item("warning", DiagnosticStatus.WARNING),
+            item("second", DiagnosticStatus.OK)), mapOf("build" to "5"))
+        assertEquals(4, report.checkedCount)
+        assertEquals(listOf("first", "second"), report.rows(DiagnosticStatus.OK).map { it.id })
+        assertEquals(listOf("version", "skipped"), report.rows(DiagnosticStatus.INFO).map { it.id })
+        assertEquals(2, report.infoCount)
+        assertEquals("확인 필요", report.indexLabel)
+        assertTrue(report.copyText().contains("검사 결과 4개 · 정상 2개 · 확인 필요 1개 · 오류 1개"))
+        assertTrue(report.copyText().contains("참고 2개 (검사 수에서 제외)"))
+    }
+
+    @Test fun partialAndInfoOnlyReportsNeverInventPassedChecks() {
+        val metadata = DiagnosticReport("now", listOf(item("version", DiagnosticStatus.INFO)))
+        val partial = metadata.copy(items = metadata.items + item("missing_permission", DiagnosticStatus.ERROR))
+        assertEquals(0, metadata.checkedCount)
+        assertEquals("판정 없음", metadata.indexLabel)
+        assertEquals("판정한 검사 없음", metadata.copy(items = emptyList()).checkTitle)
+        assertEquals("검사 결과 1개", partial.checkTitle)
+        assertEquals("정상", metadata.copy(items = metadata.items + item("ok", DiagnosticStatus.OK)).indexLabel)
+    }
+
     @Test
     fun `copied report masks every free text field without truncating the report`() {
         val report = DiagnosticReport(

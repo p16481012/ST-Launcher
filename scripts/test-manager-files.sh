@@ -86,6 +86,7 @@ expect_code 64 st_file_action rename "$(b64 data)" "$(b64 data/nested)"
 trash_result="$(st_file_action trash "$(b64 data/default-user)")"
 trash_id="${trash_result#trash_id=}"
 [[ ! -e "$ST_HOME/data/default-user" && -n "$trash_id" ]] || fail 'trash did not remove the live entry'
+st_file_action list-trash | grep -Fxq "$(printf 'trash\t%s\tD\t%s' "$trash_id" "$(b64 data/default-user)")" || fail 'existing directory receipt not listed'
 st_file_action untrash "$trash_id" >/dev/null
 grep -Fxq keep "$ST_HOME/data/default-user/chats/keep.jsonl" || fail 'undo lost nested user data'
 trash_result="$(st_file_action trash "$(b64 data/has..dots.txt)")"
@@ -93,6 +94,18 @@ trash_id="${trash_result#trash_id=}"
 printf 'replacement' > "$ST_HOME/data/has..dots.txt"
 expect_code 43 st_file_action untrash "$trash_id"
 [[ "$(cat "$ST_HOME/data/has..dots.txt")" == replacement ]] || fail 'undo overwrote replacement'
+expect_code 43 st_file_action mkdir "$(b64 data/has..dots.txt)"
+[[ "$(cat "$ST_HOME/data/has..dots.txt")" == replacement ]] || fail 'creating a directory replaced a file'
+st_file_action list-trash | grep -Fxq "$(printf 'trash\t%s\tF\t%s' "$trash_id" "$(b64 data/has..dots.txt)")" || fail 'restore collision lost original trash receipt'
+# A newer deletion must not hide an old receipt. Restore the older one after a collision is resolved.
+printf 'later' > "$ST_HOME/data/later.txt"
+newer="$(st_file_action trash "$(b64 data/later.txt)")"
+catalog="$(st_file_action list-trash)"
+[[ "$catalog" == *"$trash_id"* && "$catalog" == *"${newer#trash_id=}"* ]] || fail 'older receipts disappeared from the catalog'
+mv -- "$ST_HOME/data/has..dots.txt" "$ST_HOME/data/independent-copy.txt"
+st_file_action untrash "$trash_id" >/dev/null
+[[ "$(cat "$ST_HOME/data/has..dots.txt")" == ok && "$(cat "$ST_HOME/data/independent-copy.txt")" == replacement ]] || fail 'older restore failed'
+[[ "$(st_file_action list-trash)" != *"$trash_id"* ]] || fail 'restored receipt is still in catalog'
 
 staged='SillyTavern-File-11111111-2222-3333-4444-555555555555.tmp'
 printf '\000\377\001binary-image' > "$ST_DOWNLOAD_DIR/$staged"

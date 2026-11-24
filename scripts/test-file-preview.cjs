@@ -80,4 +80,35 @@ try {
     assert(fs.existsSync(path.join(install, 'small.txt')));
     run('trash', 'small.txt', 'invalid', 42);
     console.log('PASS selected-file revisions reject stale and invalid trash requests');
+
+    const catalog = cursor => {
+        const proc = spawnSync(process.execPath, ['-', install, launcher, downloads, root, '', 'list-trash', cursor],
+            { input: code, encoding: 'utf8' });
+        assert.strictEqual(proc.status, 0, proc.stderr);
+        assert(Buffer.byteLength(proc.stdout) < 40 * 1024);
+        return proc.stdout;
+    };
+    assert.match(catalog(''), /next_trash=\r?\n/);
+    const bin = path.join(launcher, 'file-trash');
+    assert(!fs.existsSync(bin), 'read-only list created a trash directory');
+    fs.mkdirSync(bin);
+    const receipt = n => (1800000000000 + n) + '-12345678-1234-1234-1234-123456789abc';
+    for (let i = 0; i < 105; i++) {
+        const container = path.join(bin, receipt(i));
+        fs.mkdirSync(container);
+        fs.writeFileSync(path.join(container, 'metadata.json'), JSON.stringify({ root: i === 0 ? downloads : fs.realpathSync(install), relative: 'data/한글 ' + i }));
+        if (i !== 1) fs.writeFileSync(path.join(container, 'item'), 'private-content');
+    }
+    const page1 = catalog('');
+    const cursor = fields(page1).next_trash;
+    assert.match(cursor, /^[0-9]+-[0-9a-f-]+$/);
+    const page2 = catalog(cursor);
+    assert.strictEqual(fields(page2).next_trash, '');
+    assert.strictEqual(fields(page2).unavailable, '1');
+    const ids = (page1 + page2).split(/\r?\n/).filter(line => line.startsWith('trash\t')).map(line => line.split('\t')[1]);
+    assert.strictEqual(ids.length, 103);
+    assert.strictEqual(new Set(ids).size, 103);
+    assert(!ids.includes(receipt(0)) && !ids.includes(receipt(1)));
+    assert(!(page1 + page2).includes('private-content'));
+    console.log('PASS read-only, paged trash history includes old valid receipts without leaking other installations or file contents');
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

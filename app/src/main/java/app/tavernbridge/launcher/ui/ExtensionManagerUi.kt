@@ -43,10 +43,9 @@ fun ExtensionManagerDialog(
     ToolPaneHost(embedded, { if (!busy) onClose() }) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val checked = entries.count { it.remoteAhead != null }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(if (inventory == null) "설치된 확장 확인" else listOf(
-                        "${entries.size}개${if (inventory.nextCursor != null) "+" else ""} 설치됨", if (checked == 0 && entries.any { it.canUpdate }) "업데이트 미확인" else "업데이트 ${outdated.size}개",
+                        "${entries.size}개${if (inventory.nextCursor != null) "+" else ""} 설치됨", extensionCheckSummary(entries),
                         "꺼짐 ${entries.count { it.disabled }}개").joinToString(" · "),
                         Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     IconButton(onClick = onRefresh, enabled = !loading && !busy) { Icon(Icons.Outlined.Refresh, "확장 목록 새로고침") }
@@ -72,9 +71,10 @@ fun ExtensionManagerDialog(
                             Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.weight(1f)) {
-                                    ToolRow(item.name, extensionVersionLabel(item),
-                                        when { item.disabled -> "꺼짐"; item.remoteAhead == 0 -> "최신"; else -> "" },
-                                        icon = Icons.Outlined.Extension, singleLine = true, dataNote = true,
+                                    ToolRow(item.name, listOf(extensionVersionLabel(item),
+                                        item.checkLabel().takeUnless { (item.remoteAhead ?: 0) > 0 }.orEmpty())
+                                        .filter { it.isNotBlank() }.joinToString(" · "), if (item.disabled) "꺼짐" else "",
+                                        icon = Icons.Outlined.Extension, singleLine = true,
                                         onClick = { openId = if (openId == item.id) null else item.id })
                                 }
                                 if (item.canUpdate && (item.remoteAhead ?: 0) > 0)
@@ -85,9 +85,15 @@ fun ExtensionManagerDialog(
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("${item.scope} · ${if (item.disabled) "런처에서 비활성" else "사용 가능"}")
                                 Text("버전 ${item.version.ifBlank { "알 수 없음" }} · ${item.commit.ifBlank { "Git 정보 없음" }}", style = MaterialTheme.typography.bodySmall)
+                                if (item.gitBranch.isNotBlank()) Text("${item.gitBranch} · ${item.checkLabel()}", style = MaterialTheme.typography.bodySmall)
                                 if (item.updateRestriction.isNotBlank()) Text(item.updateRestriction, style = MaterialTheme.typography.bodySmall)
                                 OutlinedButton(onClick = { select(item, ExtensionAction.UPDATE) },
-                                    enabled = canChange && item.canUpdate, modifier = Modifier.fillMaxWidth()) { Text("업데이트") }
+                                    enabled = canChange && item.canUpdate && item.remoteAhead != 0 && item.checkIssue != ExtensionCheckIssue.DIVERGED,
+                                    modifier = Modifier.fillMaxWidth()) { Text(when {
+                                        item.remoteAhead == 0 -> "변경할 내용 없음"
+                                        item.remoteAhead == null -> "Git에서 직접 확인 후 업데이트"
+                                        else -> "업데이트"
+                                    }) }
                                 val toggle = if (item.disabled) ExtensionAction.ENABLE else ExtensionAction.DISABLE
                                 OutlinedButton(onClick = { select(item, toggle) }, enabled = canChange,
                                     modifier = Modifier.fillMaxWidth()) { Text(toggle.label) }
@@ -103,8 +109,10 @@ fun ExtensionManagerDialog(
                     }
                 }
                 V2BottomActions {
-                if (onCheckUpdates != null) OutlinedButton(onClick = onCheckUpdates, enabled = !loading && !busy && entries.any { it.canUpdate },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("새 버전 확인") }
+                if (onCheckUpdates != null) OutlinedButton(onClick = onCheckUpdates, enabled = !loading && !busy && entries.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Text(if ((inventory?.nextCheckOffset ?: 0) != 0) "새 버전 확인 · 다음 최대 40개" else "새 버전 확인")
+                }
                 if (onUpdateAll != null && outdated.isNotEmpty()) Button(onClick = { bulkRevisions = outdated.associate { it.id to it.revision } }, enabled = canChange,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("확인된 ${outdated.size}개 모두 업데이트") }
                 if (!embedded) TextButton(onClick = onClose, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("닫기") }

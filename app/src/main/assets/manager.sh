@@ -2721,13 +2721,41 @@ function moveNoReplace(source, destination) {
     execFileSync('mv', ['-T', '-n', '--', source, destination], { stdio: ['ignore', 'ignore', 'pipe'] });
     if (exists(source)) fail(43, '대상 위치가 변경되어 이동하지 않았습니다.');
 }
-function trashRoot() {
+function trashRoot(create = true) {
     const launcher = fs.realpathSync(launcherArgument);
     const directory = path.join(launcher, 'file-trash');
-    if (!exists(directory)) fs.mkdirSync(directory, { mode: 0o700 });
+    if (!exists(directory)) {
+        if (!create) return null;
+        fs.mkdirSync(directory, { mode: 0o700 });
+    }
     if (fs.lstatSync(directory).isSymbolicLink() || !fs.lstatSync(directory).isDirectory()) fail(44, '안전한 휴지통 경로를 열 수 없습니다.');
-    fs.chmodSync(directory, 0o700);
+    if (create) fs.chmodSync(directory, 0o700);
     return directory;
+}
+const trashIdPattern = /^[0-9]{1,16}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+function trashRecord(base, id) {
+    if (!trashIdPattern.test(id)) fail(64, '올바르지 않은 휴지통 항목입니다.');
+    const container = path.join(base, id);
+    if (!fs.lstatSync(container).isDirectory()) fail(44, '안전한 휴지통 항목이 아닙니다.');
+    const metadataPath = path.join(container, 'metadata.json');
+    const fd = fs.openSync(metadataPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    let metadata;
+    try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile() || stat.size > 8192) fail(44, '휴지통 복원 정보를 확인할 수 없습니다.');
+        const buffer = Buffer.alloc(8193);
+        const count = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        if (count > 8192) fail(44, '휴지통 복원 정보가 너무 깁니다.');
+        metadata = JSON.parse(utf8(buffer.subarray(0, count)));
+    } finally { fs.closeSync(fd); }
+    if (metadata.root !== root) return null;
+    if (typeof metadata.relative !== 'string') fail(44, '휴지통 원래 경로가 없습니다.');
+    const relative = relativePath(b64(metadata.relative));
+    writable(relative);
+    const source = path.join(container, 'item');
+    const stat = fs.lstatSync(source);
+    if (!stat.isFile() && !stat.isDirectory()) fail(44, '일반 파일과 폴더만 복원합니다.');
+    return { container, metadataPath, source, relative, directory: stat.isDirectory() };
 }
 function directoryIdentity(stat) {
     return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].map(value => value.toString()).join(':');
@@ -2767,19 +2795,30 @@ function folderImportSource(encodedSource) {
 try {
     root = fs.realpathSync(rootArgument);
     if (!fs.statSync(root).isDirectory()) fail(8, 'SillyTavern 폴더를 찾을 수 없습니다.');
-    if (action === 'untrash') {
-        if (!/^[0-9]+-[a-f0-9-]{36}$/.test(encoded)) fail(64, '올바르지 않은 휴지통 항목입니다.');
-        const container = path.join(trashRoot(), encoded);
-        if (fs.lstatSync(container).isSymbolicLink()) fail(44, '허용되지 않는 휴지통 경로입니다.');
-        const metadataPath = path.join(container, 'metadata.json');
-        if (fs.lstatSync(metadataPath).isSymbolicLink() || fs.statSync(metadataPath).size > 8192) fail(44, '허지통 복원 정보를 확인할 수 없습니다.');
-        const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-        if (metadata.root !== root || typeof metadata.relative !== 'string') fail(44, '다른 설치의 휴지통 항목은 복원할 수 없습니다.');
-        const relative = relativePath(b64(metadata.relative));
-        writable(relative);
+    if (action === 'list-trash') {
+        if (encoded && !trashIdPattern.test(encoded)) fail(64, '잘못된 휴지통 목록 위치입니다.');
+        const base = trashRoot(false);
+        const ids = (base ? fs.readdirSync(base) : []).filter(id => trashIdPattern.test(id) && (!encoded || id < encoded)).sort().reverse();
+        const rows = [];
+        let cursor = '', skipped = 0, size = 0, scanned = 0;
+        for (const id of ids) {
+            if (scanned >= 100 || size >= 24000) break;
+            scanned++;
+            cursor = id;
+            try {
+                const record = trashRecord(base, id);
+                if (!record) continue;
+                const row = ['trash', id, record.directory ? 'D' : 'F', b64(record.relative)].join('\t');
+                rows.push(row);
+                size += Buffer.byteLength(row) + 1;
+            } catch (_) { skipped++; }
+        }
+        console.log([...rows, 'unavailable=' + skipped, 'next_trash=' + (scanned < ids.length ? cursor : '')].join('\n'));
+    } else if (action === 'untrash') {
+        const record = trashRecord(trashRoot(), encoded);
+        if (!record) fail(44, '다른 설치의 휴지통 항목은 복원할 수 없습니다.');
+        const { container, metadataPath, source, relative } = record;
         const destination = resolve(relative, true);
-        const source = path.join(container, 'item');
-        if (fs.lstatSync(source).isSymbolicLink()) fail(44, '심볼릭 링크는 복원하지 않습니다.');
         moveNoReplace(source, destination);
         fs.unlinkSync(metadataPath);
         fs.rmdirSync(container);
@@ -2943,12 +2982,13 @@ try {
             writable(relative);
             // Exclusive creation also rejects a file, directory, or symlink
             // created by another app after path validation. Never truncate.
+            if (exists(target)) fail(43, fs.lstatSync(target).isDirectory() ? '같은 이름의 폴더가 있습니다. 다른 파일 이름을 입력해 주세요.' : '같은 이름의 파일이 있습니다. 다른 이름을 입력해 주세요.');
             const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o600);
             try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
             console.log(`created_b64=${b64(relative)}`);
         } else if (action === 'mkdir') {
             writable(relative);
-            if (exists(target)) fail(43, '같은 이름의 항목이 이미 있습니다.');
+            if (exists(target)) fail(43, fs.lstatSync(target).isDirectory() ? '같은 이름의 폴더가 있습니다. 다른 이름을 입력해 주세요.' : '같은 이름의 파일이 있습니다. 다른 폴더 이름을 입력해 주세요.');
             fs.mkdirSync(target, { mode: 0o700 });
             console.log(`created_b64=${b64(relative)}`);
         } else if (action === 'rename') {
@@ -2971,7 +3011,7 @@ try {
     }
 } catch (error) {
     const code = error.fileCode || ({ ENOENT: 6, ENOTDIR: 6, EEXIST: 43, ELOOP: 44, ENOSPC: 30 }[error.code]) || 45;
-    console.error(error.fileCode ? error.message : `파일 작업을 완료하지 못했습니다 (${error.code || 'IO_ERROR'}).`);
+    console.error(error.fileCode ? error.message : code === 43 ? '같은 이름의 항목이 생겼습니다. 덮어쓰지 않았습니다. 다른 이름으로 다시 시도해 주세요.' : `파일 작업을 완료하지 못했습니다 (${error.code || 'IO_ERROR'}).`);
     process.exitCode = code;
 }
 ST_LAUNCHER_FILES_JS
@@ -4589,6 +4629,7 @@ case "${1:-doctor}" in
     import-install) import_install "${2:-}" "${3:-keep}" "${4:-empty}" ;;
     list-user-folders) list_user_folders ;;
     list-st-files) list_st_files "${2:-}" "${3:-0}" ;;
+    list-st-trash) st_file_action list-trash "${2:-}" ;;
     read-st-file) read_st_file "${2:-}" ;;
     preview-st-file) preview_st_file "${2:-}" ;;
     write-st-file) write_st_file "${2:-}" "${3:-}" "${4:-}" ;;

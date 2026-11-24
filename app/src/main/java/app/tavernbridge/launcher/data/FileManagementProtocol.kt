@@ -51,6 +51,23 @@ internal fun localFolderPathForTree(authority: String?, documentId: String, prim
 }
 
 internal object FileManagementProtocol {
+    fun trashPage(output: String, cursor: String): app.tavernbridge.launcher.model.TavernTrashPage {
+        val lines = output.lineSequence().filter(String::isNotBlank).toList()
+        val next = lines.single { it.startsWith("next_trash=") }.substringAfter('=')
+        val unavailable = lines.single { it.startsWith("unavailable=") }.substringAfter('=').toInt()
+        val validId = app.tavernbridge.launcher.model.tavernTrashId
+        require(unavailable in 0..100 && (next.isEmpty() || validId.matches(next) && (cursor.isEmpty() || next < cursor)))
+        val entries = lines.filter { it.startsWith("trash\t") }.map {
+            val f = it.split('\t')
+            require(f.size == 4 && validId.matches(f[1]) && (cursor.isEmpty() || f[1] < cursor) && f[2] in setOf("D","F"))
+            val path = decode(f[3])
+            require(path.split('/').all(::validTavernEntryName))
+            app.tavernbridge.launcher.model.TavernTrashEntry(f[1], path, f[2] == "D")
+        }
+        require(entries.size <= 100 && entries.map { it.id }.distinct().size == entries.size)
+        return app.tavernbridge.launcher.model.TavernTrashPage(entries, next, unavailable)
+    }
+
     private fun fields(output: String) = output.lineSequence()
         .filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
 

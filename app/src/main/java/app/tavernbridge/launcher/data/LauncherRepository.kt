@@ -106,13 +106,18 @@ class LauncherRepository(private val context: Context) {
     }
 
     fun backgroundStatus(serverRunning: Boolean = false): BackgroundStatus {
-        val powerManager = context.getSystemService(PowerManager::class.java)
         return BackgroundStatus(
-            termuxBatteryUnrestricted = powerManager?.isIgnoringBatteryOptimizations(TermuxContract.PACKAGE) == true,
+            termuxBatteryUnrestricted = termuxBatteryExemption(),
             wakeLockEnabled = wakeLockEnabled(),
             wakeLockActive = wakeLockEnabled() && serverRunning,
             manufacturer = android.os.Build.MANUFACTURER.orEmpty(),
         )
+    }
+
+    private fun termuxBatteryExemption(): Boolean? = try {
+        context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(TermuxContract.PACKAGE)
+    } catch (_: SecurityException) {
+        null
     }
 
     suspend fun setTermuxWakeLock(enabled: Boolean): TermuxCommandResult =
@@ -556,6 +561,13 @@ class LauncherRepository(private val context: Context) {
     fun trashReceipts(): List<String> = app.tavernbridge.launcher.model.TrashUndoGroup.parse(
         preferences.getString("last_trashed_group", null) ?: preferences.getString("last_trashed_entry", "").orEmpty())
     fun lastTrashedEntryId(): String = trashReceipts().lastOrNull().orEmpty()
+    suspend fun readTrashPage(cursor: String): app.tavernbridge.launcher.model.TavernTrashPage {
+        require(cursor.isEmpty() || app.tavernbridge.launcher.model.tavernTrashId.matches(cursor))
+        val result = runManager("list-st-trash ${shellQuote(cursor)}", 30_000)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "휴지통 목록 응답이 잘렸습니다. 다시 열어 주세요." }
+        return FileManagementProtocol.trashPage(result.stdout, cursor)
+    }
     private fun storeTrashReceipts(ids: List<String>) {
         preferences.edit().remove("last_trashed_entry").putString("last_trashed_group", ids.joinToString("\n")).commit()
     }
@@ -577,6 +589,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     suspend fun restoreSillyTavernEntry(trashId: String): TermuxCommandResult {
+        require(app.tavernbridge.launcher.model.tavernTrashId.matches(trashId))
         val result = runManager("restore-st-trash ${shellQuote(trashId)}", 30_000)
         if (result.isSuccess) removeTrashReceipt(trashId)
         return result
@@ -700,11 +713,12 @@ class LauncherRepository(private val context: Context) {
     suspend fun operationHistory(): TermuxCommandResult =
         runExistingManager("history 300", timeoutMillis = 20_000)
 
-    suspend fun diagnose(): DiagnosticReport {
-        val progress = LocalProgressJournal("diagnose", { localOperationProgress = it })
+    suspend fun diagnose(allowTermuxChecks: Boolean = true): DiagnosticReport {
+        // A local-only settings report must neither poll nor publish into a Termux operation.
+        val progress = LocalProgressJournal("diagnose", { if (allowTermuxChecks) localOperationProgress = it })
         progress.phase("Android 설정 검사", "Termux 설치·명령 권한·배터리 설정을 확인합니다.", 3)
         return try {
-            val report = diagnoseWithProgress(progress)
+            val report = diagnoseWithProgress(progress, allowTermuxChecks)
             val installation = withContext(Dispatchers.IO) {
                 runCatching { TermuxInstallationInspector(context).inspect() }.getOrNull()
             }
@@ -720,10 +734,10 @@ class LauncherRepository(private val context: Context) {
                 items = report.items + (installation?.diagnosticItems() ?: emptyList()) + storageNotice,
                 copyOnlyDetails = report.copyOnlyDetails + (installation?.copyOnlyDetails() ?: emptyMap()),
             )
-        } finally { localOperationProgress = null }
+        } finally { if (allowTermuxChecks) localOperationProgress = null }
     }
 
-    private suspend fun diagnoseWithProgress(progress: LocalProgressJournal): DiagnosticReport {
+    private suspend fun diagnoseWithProgress(progress: LocalProgressJournal, allowTermuxChecks: Boolean): DiagnosticReport {
         val items = mutableListOf<DiagnosticItem>()
         val termuxInstalled = executor.isTermuxInstalled()
         progress.completedItem("Termux 설치 확인")
@@ -753,23 +767,31 @@ class LauncherRepository(private val context: Context) {
         )
 
         if (termuxInstalled) {
-            val powerManager = context.getSystemService(PowerManager::class.java)
-            val excluded = powerManager?.isIgnoringBatteryOptimizations(TermuxContract.PACKAGE) == true
+            val excluded = termuxBatteryExemption()
             items += DiagnosticItem(
                 id = "battery",
                 title = "Termux 배터리 최적화",
-                value = if (excluded) "제외됨" else "최적화 대상",
-                detail = if (excluded) "화면이 꺼진 뒤에도 서버가 유지될 가능성이 높습니다."
-                else "장시간 백그라운드 실행이 중단될 수 있습니다.",
-                status = if (excluded) DiagnosticStatus.OK else DiagnosticStatus.WARNING,
-                recommendation = if (excluded) "" else "Termux 배터리 설정을 ‘제한 없음’으로 바꾸고 제조사 절전 목록에서도 제외해 주세요.",
+                value = when (excluded) { true -> "제외됨"; false -> "최적화 대상"; null -> "확인할 수 없음" },
+                detail = when (excluded) {
+                    true -> "화면이 꺼진 뒤에도 서버가 유지될 가능성이 높습니다."
+                    false -> "장시간 백그라운드 실행이 중단될 수 있습니다."
+                    null -> "기기에서 배터리 최적화 예외 상태를 읽지 못했습니다."
+                },
+                status = when (excluded) { true -> DiagnosticStatus.OK; false -> DiagnosticStatus.WARNING; null -> DiagnosticStatus.INFO },
+                recommendation = if (excluded == false) "Termux 배터리 설정을 ‘제한 없음’으로 바꾸고 제조사 절전 목록에서도 제외해 주세요." else "",
             )
             progress.completedItem("Termux 배터리 최적화 설정 확인")
         } else {
             progress.completedItem("Termux 미설치 확인 · 배터리 검사 생략")
         }
 
-        if (!termuxInstalled || !permissionGranted) {
+        if (!allowTermuxChecks || !termuxInstalled || !permissionGranted) {
+            items += DiagnosticItem("termux_checks_skipped", "Termux 내부 검사", "실행하지 않음",
+                when {
+                    !termuxInstalled -> "Termux가 설치되어 있지 않아 Android 항목만 확인했어요."
+                    !permissionGranted -> "외부 명령 권한이 없어 Android 항목만 확인했어요."
+                    else -> "Termux 연결을 확인하기 전이라 Android 항목만 확인했어요."
+                }, DiagnosticStatus.INFO, recommendation = "처음 설정에서 Termux 연결을 마친 뒤 다시 진단해 주세요.")
             return diagnosticReport(items)
         }
 
