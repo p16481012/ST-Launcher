@@ -105,7 +105,7 @@ internal fun TermuxPasteIllustration() {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(colors.surfaceContainer),
+                        .background(colors.surfaceContainer)
                         .padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
