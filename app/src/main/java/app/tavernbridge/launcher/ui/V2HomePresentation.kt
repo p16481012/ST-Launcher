@@ -1,8 +1,9 @@
 package app.tavernbridge.launcher.ui
 
-internal fun v2DaysSince(last: Long, now: Long): String? {
+internal fun v2DaysSince(last: Long, now: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String? {
     if (last <= 0 || last > now) return null
-    val days = (now - last) / 86_400_000L
+    fun day(millis: Long) = java.time.Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+    val days = java.time.temporal.ChronoUnit.DAYS.between(day(last), day(now))
     return if (days == 0L) "오늘" else "${days}일 전"
 }
 

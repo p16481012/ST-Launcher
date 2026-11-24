@@ -2,8 +2,7 @@ package app.tavernbridge.launcher.ui
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -41,10 +40,24 @@ class V2VisualTest {
         File(output, "$name.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
     }
 
+    @Composable private fun ScreenChrome(section: MainSection, content: @Composable () -> Unit) {
+        BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            if (chooseLauncherNavigation(maxWidth.value) == LauncherNavigationMode.RAIL) {
+                Row(Modifier.fillMaxSize()) {
+                    LauncherNavigationRail(section, {}, { it.icon() })
+                    Box(Modifier.weight(1f).fillMaxHeight()) { content() }
+                }
+            } else Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) { content() }
+                V2TabBar(section) {}
+            }
+        }
+    }
+
     @Test fun homeUsesAppropriateLayoutAndReadyAction() {
         var opens = 0
         compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            ScreenChrome(MainSection.HOME) {
                 V2HomeDashboard(fixture, onOpen = { opens++ }, onStart = {}, onStop = {}, onRestart = {}, onBackups = {},
                     onUpdate = {}, onLogs = {}, onHistory = {}, onReadHistory = {}, onRefresh = {}, onRetry = {}, onSnooze = {})
             }
@@ -78,13 +91,15 @@ class V2VisualTest {
             var display by remember { mutableStateOf(prefs) }
             SillyTavernLauncherTheme(AppTheme.LIGHT, display) {
                 val state = fixture.copy(displayPreferences = display)
-                V2SettingsLayout(state) { page, roomy ->
-                    check(page == SettingsPage.DISPLAY)
-                    V2DisplaySettings(state, {}, { display = it; shown = it }, roomy)
+                ScreenChrome(MainSection.SETTINGS) {
+                    V2SettingsLayout(state) { page, roomy ->
+                        check(page == SettingsPage.DISPLAY)
+                        V2DisplaySettings(state, {}, { display = it; shown = it }, roomy)
+                    }
                 }
             }
         }
-        compose.onNodeWithText("설정").assertIsDisplayed()
+        compose.onAllNodesWithText("설정").onFirst().assertIsDisplayed()
         if (!wide) {
             compose.onNodeWithText("글자 크기").assertDoesNotExist()
             capture("settings-index")
@@ -95,6 +110,6 @@ class V2VisualTest {
         compose.onNodeWithText("크게").performClick()
         compose.runOnIdle { assertEquals(LauncherTextSize.LARGE, shown.textSize) }
         if (!wide) compose.onNodeWithContentDescription("설정 목록으로").performClick()
-        compose.onNodeWithText("설정").assertIsDisplayed()
+        compose.onAllNodesWithText("설정").onFirst().assertIsDisplayed()
     }
 }

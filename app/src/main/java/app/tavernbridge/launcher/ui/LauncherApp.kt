@@ -9,17 +9,13 @@ import android.os.Process
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,80 +30,50 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.HealthAndSafety
 import androidx.compose.material.icons.outlined.InstallMobile
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
-import androidx.compose.material.icons.outlined.Launch
-import androidx.compose.material.icons.outlined.LightMode
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.FileDownload
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text as MaterialText
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -118,14 +84,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.heading
@@ -138,48 +102,31 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import app.tavernbridge.launcher.BuildConfig
 import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.LauncherViewModel
-import app.tavernbridge.launcher.model.AppTheme
 import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.backupRestoreWarnings
 import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupTransferAction
-import app.tavernbridge.launcher.model.BrowserOption
 import app.tavernbridge.launcher.model.backupFolderInfo
-import app.tavernbridge.launcher.model.DiagnosticItem
 import app.tavernbridge.launcher.model.DiagnosticPanel
-import app.tavernbridge.launcher.model.DiagnosticReport
-import app.tavernbridge.launcher.model.DiagnosticStatus
-import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.ToolPage
-import app.tavernbridge.launcher.model.launcherTabs
 import app.tavernbridge.launcher.model.ManagementPanel
-import app.tavernbridge.launcher.model.SettingsPanel
-import app.tavernbridge.launcher.model.ServerReadiness
 import app.tavernbridge.launcher.model.SillyBranch
 import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.hasInstallationHistory
 import app.tavernbridge.launcher.model.shouldShowSetupGuide
-import app.tavernbridge.launcher.model.setupEligibleStep
 import app.tavernbridge.launcher.termux.TermuxContract
 import app.tavernbridge.launcher.ui.components.OperationResultCard
 import app.tavernbridge.launcher.ui.components.OperationCancelControl
 import app.tavernbridge.launcher.ui.components.WorkProgressLog
 import app.tavernbridge.launcher.ui.components.WorkElapsedTime
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
-import app.tavernbridge.launcher.ui.theme.serverStatusIndicatorColor
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -977,46 +924,11 @@ private fun InfoRow(label: String, value: String, monospace: Boolean = false) {
 }
 
 @Composable
-private fun SamsungBatteryStep(number: String, title: String, description: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = .62f),
-                RoundedCornerShape(14.dp),
-            )
-            .padding(12.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
-            Text(
-                number,
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                color = MaterialTheme.colorScheme.onPrimary,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(title, fontWeight = FontWeight.SemiBold)
-            Text(
-                description,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
 private fun DirectSpinner(
     modifier: Modifier = Modifier,
     strokeWidth: Dp = 2.dp,
 ) {
-    CircularProgressIndicator(
-        modifier = modifier,
-        strokeWidth = strokeWidth,
-    )
+    V2BusyIndicator(modifier = modifier, linear = false, strokeWidth = strokeWidth)
 }
 
 @Composable
@@ -1526,273 +1438,6 @@ private fun ManagementScreen(
 
 
 @Composable
-private fun DiagnosticsScreen(
-    state: LauncherUiState,
-    onSelectPanel: (DiagnosticPanel) -> Unit,
-    onRunDiagnostics: () -> Unit,
-    onRefresh: () -> Unit,
-    onLoadPreviousLogs: () -> Unit,
-    onLoadHistory: () -> Unit,
-    onOpenTerminalLog: () -> Unit,
-    onOpenBatterySettings: () -> Unit,
-    onOpenTermuxSettings: () -> Unit,
-    storageSetupCommand: String,
-    onOpenTermux: () -> Unit,
-    onStorageCommandCopied: () -> Unit,
-    onCopied: () -> Unit,
-) {
-    val clipboard = LocalClipboardManager.current
-    val visibleLog = when (state.diagnosticPanel) {
-        DiagnosticPanel.SERVER_LOG -> state.logs
-        DiagnosticPanel.PREVIOUS_SERVER_LOG -> state.previousServerLogs
-        DiagnosticPanel.WORK_HISTORY -> state.operationHistory
-        DiagnosticPanel.OVERVIEW -> ""
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text("진단", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-        SectionTabs(DiagnosticPanel.entries, state.diagnosticPanel, onSelectPanel) { it.label }
-
-        if (state.diagnosticPanel == DiagnosticPanel.OVERVIEW) {
-            DiagnosticOverview(
-                report = state.diagnosticReport,
-                onRun = onRunDiagnostics,
-                onOpenBatterySettings = onOpenBatterySettings,
-                onOpenTermuxSettings = onOpenTermuxSettings,
-                onStorageSetup = {
-                    clipboard.setText(AnnotatedString(storageSetupCommand))
-                    onStorageCommandCopied()
-                    onOpenTermux()
-                },
-                onCopied = onCopied,
-                modifier = Modifier.weight(1f),
-            )
-        } else {
-            val title = when (state.diagnosticPanel) {
-                DiagnosticPanel.SERVER_LOG -> "SillyTavern 서버 로그"
-                DiagnosticPanel.PREVIOUS_SERVER_LOG -> "이전 서버 세션 로그"
-                DiagnosticPanel.WORK_HISTORY -> "런처 작업 기록"
-                DiagnosticPanel.OVERVIEW -> ""
-            }
-            val description = when (state.diagnosticPanel) {
-                DiagnosticPanel.SERVER_LOG -> "모델/API 오류와 서버 출력 · 2초마다 갱신"
-                DiagnosticPanel.PREVIOUS_SERVER_LOG -> "새 서버 시작 직전에 보관한 직전 세션의 마지막 800줄"
-                DiagnosticPanel.WORK_HISTORY -> "설치·복구·업데이트 단계 최근 300줄"
-                DiagnosticPanel.OVERVIEW -> ""
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        description,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                IconButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(visibleLog))
-                        onCopied()
-                    },
-                    enabled = visibleLog.isNotBlank(),
-                ) {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = "로그 전체 복사")
-                }
-                IconButton(
-                    onClick = {
-                        when (state.diagnosticPanel) {
-                            DiagnosticPanel.SERVER_LOG -> onRefresh()
-                            DiagnosticPanel.PREVIOUS_SERVER_LOG -> onLoadPreviousLogs()
-                            DiagnosticPanel.WORK_HISTORY -> onLoadHistory()
-                            DiagnosticPanel.OVERVIEW -> Unit
-                        }
-                    },
-                    enabled = state.environment.managerConnected,
-                ) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = "로그 새로고침")
-                }
-            }
-            if (state.diagnosticPanel == DiagnosticPanel.SERVER_LOG) {
-                FilledTonalButton(
-                    onClick = onOpenTerminalLog,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = state.environment.processRunning,
-                ) {
-                    Icon(Icons.Outlined.Terminal, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Termux에서 실시간 로그 보기")
-                }
-            }
-            LogViewer(visibleLog, state.diagnosticPanel.name, Modifier.fillMaxWidth().weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun DiagnosticOverview(
-    report: DiagnosticReport?,
-    onRun: () -> Unit,
-    onOpenBatterySettings: () -> Unit,
-    onOpenTermuxSettings: () -> Unit,
-    onStorageSetup: () -> Unit,
-    onCopied: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val clipboard = LocalClipboardManager.current
-    val uriHandler = LocalUriHandler.current
-    LazyColumn(
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                shape = RoundedCornerShape(24.dp),
-            ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.HealthAndSafety, null, modifier = Modifier.size(30.dp))
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("전체 환경 진단", style = MaterialTheme.typography.titleLarge)
-                            Text(
-                                report?.let { "정상 ${it.okCount} · 확인 필요 ${it.warningCount} · 오류 ${it.errorCount}" }
-                                    ?: "기기와 Termux, SillyTavern 상태를 확인합니다.",
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .76f),
-                            )
-                        }
-                    }
-                    if (report != null) {
-                        Text(
-                            "마지막 검사 ${report.checkedAt}",
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .68f),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Button(onClick = onRun, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Outlined.Refresh, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (report == null) "전체 진단 실행" else "다시 진단")
-                    }
-                }
-            }
-        }
-        item {
-            TermuxProcessHelpCard(
-                androidSdk = Build.VERSION.SDK_INT,
-                onOpenTermuxSettings = onOpenTermuxSettings,
-                onOpenBatterySettings = onOpenBatterySettings,
-                onOpenOfficialHelp = { url -> runCatching { uriHandler.openUri(url) } },
-            )
-        }
-        if (report == null) {
-            item {
-                Card(shape = RoundedCornerShape(20.dp)) {
-                    Text(
-                        "진단을 실행하면 저장 공간, 네트워크, Git·Node.js, 설치 폴더, 포트, 프로세스와 배터리 설정을 한 번에 확인합니다.",
-                        modifier = Modifier.padding(20.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        } else {
-            val sorted = report.items.sortedBy { item ->
-                when (item.status) {
-                    DiagnosticStatus.ERROR -> 0
-                    DiagnosticStatus.WARNING -> 1
-                    DiagnosticStatus.INFO -> 2
-                    DiagnosticStatus.OK -> 3
-                }
-            }
-            items(sorted.size) { index ->
-                val item = sorted[index]
-                DiagnosticResultCard(
-                    item = item,
-                    onAction = when {
-                        item.id == "battery" && item.status != DiagnosticStatus.OK -> onOpenBatterySettings
-                        item.id == "download_storage" && item.value == "아직 사용하지 않음" -> onStorageSetup
-                        else -> null
-                    },
-                    actionLabel = if (item.id == "download_storage") "명령 복사·Termux 열기" else "설정 열기",
-                )
-            }
-            item {
-                OutlinedButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(report.copyText()))
-                        onCopied()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Outlined.ContentCopy, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("진단 내용 복사")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DiagnosticResultCard(
-    item: DiagnosticItem,
-    onAction: (() -> Unit)?,
-    actionLabel: String,
-) {
-    val (icon, container, content) = when (item.status) {
-        DiagnosticStatus.OK -> Triple(Icons.Outlined.CheckCircle, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
-        DiagnosticStatus.WARNING -> Triple(Icons.Outlined.WarningAmber, MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
-        DiagnosticStatus.ERROR -> Triple(Icons.Outlined.ErrorOutline, MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
-        DiagnosticStatus.INFO -> Triple(Icons.Outlined.Info, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    Card(colors = CardDefaults.cardColors(containerColor = container), shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, null, tint = content, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(item.title, color = content, fontWeight = FontWeight.SemiBold)
-                    Text(item.value, color = content.copy(alpha = .82f), style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-            if (item.detail.isNotBlank()) {
-                SelectionContainer {
-                    Text(
-                        item.detail,
-                        color = content.copy(alpha = .76f),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = if (item.id == "git_changes" || item.id == "last_error") FontFamily.Monospace else null,
-                    )
-                }
-            }
-            if (item.recommendation.isNotBlank()) {
-                Surface(
-                    color = content.copy(alpha = .08f),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Text(
-                        "권장 조치 · ${item.recommendation}",
-                        modifier = Modifier.padding(10.dp),
-                        color = content,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-            if (onAction != null) {
-                TextButton(onClick = onAction, modifier = Modifier.align(Alignment.End)) { Text(actionLabel) }
-            }
-        }
-    }
-}
-
-
-
-@Composable
 private fun WorkingOverlay(
     label: String,
     progress: app.tavernbridge.launcher.model.WorkProgress?,
@@ -1864,11 +1509,4 @@ internal fun MainSection.icon(): ImageVector = when (this) {
     MainSection.BACKUPS -> Icons.Outlined.FileDownload
     MainSection.LOGS -> Icons.Outlined.Build
     MainSection.SETTINGS -> Icons.Outlined.Settings
-}
-
-private fun AppTheme.icon(): ImageVector = when (this) {
-    AppTheme.SYSTEM -> Icons.Outlined.MoreHoriz
-    AppTheme.LIGHT -> Icons.Outlined.LightMode
-    AppTheme.DARK -> Icons.Outlined.DarkMode
-    AppTheme.PASTEL, AppTheme.AVOCADO, AppTheme.BANANA, AppTheme.BLUEBERRY -> Icons.Outlined.Palette
 }

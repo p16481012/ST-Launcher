@@ -58,7 +58,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, detail: @Composable (Setti
     BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
         val fontScale = LocalDensity.current.fontScale
         val wide = maxWidth >= 720.dp && fontScale < 1.6f
-        val roomy = wide && maxWidth >= 930.dp && fontScale < 1.3f
+        val roomy = wide && maxWidth >= 890.dp && fontScale < 1.3f
         BackHandler(enabled = !wide && open != null) { open = null }
         val selected = open ?: SettingsPage.DISPLAY
         Row(Modifier.fillMaxSize()) {

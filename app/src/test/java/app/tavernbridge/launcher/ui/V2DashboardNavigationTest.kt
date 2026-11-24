@@ -37,5 +37,6 @@ class V2DashboardNavigationTest {
         assertNull(v2DaysSince(551, 550))
         assertEquals("오늘", v2DaysSince(100, 100))
         assertEquals("2일 전", v2DaysSince(100, 172800100))
+        assertEquals("1일 전", v2DaysSince(86_399_900, 86_400_100, java.time.ZoneOffset.UTC))
     }
 }

@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -39,6 +40,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
         val masterWidth = (maxWidth * .32f).coerceIn(238.dp, 360.dp)
+        val twoFileColumns = wide && (maxWidth - masterWidth).value / LocalDensity.current.fontScale.coerceAtLeast(1f) >= 560f
         val selected = state.toolPage
         val displayed = if (wide && selected == ToolPage.INDEX) ToolPage.UPDATE else selected
         val goBack = { viewModel.selectTool(ToolPage.INDEX) }
@@ -88,7 +90,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                             { viewModel.loadExtensions() }, { viewModel.loadExtensions(true) }, viewModel::recoverExtension,
                             viewModel::changeExtension, goBack, embedded = true, onCheckUpdates = viewModel::checkExtensionVersions,
                             onUpdateAll = viewModel::updateCheckedExtensions)
-                        ToolPage.FILES -> ToolFolder(state, viewModel, goBack)
+                        ToolPage.FILES -> ToolFolder(state, viewModel, goBack, twoFileColumns)
                         ToolPage.INDEX -> Unit
                     }
                 }
@@ -302,7 +304,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     }
 }
 
-@Composable private fun ToolFolder(state: LauncherUiState, vm: LauncherViewModel, back: () -> Unit) {
+@Composable private fun ToolFolder(state: LauncherUiState, vm: LauncherViewModel, back: () -> Unit, twoColumns: Boolean) {
     if (!state.fileBrowserOpen) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Lead("파일", "SillyTavern 설치와 Termux 연결을 확인해 주세요.")
@@ -318,5 +320,6 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         vm::createSillyTavernFile, vm::renameSillyTavernEntry, vm::trashSillyTavernEntry, vm::undoLastTrashedEntry,
         { runCatching { file.launch(arrayOf("*/*")) }.onFailure { vm.showMessage("파일 선택 화면을 열 수 없습니다.") } },
         { runCatching { folder.launch(null) }.onFailure { vm.showMessage("폴더 선택 화면을 열 수 없습니다.") } }, back,
-        vm::cancelCurrentOperation, vm::trashSillyTavernEntries, vm::previewSillyTavernFile, state.filePreview, vm::closeFilePreview, embedded = true)
+        vm::cancelCurrentOperation, vm::trashSillyTavernEntries, vm::previewSillyTavernFile, state.filePreview, vm::closeFilePreview,
+        embedded = true, sideBySide = twoColumns)
 }

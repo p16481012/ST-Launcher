@@ -39,9 +39,10 @@ jobs:
         run: |
           set -euo pipefail
           image='system-images;android-35;google_apis;x86_64'
-          sdkmanager "$image" emulator platform-tools
-          echo no | avdmanager create avd -n v2test -k "$image" -d pixel_6 --force
-          sudo chmod a+rw /dev/kvm
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$image" emulator platform-tools
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n v2test -k "$image" -d pixel_6 --force
+          sudo chgrp "$(id -gn)" /dev/kvm
+          sudo chmod g+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -avd v2test -port 5554 -gpu swiftshader_indirect -no-window -no-audio -no-snapshot -no-boot-anim > "$RUNNER_TEMP/emulator.log" 2>&1 </dev/null &
           timeout 180 adb wait-for-device
           timeout 300 bash -c 'until adb shell getprop sys.boot_completed | grep -q 1; do sleep 2; done'
@@ -52,6 +53,7 @@ jobs:
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
           adb shell input keyevent 82
+          adb shell wm dismiss-keyguard
       - name: Run native Compose assertions
         run: |
           adb install -r -t app/build/outputs/apk/debug/app-debug.apk
@@ -66,11 +68,21 @@ jobs:
           if adb get-state 2>/dev/null | grep -q device; then
             for name in home setup-step-3 settings-index settings-display; do
               path="files/v2-visual/$name.png"
-              if adb shell run-as app.tavernbridge.stlauncher.debug test -f "$path"; then
+              if adb shell run-as app.tavernbridge.stlauncher.debug ls "$path" >/dev/null 2>&1; then
                 adb exec-out run-as app.tavernbridge.stlauncher.debug cat "$path" > "visual-results/$name.png"
               fi
             done
           fi
+      - name: Verify PNG capture set
+        env:
+          FORM: ${{ matrix.form }}
+        run: |
+          expected=(home setup-step-3 settings-display)
+          if [[ "$FORM" == phone ]]; then expected+=(settings-index); fi
+          for name in "${expected[@]}"; do
+            test -s "visual-results/$name.png"
+            file "visual-results/$name.png" | grep -q 'PNG image data'
+          done
       - uses: actions/upload-artifact@v6
         if: always()
         with:
