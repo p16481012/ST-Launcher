@@ -43,11 +43,29 @@ jobs:
           image='system-images;android-35;google_apis;x86_64'
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$image" emulator platform-tools
           adb version
-          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n v2test -k "$image" -d pixel_6 --force
+          # avdmanager and emulator can otherwise use different home directories on hosted runners.
+          export ANDROID_USER_HOME="$RUNNER_TEMP/v2-android"
+          export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          avd="$ANDROID_AVD_HOME/v2test.avd"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n v2test -k "$image" -d pixel_6 --force --path "$avd"
+          test -s "$avd/config.ini"
+          # Some CLI versions place the small name→directory index outside ANDROID_AVD_HOME.
+          if [[ ! -s "$ANDROID_AVD_HOME/v2test.ini" ]]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' "$avd" > "$ANDROID_AVD_HOME/v2test.ini"
+          fi
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx v2test
           sudo chgrp "$(id -gn)" /dev/kvm
           sudo chmod g+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -avd v2test -port 5554 -gpu swiftshader_indirect -no-window -no-audio -no-snapshot -no-boot-anim > "$RUNNER_TEMP/emulator.log" 2>&1 </dev/null &
-          timeout 180 adb wait-for-device
+          pid=$!
+          for _ in {1..60}; do
+            kill -0 "$pid" || { tail -n 40 "$RUNNER_TEMP/emulator.log"; exit 1; }
+            if adb devices | grep -q 'emulator-5554'; then break; fi
+            sleep 2
+          done
+          timeout 60 adb wait-for-device
           timeout 300 bash -c 'until adb shell getprop sys.boot_completed | grep -q 1; do sleep 2; done'
           adb shell wm size "$PIXELS"
           adb shell wm density 320
