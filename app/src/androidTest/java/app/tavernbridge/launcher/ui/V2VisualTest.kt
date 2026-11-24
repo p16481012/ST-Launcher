@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
@@ -37,15 +38,40 @@ class V2VisualTest {
 
     @Test fun backupScopeRequiresAnExplicitStartAndSupportsSubsets() {
         var requests = 0
+        var openRequests = 0
         var chosen: Set<BackupCategory> = emptySet()
+        val state = fixture.copy(section = MainSection.BACKUPS, termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
+            backupsLoaded = true, backupStorageReady = true)
         compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
-            V2BackupScreen(fixture.copy(termuxSetup = TermuxSetupState(TermuxSetupStatus.READY),
-                backupsLoaded = true, backupStorageReady = true), { categories, _, _ -> chosen = categories; requests++ },
-                {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> }, {}, {}, {}, "", {}, {}, {}, {},
-                null, {}, {})
+            // The real scaffold places a touch target above the system navigation/taskbar.
+            // performClick injects a physical touch (not a semantics action) on Android.
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                var open by rememberSaveable { mutableStateOf(false) }
+                CompositionLocalProvider(LocalBackupScopeOpener provides { openRequests++; open = true }) {
+                    ScreenChrome(MainSection.BACKUPS) {
+                        V2BackupScreen(state, { _, _, _ -> error("Scope bypassed the production sheet host") },
+                            {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> }, {}, {}, {}, "", {}, {}, {}, {},
+                            null, {}, {})
+                    }
+                    if (open && !state.isWorking && state.section == MainSection.BACKUPS) {
+                        V2BackupFlowSheet(state, true, { categories, _, _ -> chosen = categories; requests++; open = false },
+                            onCancel = {}, onClose = { open = false })
+                    }
+                }
+            }
         } }
-        compose.onNodeWithText("지금 백업").performClick()
-        compose.onNodeWithText("전체 설치").performScrollTo().performClick()
+        compose.onNodeWithText("지금 백업").assertIsDisplayed().assertIsEnabled().performClick()
+        // A dialog has its own Android Compose root. Wait for attachment, not an arbitrary delay.
+        try {
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("전체 설치").fetchSemanticsNodes().isNotEmpty() }
+        } catch (failure: Throwable) {
+            val roots = compose.onAllNodes(isRoot(), useUnmergedTree = true).printToString(maxDepth = 18)
+            throw AssertionError("백업 범위 시트 미표시: 탭 전달 횟수=$openRequests, 실제 백업 요청=$requests\n$roots", failure)
+        }
+        compose.runOnIdle { assertEquals(1, openRequests); assertEquals(0, requests) }
+        val full = compose.onNodeWithText("전체 설치")
+        full.performScrollTo().performClick()
+        full.assertIsSelected()
         compose.runOnIdle { assertEquals(0, requests) }
         compose.onNodeWithText("백업 시작").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, requests); assertEquals(setOf(BackupCategory.FULL), chosen) }

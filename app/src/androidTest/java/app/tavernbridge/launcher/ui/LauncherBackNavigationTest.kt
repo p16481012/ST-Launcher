@@ -20,7 +20,7 @@ import org.junit.runner.RunWith
 class LauncherBackNavigationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
-    private fun launchExistingInstallation(): LauncherViewModel {
+    private fun launchExistingInstallation(readyBackupStorage: Boolean? = null): LauncherViewModel {
         val vm = compose.activityRule.scenario.let {
             lateinit var reference: LauncherViewModel
             it.onActivity { activity -> reference = ViewModelProvider(activity)[LauncherViewModel::class.java] }
@@ -29,11 +29,23 @@ class LauncherBackNavigationTest {
         compose.setContent {
             val route by vm.state.collectAsState()
             LauncherScreen(route.copy(isWorking = false, environmentChecked = true,
+                backupsLoaded = readyBackupStorage == true, backupStorageReady = readyBackupStorage,
                 termuxSetup = TermuxSetupState(TermuxSetupStatus.READY), previousInstallationKnown = true,
                 environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true,
                     managerConnected = true, sillyTavernInstalled = true, processRunning = true, serverReachable = true)), vm)
         }
         return vm
+    }
+
+    @Test fun realBackupHostCanOpenChooseAndDismissWithoutDispatching() {
+        val vm = launchExistingInstallation(readyBackupStorage = true)
+        compose.runOnIdle { vm.openBackups() }
+        compose.onNodeWithText("지금 백업").assertIsEnabled().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("백업 범위").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("전체 설치").performScrollTo().performClick().assertIsSelected()
+        compose.onNodeWithContentDescription("시트 닫기").performClick()
+        compose.onNodeWithText("지금 백업").assertIsDisplayed()
+        compose.runOnIdle { assertEquals("", vm.state.value.dispatchedOperation) }
     }
 
     @Test fun homeLogReturnsHomeAndToolsLogReturnsTools() {
