@@ -884,18 +884,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             val scope = backupScopeOpen && !state.isWorking && state.section == MainSection.BACKUPS
             if (scope || (backupWork && !progressFolded)) {
-                val reducedMotion = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
-                V2BottomSheet(onClose = { if (backupWork) progressFolded = true else backupScopeOpen = false },
-                    handleLabel = if (backupWork) stringResource(R.string.ui_collapse_progress) else "시트 닫기") {
-                    Crossfade(targetState = scope, modifier = Modifier.fillMaxWidth().animateContentSize(tween(if (reducedMotion) 0 else 200)),
-                        animationSpec = tween(if (reducedMotion) 0 else 120), label = "백업 범위와 진행") { choosing ->
-                        if (choosing) BackupCreatorCard(state.environment.processRunning, state.displayPreferences.includeSecretsByDefault,
-                            state.backupFolders, scope && state.backupStorageReady == true, viewModel::createBackup)
-                        else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            WorkingProgressContent(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
-                                state.cancellationRequested, viewModel::cancelCurrentOperation)
-                        }
-                    }
+                V2BackupFlowSheet(state, scope, viewModel::createBackup, viewModel::cancelCurrentOperation) {
+                    if (backupWork) progressFolded = true else backupScopeOpen = false
                 }
             } else if (showWorkProgress && !progressFolded && !commandAtHome) {
                 WorkingOverlay(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
@@ -1103,6 +1093,22 @@ private fun EmptyHomeCard(deferred: Boolean, onSetup: () -> Unit, onRefresh: () 
 @Composable
 private fun InfoRow(label: String, value: String, monospace: Boolean = false) {
     AdaptiveInfoRow(label, value, monospace)
+}
+
+@Composable
+internal fun V2BackupFlowSheet(state: LauncherUiState, choosingScope: Boolean,
+    onCreate: (Set<BackupCategory>, Boolean, Set<String>) -> Unit, onCancel: () -> Unit, onClose: () -> Unit) {
+    val reducedMotion = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
+    V2BottomSheet(onClose = onClose, handleLabel = if (choosingScope) "시트 닫기" else stringResource(R.string.ui_collapse_progress)) {
+        Crossfade(targetState = choosingScope, modifier = Modifier.fillMaxWidth().animateContentSize(tween(if (reducedMotion) 0 else 200)),
+            animationSpec = tween(if (reducedMotion) 0 else 120), label = "백업 범위와 진행") { choosing ->
+            if (choosing) BackupCreatorCard(state.environment.processRunning, state.displayPreferences.includeSecretsByDefault,
+                state.backupFolders, choosingScope && state.backupStorageReady == true, onCreate)
+            else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                WorkingProgressContent(state.workingLabel, state.workProgress, state.workingStartedAtMillis, state.cancellationRequested, onCancel)
+            }
+        }
+    }
 }
 
 @Composable
