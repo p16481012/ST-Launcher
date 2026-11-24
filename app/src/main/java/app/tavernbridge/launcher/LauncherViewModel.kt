@@ -38,6 +38,7 @@ import app.tavernbridge.launcher.model.validOperationId
 import app.tavernbridge.launcher.model.operationCheckpoint
 import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.DiagnosticPanel
+import app.tavernbridge.launcher.model.ToolPage
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.EnvironmentRefreshGate
 import app.tavernbridge.launcher.model.TermuxSetupState
@@ -88,6 +89,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -96,6 +100,7 @@ import java.util.UUID
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LauncherRepository(application)
     private val operationResultStore = OperationResultStore(application)
+    private val guidePreferences = application.getSharedPreferences("setup_navigation", android.content.Context.MODE_PRIVATE)
     private val savedOperationResult = operationResultStore.load()
     private val themePreferences = ThemePreferences(application)
     private val backupReminderStore = BackupReminderStore(application)
@@ -116,7 +121,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val mutableState = MutableStateFlow(
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
+            setupDeferred = guidePreferences.getBoolean("deferred", false),
             theme = themePreferences.loadTheme(),
+            displayPreferences = themePreferences.loadDisplay(),
             configuredPort = repository.configuredPort(),
             previousInstallationKnown = (repository.hasKnownInstallation() || savedOperationResult.indicatesExistingInstallation())
                 .also { if (it) repository.rememberKnownInstallation() },
@@ -164,15 +171,39 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         appInForeground = false
     }
 
+    fun deferSetup() {
+        guidePreferences.edit().putBoolean("deferred", true).apply()
+        mutableState.update { it.copy(section = MainSection.HOME, setupDeferred = true) }
+    }
+
+    fun resumeSetup() {
+        guidePreferences.edit().remove("deferred").apply()
+        mutableState.update { it.copy(section = MainSection.SETUP, setupDeferred = false) }
+    }
+
     fun selectSection(section: MainSection) {
-        mutableState.update { it.copy(section = section) }
-        if (section == MainSection.LOGS && state.value.environment.managerConnected) {
-            when (state.value.diagnosticPanel) {
-                DiagnosticPanel.SERVER_LOG -> loadLogs()
-                DiagnosticPanel.PREVIOUS_SERVER_LOG -> loadPreviousServerLogs()
-                DiagnosticPanel.WORK_HISTORY -> loadOperationHistory()
-                DiagnosticPanel.OVERVIEW -> Unit
-            }
+        if (state.value.section == MainSection.LOGS && state.value.toolPage == ToolPage.FILES) {
+            if (state.value.fileBrowserMutating) return
+            closeSillyTavernFolder()
+        }
+        if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
+        if (section == MainSection.SETUP && state.value.setupDeferred) return resumeSetup()
+        mutableState.update { it.copy(section = section, toolPage = ToolPage.INDEX) }
+    }
+
+    fun selectTool(page: ToolPage) {
+        if (state.value.toolPage == ToolPage.EXTENSIONS && page != ToolPage.EXTENSIONS) closeExtensions()
+        if (state.value.toolPage == ToolPage.FILES && page != ToolPage.FILES) {
+            if (state.value.fileBrowserMutating) return
+            closeSillyTavernFolder()
+        }
+        if (page == ToolPage.LOGS) { openDiagnostics(DiagnosticPanel.SERVER_LOG); return }
+        mutableState.update { it.copy(section = MainSection.LOGS, toolPage = page, diagnosticPanel = DiagnosticPanel.OVERVIEW) }
+        if (!state.value.environment.managerConnected || state.value.isWorking) return
+        when (page) {
+            ToolPage.EXTENSIONS -> loadExtensions()
+            ToolPage.FILES -> openSillyTavernFolder()
+            else -> Unit
         }
     }
 
@@ -185,7 +216,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openDiagnostics(panel: DiagnosticPanel) {
-        mutableState.update { it.copy(section = MainSection.LOGS, diagnosticPanel = panel) }
+        if (state.value.toolPage == ToolPage.FILES) {
+            if (state.value.fileBrowserMutating) return
+            closeSillyTavernFolder()
+        }
+        if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
+        mutableState.update { it.copy(section = MainSection.LOGS, diagnosticPanel = panel,
+            toolPage = if (panel == DiagnosticPanel.OVERVIEW) ToolPage.DIAGNOSTICS else ToolPage.LOGS) }
         when (panel) {
             DiagnosticPanel.SERVER_LOG -> loadLogs()
             DiagnosticPanel.PREVIOUS_SERVER_LOG -> loadPreviousServerLogs()
@@ -208,6 +245,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         mutableState.update { it.copy(autoBackupBeforeUpdate = enabled) }
     }
 
+    fun setDisplayPreferences(value: app.tavernbridge.launcher.model.DisplayPreferences) {
+        themePreferences.saveDisplay(value)
+        mutableState.update { it.copy(displayPreferences = value) }
+    }
+
+    fun setBackupReminderInterval(value: app.tavernbridge.launcher.model.BackupInterval) {
+        val reminder = backupReminderStore.setInterval(value)
+        mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
+    }
+
     fun setBackupReminderEnabled(enabled: Boolean) {
         val reminder = backupReminderStore.setEnabled(enabled)
         mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
@@ -219,7 +266,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openBackups() {
-        mutableState.update { it.copy(section = MainSection.SETUP, managementPanel = ManagementPanel.BACKUP) }
+        selectSection(MainSection.BACKUPS)
+        selectManagementPanel(ManagementPanel.BACKUP)
     }
 
     fun beginBackupTransfer(archive: BackupArchive, action: BackupTransferAction) {
@@ -506,7 +554,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     state.value.lastOperationResult
                 }
                 val initialSection = sectionAfterEnvironmentCheck(
-                    environment, firstCheck, requestedSection, state.value.section,
+                    environment, firstCheck, requestedSection, state.value.section, state.value.setupDeferred,
                 )
                 val recoveredProgress = progress?.let(progressLogHistory::merge)
                 mutableState.update {
@@ -586,7 +634,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 it.copy(environment = environment, environmentChecked = true,
                     termuxSetup = repository.termuxSetupState(),
                     previousInstallationKnown = environment.sillyTavernInstalled,
-                    section = sectionAfterEnvironmentCheck(environment, true, it.section, it.section),
+                    section = sectionAfterEnvironmentCheck(environment, true, it.section, it.section, it.setupDeferred),
                     backgroundStatus = repository.backgroundStatus(environment.processRunning))
             }
             if (environment.operationActive) resumeDetachedOperation()
@@ -625,7 +673,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         previousInstallationKnown = environment.sillyTavernInstalled,
                         environmentChecked = true,
                         termuxWakeBlocked = false,
-                        section = if (!environment.sillyTavernInstalled) MainSection.SETUP else it.section,
+                        section = if (!environment.sillyTavernInstalled && !it.setupDeferred) MainSection.SETUP else it.section,
                         backgroundStatus = repository.backgroundStatus(environment.processRunning),
                     )
                 }
@@ -1353,7 +1401,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     // refresh must not relabel a completed export/delete as cancelled.
                     val page = withoutOperationCancellation { repository.listSafetyInventory() }
                     mutableState.update { it.copy(safetyInventory = it.safetyInventory.accept(page, false),
-                        lastTrashedEntryId = if (action == "restore" && it.lastTrashedEntryId == item.trashId) "" else it.lastTrashedEntryId) }
+                        lastTrashedEntryId = repository.lastTrashedEntryId()) }
                 } catch (cancelled: CancellationException) { throw cancelled
                 } catch (_: Exception) {
                     mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(items = emptyList(),
@@ -1543,7 +1591,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 repository.createBackup(request).also { result ->
                     result.requireSuccess()
                     rememberSuccessfulBackup(request)
-                    refreshBackupListAfterOperation()
+                    refreshBackupListAfterOperation(suggestCleanup = true)
                 }
             }
         }
@@ -1568,15 +1616,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun deleteBackups(fileNames: List<String>) {
-        if (fileNames.isEmpty()) return
-        val snapshot = state.value.backups.filter { it.fileName in fileNames }
+    fun deleteBackups(selectionKeys: List<String>) {
+        if (selectionKeys.isEmpty()) return
+        val snapshot = app.tavernbridge.launcher.model.BackupDeleteSelection.resolve(selectionKeys, state.value.backups)
+        if (snapshot == null) {
+            showMessage("백업 목록이 변경되었거나 파일을 확인할 수 없습니다. 목록에서 다시 선택해 주세요.")
+            return
+        }
         perform(
             operation = "delete-backup",
             label = "백업 일괄 삭제 중",
-            successMessage = "선택한 ZIP 백업 ${fileNames.size}개를 Download 폴더에서 삭제했습니다.",
+            successMessage = "선택한 ZIP 백업 ${snapshot.size}개를 Download 폴더에서 삭제했습니다.",
         ) {
-            check(snapshot.size == fileNames.distinct().size && snapshot.size in 1..200) { "목록에서 백업을 200개 이하로 다시 선택해 주세요." }
             check(snapshot.all { backupMetadataStore.load(it.fileName).let { note -> !note.pinned && note.trusted } }) {
                 "고정된 백업은 먼저 고정을 해제해 주세요. 보호 상태가 불명확하면 삭제하지 않습니다."
             }
@@ -1586,14 +1637,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private suspend fun refreshBackupListAfterOperation() {
+    private suspend fun refreshBackupListAfterOperation(suggestCleanup: Boolean = false) {
         try {
             // This read follows a committed backup/restore. Do not relabel that
             // completed operation as cancelled while merely refreshing its list.
             val backups = withoutOperationCancellation { repository.listBackups() }
             val reminder = backupReminderStore.observeArchives(backups)
+            val annotations = backupMetadataStore.loadAll(backups.map { archive -> archive.fileName })
+            val proposal = if (suggestCleanup) app.tavernbridge.launcher.model.BackupRetentionPolicy.afterCreation(
+                backups, annotations, state.value.displayPreferences.keepBackups) else null
             mutableState.update { it.copy(backups = backups, backupsLoaded = true,
-                backupAnnotations = backupMetadataStore.loadAll(backups.map { archive -> archive.fileName }),
+                backupAnnotations = annotations, backupCleanupPreview = proposal ?: it.backupCleanupPreview,
                 backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -1724,6 +1778,54 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun checkExtensionVersions() {
+        if (state.value.isWorking || state.value.extensionLoading) return
+        val snapshot = state.value.extensionInventory ?: return
+        val supported = snapshot.items.filter { app.tavernbridge.launcher.data.ExtensionVersionClient.compareUrl(it) != null }
+        val entries = supported.sortedBy { it.remoteAhead != null }.take(40)
+        if (entries.isEmpty()) { showMessage("새 버전을 확인할 수 있는 공개 GitHub 확장이 없습니다."); return }
+        val generation = ++extensionListGeneration
+        mutableState.update { it.copy(extensionLoading = true, extensionError = "") }
+        viewModelScope.launch {
+            try {
+                val results = mutableMapOf<Pair<String, String>, Int?>()
+                for (batch in entries.chunked(4)) {
+                    if (generation != extensionListGeneration) return@launch
+                    results += coroutineScope { batch.map { item -> async {
+                        (item.id to item.revision) to app.tavernbridge.launcher.data.ExtensionVersionClient.ahead(item)
+                    } }.awaitAll() }
+                }
+                mutableState.update { ui ->
+                    if (generation != extensionListGeneration) ui else ui.copy(extensionInventory = ui.extensionInventory?.let { list ->
+                        list.copy(items = list.items.map { item -> if (results.containsKey(item.id to item.revision))
+                            item.copy(remoteAhead = results[item.id to item.revision]) else item })
+                    }, extensionError = if (results.values.any { it == null } || entries.size < supported.size)
+                        "확인된 ${results.values.count { it != null }}개만 표시해요. 미확인 항목은 최신으로 간주하지 않아요. 한 번에 최대 40개까지 확인해요." else "")
+                }
+            } finally { mutableState.update { if (generation == extensionListGeneration) it.copy(extensionLoading = false) else it } }
+        }
+    }
+
+    fun updateCheckedExtensions(items: List<app.tavernbridge.launcher.model.ManagedExtension>) {
+        val current = state.value
+        val inventory = current.extensionInventory ?: return
+        if (current.environment.processRunning || current.environment.recoveryPending || inventory.recoveryStatus != "none" ||
+            items.isEmpty() || items.size > 1000 || items.distinctBy { it.id }.size != items.size ||
+            items.any { !it.canUpdate || (it.remoteAhead ?: 0) <= 0 || it !in inventory.items }) return
+        var completed = 0
+        perform("extension-update", "확장 ${items.size}개 업데이트", "선택한 확장을 업데이트했습니다.",
+            onFinished = { if (state.value.toolPage == ToolPage.EXTENSIONS && !state.value.isWorking) loadExtensions() }) {
+            var last: TermuxCommandResult? = null
+            for (item in items) {
+                operationCheckpoint()
+                last = repository.changeExtension(item, app.tavernbridge.launcher.model.ExtensionAction.UPDATE)
+                if (!last.isSuccess) throw IllegalStateException("${completed}/${items.size}개 완료 · ${item.name}: ${last.readableError()}")
+                completed++
+            }
+            requireNotNull(last)
+        }
+    }
+
     fun changeExtension(item: app.tavernbridge.launcher.model.ManagedExtension, action: app.tavernbridge.launcher.model.ExtensionAction) {
         if (state.value.environment.processRunning) { showMessage("확장을 변경하려면 서버를 먼저 종료해 주세요."); return }
         perform("extension-${action.argument}", "확장 ${action.label}", "확장 ${action.label} 작업을 완료했습니다.") {
@@ -1821,6 +1923,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun loadOperationHistory() = loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = true)
 
+    fun refreshHistorySilently() = loadDiagnosticText(DiagnosticPanel.WORK_HISTORY, reportErrors = false)
+
     private fun loadDiagnosticText(panel: DiagnosticPanel, reportErrors: Boolean) {
         if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true || !state.value.termuxSetup.verified) return
         if (!reportErrors && !state.value.environment.managerConnected) return
@@ -1880,6 +1984,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 it.copy(
                     section = MainSection.LOGS,
                     diagnosticPanel = DiagnosticPanel.OVERVIEW,
+                    toolPage = ToolPage.DIAGNOSTICS,
                     isWorking = true,
                     workingLabel = "전체 환경 진단 중",
                     workingStartedAtMillis = operationStartedAt,
@@ -2105,11 +2210,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
 
     fun undoLastTrashedEntry() {
-        val id = state.value.lastTrashedEntryId.takeIf(String::isNotBlank) ?: return
+        val ids = repository.trashReceipts().asReversed().ifEmpty { return }
         mutateTavernFiles("restore-st-trash", "휴지통 항목 복구", "휴지통의 항목을 원래 위치로 복구했습니다.") {
-            repository.restoreSillyTavernEntry(id).also { result ->
-                if (result.isSuccess) mutableState.update { it.copy(lastTrashedEntryId = "") }
+            var last: TermuxCommandResult? = null
+            for (id in ids) {
+                operationCheckpoint()
+                last = repository.restoreSillyTavernEntry(id)
+                if (!last.isSuccess) return@mutateTavernFiles last
+                mutableState.update { it.copy(lastTrashedEntryId = repository.lastTrashedEntryId()) }
             }
+            requireNotNull(last)
         }
     }
 
@@ -2128,7 +2238,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             for (entry in selected) {
                 operationCheckpoint()
                 try {
-                    last = repository.trashSillyTavernEntry(entry.relativePath, entry.revision).also { it.requireSuccess() }
+                    last = repository.trashSillyTavernEntry(entry.relativePath, entry.revision, appendUndo = completed > 0).also { it.requireSuccess() }
                     completed++
                     partialFileActionNotice = "휴지통 이동이 확인된 항목: $completed/${selected.size}개. 안전 사본·휴지통 관리에서 복원할 수 있습니다."
                     mutableState.update { it.copy(lastTrashedEntryId = repository.lastTrashedEntryId(), fileBrowserNotice = partialFileActionNotice) }
@@ -2412,7 +2522,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             RetryAction.BACKUP -> {
                 val request = state.value.lastOperationResult?.backupRequest
                 if (request == null) {
-                    mutableState.update { it.copy(section = MainSection.SETUP, managementPanel = ManagementPanel.BACKUP,
+                    mutableState.update { it.copy(section = MainSection.BACKUPS, managementPanel = ManagementPanel.BACKUP,
                         error = null, message = "이전 백업의 선택 정보가 없습니다. 백업할 항목을 다시 선택해 주세요.") }
                     loadBackups()
                 } else createBackup(request.categories, request.includeSecrets, request.customFolders)
@@ -2516,7 +2626,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             versionListGeneration++
             extensionListGeneration++
             mutableState.update {
-                it.closeOperationDialogsForResult().copy(isWorking = true, workingLabel = label,
+                it.closeOperationDialogsForResult().copy(isWorking = true, extensionLoading = false, workingLabel = label,
                     workingStartedAtMillis = operationStartedAt, workProgress = null)
             }
             LocalProgressJournal(operation, ::publishProgress).phase(

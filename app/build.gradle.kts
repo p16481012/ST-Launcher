@@ -14,6 +14,7 @@ android {
         targetSdk = 36
         versionCode = 5
         versionName = "0.3.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         vectorDrawables.useSupportLibrary = true
     }
@@ -72,6 +73,11 @@ dependencies {
     implementation("com.google.crypto.tink:tink-android:1.23.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 
     testImplementation("junit:junit:4.13.2")
 }

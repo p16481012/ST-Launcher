@@ -24,6 +24,19 @@ object BackupRetentionPolicy {
 
     fun normalizeMemo(value: String): String = value.filter { !it.isISOControl() || it == '\n' || it == '\t' }.take(500)
 
+    /** Historical ZIPs have no durable parent-operation field. All full archives and any
+     * unrecognized/imported archive are exempt from automatic suggestions, not just known
+     * restoration checkpoints. This method never deletes or preselects anything. */
+    fun afterCreation(backups: List<BackupArchive>, annotations: Map<String, BackupAnnotation>,
+        keep: BackupKeep, nowMillis: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): BackupRetentionPreview? {
+        val count = keep.count ?: return null
+        val eligible = backups.filter { it.branch in setOf("release", "staging") && it.categories.isNotEmpty() &&
+            BackupCategory.FULL !in it.categories }
+        if (eligible.size <= count) return null
+        val proposal = preview(eligible, annotations, BackupRetentionOptions(count, 0), nowMillis, zone)
+        return proposal.takeIf { it.candidates.isNotEmpty() }?.copy(protectedCount = proposal.protectedCount + backups.size - eligible.size)
+    }
+
     fun preview(
         backups: List<BackupArchive>,
         annotations: Map<String, BackupAnnotation>,
@@ -31,7 +44,7 @@ object BackupRetentionPolicy {
         nowMillis: Long = System.currentTimeMillis(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): BackupRetentionPreview {
-        require(options.keepLatest in 1..1000 && options.olderThanDays in 1..36500 && nowMillis > 0)
+        require(options.keepLatest in 1..1000 && options.olderThanDays in 0..36500 && nowMillis > 0)
         require(backups.size <= 10000 && backups.map { it.fileName }.distinct().size == backups.size)
         val dated = backups.mapNotNull { archive ->
             if (!validFileName(archive.fileName) || archive.sizeBytes < 0) return@mapNotNull null

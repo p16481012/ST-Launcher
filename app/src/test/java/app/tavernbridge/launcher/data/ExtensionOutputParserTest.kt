@@ -26,6 +26,16 @@ class ExtensionOutputParserTest {
         assertEquals("점검 필요", inventory.recoveryMessage)
     }
 
+    @Test fun newProtocolEnablesReadOnlyCompareButNeverAssumesAnUpdate() {
+        val item = ExtensionOutputParser.parse(header + row() + "\t" + b64("owner/example") + "\t" + b64("fix/ui")).items.single()
+        assertNull(item.remoteAhead)
+        assertEquals("https://api.github.com/repos/owner/example/compare/${"b".repeat(40)}...fix%2Fui?per_page=1",
+            ExtensionVersionClient.compareUrl(item)?.toString())
+        assertNull(ExtensionVersionClient.compareUrl(item.copy(canUpdate = false)))
+        assertNull(ExtensionVersionClient.compareUrl(item.copy(gitHubRepository = "../example")))
+        assertNull(ExtensionVersionClient.compareUrl(ExtensionOutputParser.parse(header + row()).items.single()))
+    }
+
     @Test fun duplicatedAndMalformedValuesFailClosed() {
         for (output in listOf(header + row() + "\n" + row(), header + "next_cursor=0", header + row().replace("a".repeat(64), "invalid"),
             header.replace("next_cursor=-1", "next_cursor=2001"), header.replace("extension_recovery=none", "extension_recovery=yes"),

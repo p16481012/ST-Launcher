@@ -426,7 +426,9 @@ class LauncherRepository(private val context: Context) {
         require(action in setOf("export", "delete", "restore"))
         require(item.revision.matches(Regex("[a-f0-9]{64}")))
         require(item.id.length <= 8192 && item.id.matches(Regex("[A-Za-z0-9+/]+={0,2}")))
-        return runManager("safety-$action ${shellQuote(item.id)} ${shellQuote(item.revision)}", 10 * 60_000L)
+        return runManager("safety-$action ${shellQuote(item.id)} ${shellQuote(item.revision)}", 10 * 60_000L).also {
+            if (it.isSuccess && action in setOf("restore", "delete")) removeTrashReceipt(item.trashId)
+        }
     }
 
     suspend fun listUserBackupFolders(): List<CustomBackupFolder> {
@@ -539,15 +541,24 @@ class LauncherRepository(private val context: Context) {
     suspend fun renameSillyTavernEntry(relativePath: String, newName: String): TermuxCommandResult =
         runManager("rename-st ${shellQuote(encodeFileArgument(relativePath))} ${shellQuote(encodeFileArgument(fileChildPath(relativePath.substringBeforeLast('/', ""), newName)))}", 30_000)
 
-    fun lastTrashedEntryId(): String = preferences.getString("last_trashed_entry", "").orEmpty()
+    fun trashReceipts(): List<String> = app.tavernbridge.launcher.model.TrashUndoGroup.parse(
+        preferences.getString("last_trashed_group", null) ?: preferences.getString("last_trashed_entry", "").orEmpty())
+    fun lastTrashedEntryId(): String = trashReceipts().lastOrNull().orEmpty()
+    private fun storeTrashReceipts(ids: List<String>) {
+        preferences.edit().remove("last_trashed_entry").putString("last_trashed_group", ids.joinToString("\n")).commit()
+    }
+    private fun removeTrashReceipt(id: String) {
+        val ids = trashReceipts()
+        if (id in ids) storeTrashReceipts(ids - id)
+    }
 
-    suspend fun trashSillyTavernEntry(relativePath: String, revision: String = ""): TermuxCommandResult {
+    suspend fun trashSillyTavernEntry(relativePath: String, revision: String = "", appendUndo: Boolean = false): TermuxCommandResult {
         require(revision.isEmpty() || revision.matches(Regex("[a-f0-9]{64}")))
         val result = runManager("delete-st ${shellQuote(encodeFileArgument(relativePath))} ${shellQuote(revision)}", 30_000)
         if (result.isSuccess) {
             val id = result.stdout.lineSequence().firstOrNull { it.startsWith("trash_id=") }?.substringAfter('=')
             if (id != null && id.matches(Regex("[0-9]+-[a-f0-9-]{36}"))) {
-                preferences.edit().putString("last_trashed_entry", id).commit()
+                storeTrashReceipts(app.tavernbridge.launcher.model.TrashUndoGroup.success(trashReceipts(), id, appendUndo))
             }
         }
         return result
@@ -555,9 +566,7 @@ class LauncherRepository(private val context: Context) {
 
     suspend fun restoreSillyTavernEntry(trashId: String): TermuxCommandResult {
         val result = runManager("restore-st-trash ${shellQuote(trashId)}", 30_000)
-        if (result.isSuccess && lastTrashedEntryId() == trashId) {
-            preferences.edit().remove("last_trashed_entry").commit()
-        }
+        if (result.isSuccess) removeTrashReceipt(trashId)
         return result
     }
 

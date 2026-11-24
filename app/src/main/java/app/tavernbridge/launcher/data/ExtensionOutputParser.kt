@@ -23,13 +23,14 @@ object ExtensionOutputParser {
         }
         val items = lines.filter { it.startsWith("extension\t") }.map { line ->
             val parts = line.split('\t')
-            require(parts.size == 11)
+            require(parts.size == 11 || parts.size == 13)
             val id = parts[1].also { require(it.length in 1..8192); Base64.getDecoder().decode(it) }
             val revision = parts[2].also { require(it.matches(Regex("[a-f0-9]{64}"))) }
             require(parts[6] in setOf("enabled", "disabled") && parts[7] in setOf("clean", "dirty", "unsupported"))
             require(parts[9] in setOf("0", "1"))
             ManagedExtension(id, revision, text(parts[3]), text(parts[4]), text(parts[5]), parts[6] == "disabled",
-                parts[7], parts[8].also { require(it.isEmpty() || it.matches(Regex("[a-f0-9]{7,64}"))) }, parts[9] == "1", text(parts[10]))
+                parts[7], parts[8].also { require(it.isEmpty() || it.matches(Regex("[a-f0-9]{7,64}"))) }, parts[9] == "1", text(parts[10]),
+                parts.getOrNull(11)?.let(::text).orEmpty(), parts.getOrNull(12)?.let(::text).orEmpty())
         }
         require(items.map { it.id }.distinct().size == items.size)
         val recovery = field("extension_recovery").also { require(it in setOf("none", "pending", "blocked")) }

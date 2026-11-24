@@ -29,6 +29,15 @@ class BackupRetentionPolicyTest {
         assertEquals(2, result.unknownDateCount)
     }
 
+    @Test fun postBackupProposalExcludesFullAndUnidentifiedCheckpointsEvenWhenOverCount() {
+        val entries = (1..8).map { n -> archive("2026-11-0$n").copy(categories = setOf(BackupCategory.USER_DATA), branch = "release") }.toMutableList()
+        entries[0] = entries[0].copy(categories = setOf(BackupCategory.FULL))
+        entries[1] = entries[1].copy(branch = "imported")
+        val notes = mapOf(entries[2].fileName to BackupAnnotation(pinned = true))
+        assertNull(BackupRetentionPolicy.afterCreation(entries, notes, BackupKeep.UNLIMITED, now, ZoneOffset.UTC))
+        assertEquals(listOf(entries[4], entries[3]), BackupRetentionPolicy.afterCreation(entries, notes, BackupKeep.THREE, now, ZoneOffset.UTC)?.candidates)
+    }
+
     @Test fun oldCountAloneCannotDeleteRecentBackup() {
         val backups = listOf(archive("2026-11-21"), archive("2026-11-22"), archive("2026-11-23"))
         assertTrue(BackupRetentionPolicy.preview(backups, emptyMap(), BackupRetentionOptions(1, 30), now, ZoneOffset.UTC).candidates.isEmpty())

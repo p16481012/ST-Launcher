@@ -46,4 +46,10 @@ class ConfirmationStateTest {
             listOf("content://com.android.providers.downloads.documents/document/42"))
         assertEquals(pending, ConfirmationCodec.decode(ConfirmationCodec.encode(pending)))
     }
+
+    @Test fun deletePreservesRevisionAcrossRotationAndDropsOldFilenameOnlyPrompts() {
+        val real = Confirmation("삭제?", "내용", "삭제", ConfirmationAction.DELETE_BACKUPS, listOf(archive + "#" + "a".repeat(64)))
+        assertEquals(real, ConfirmationCodec.decode(ConfirmationCodec.encode(real)))
+        assertNull(ConfirmationCodec.decode(ConfirmationCodec.encode(real).dropLast(1) + archive))
+    }
 }

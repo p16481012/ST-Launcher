@@ -6,11 +6,14 @@ import java.time.format.DateTimeFormatter
 import java.time.format.ResolverStyle
 
 /** A creation record, not a promise that the ZIP still exists or contains every data item. */
+enum class BackupInterval(val label: String, val days: Long) { DAILY("매일", 1), WEEKLY("매주", 7), MONTHLY("매월", 30) }
+
 data class BackupReminderState(
     val enabled: Boolean = true,
     val lastBackupAtMillis: Long = 0L,
     val lastBackupRequestId: String = "",
     val snoozedUntilMillis: Long = 0L,
+    val interval: BackupInterval = BackupInterval.WEEKLY,
 ) {
     fun notice(nowMillis: Long, installed: Boolean): BackupReminderNotice? {
         if (!enabled || !installed || nowMillis <= 0L) return null
@@ -18,7 +21,7 @@ data class BackupReminderState(
         if (snoozedUntilMillis > nowMillis && snoozedUntilMillis - nowMillis <= REMINDER_INTERVAL_MILLIS) return null
         val recorded = lastBackupAtMillis.takeIf { it in 1L..nowMillis }
         val ageDays = recorded?.let { (nowMillis - it) / DAY_MILLIS }
-        if (ageDays != null && ageDays < REMINDER_INTERVAL_DAYS) return null
+        if (ageDays != null && ageDays < interval.days) return null
         return BackupReminderNotice(ageDays, recorded ?: 0L)
     }
 

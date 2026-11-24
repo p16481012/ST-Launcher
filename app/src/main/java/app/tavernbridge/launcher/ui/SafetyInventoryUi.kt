@@ -93,7 +93,7 @@ internal fun SafetyInventoryDialog(
                         }
                     }
                 }
-                if (state.loading) item { CircularProgressIndicator() }
+                if (state.loading) item { V2BusyIndicator(linear = false) }
                 if (!state.loading && state.items.isEmpty() && state.error.isEmpty()) item { Text("표시할 보관 항목이 없습니다.") }
                 if (state.nextCursor != null) item { TextButton(onClick = onMore, enabled = !state.loading) { Text("더 보기") } }
                 if (state.truncated) item { Text("목록 조사 한도에 도달했습니다. 모든 항목이 표시된 것은 아닙니다.", style = MaterialTheme.typography.bodySmall) }

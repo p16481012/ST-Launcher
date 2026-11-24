@@ -74,7 +74,7 @@ internal fun BackupTransferHost(transfer: BackupTransferState?, viewModel: Launc
                     Text(if (transfer.cancellationRequested) "중단 요청을 전달했습니다. 파일 제공 앱의 응답과 미완성 파일 정리를 기다립니다."
                         else if (transfer.bytes >= transfer.total) "기록 완료와 저장된 파일 크기를 확인하고 있습니다." else "원본 ZIP을 새 저장 위치로 복사하고 있습니다.",
                         style = MaterialTheme.typography.bodySmall)
-                } else CircularProgressIndicator()
+                } else V2BusyIndicator(linear = false)
             }
         },
         confirmButton = {

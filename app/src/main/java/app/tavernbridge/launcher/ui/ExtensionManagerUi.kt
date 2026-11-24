@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -22,28 +23,43 @@ fun ExtensionManagerDialog(
     inventory: ExtensionInventory?, loading: Boolean, busy: Boolean, canModify: Boolean, error: String,
     onRefresh: () -> Unit, onMore: () -> Unit, onRecover: () -> Unit,
     onAction: (ManagedExtension, ExtensionAction) -> Unit, onClose: () -> Unit,
+    embedded: Boolean = false,
+    onCheckUpdates: (() -> Unit)? = null,
+    onUpdateAll: ((List<ManagedExtension>) -> Unit)? = null,
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedRevision by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedAction by rememberSaveable { mutableStateOf<String?>(null) }
     var recoverConfirmation by rememberSaveable { mutableStateOf(false) }
+    var openId by rememberSaveable { mutableStateOf<String?>(null) }
+    var bulkRevisions by remember { mutableStateOf<Map<String,String>?>(null) }
+    var info by rememberSaveable { mutableStateOf(false) }
+    val entries = inventory?.items.orEmpty().sortedByDescending { it.remoteAhead ?: -1 }
+    val outdated = entries.filter { it.canUpdate && (it.remoteAhead ?: 0) > 0 }
     val canChange = canModify && !busy && !loading && inventory?.recoveryStatus == "none"
     val select: (ManagedExtension, ExtensionAction) -> Unit = { item, action ->
         selectedId = item.id; selectedRevision = item.revision; selectedAction = action.name
     }
     val clearSelection = { selectedId = null; selectedRevision = null; selectedAction = null }
-    Dialog(onDismissRequest = { if (!busy) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(8.dp), tonalElevation = 6.dp) {
+    ToolPaneHost(embedded, { if (!busy) onClose() }) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("확장 프로그램", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    Text(if (inventory == null) "설치된 확장 확인" else "${entries.size}개${if (inventory.nextCursor != null) "+" else ""} 설치됨",
+                        Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
                     IconButton(onClick = onRefresh, enabled = !loading && !busy) { Icon(Icons.Outlined.Refresh, "확장 목록 새로고침") }
                 }
-                if (loading || busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (loading || busy) V2BusyIndicator(Modifier.fillMaxWidth())
+                val checked = entries.count { it.remoteAhead != null }
+                Text(listOfNotNull(if (checked > 0) "업데이트 ${outdated.size}개" else null,
+                    "꺼짐 ${entries.count { it.disabled }}개").joinToString("  ·  "), style = MaterialTheme.typography.bodySmall)
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     item {
-                        Text("공용·사용자별 클라이언트 확장만 관리합니다. 서버 plugins와 알 수 없는 구조는 변경하지 않습니다. 업데이트는 HTTPS GitHub 원본만 지원합니다. 변경하려면 서버를 종료하세요.")
-                        Text("‘사용 가능’은 파일 상태이며, SillyTavern의 계정별 활성 설정·실제 동작 여부와는 다릅니다. 목록 조회는 네트워크에 접속하지 않습니다.", style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("설치된 확장", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                            TextButton(onClick = { info = !info }) { Text("안내") }
+                        }
+                        if (info) Text("목록은 로컬 파일 상태예요. 꺼짐은 런처가 비활성화한 확장만 뜻해요. 새 버전 확인은 지원하는 HTTPS GitHub 원본에만 연결하며 파일은 변경하지 않아요. 확장을 변경하려면 서버를 먼저 종료하세요.", style = MaterialTheme.typography.bodySmall)
                         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus != null && inventory.recoveryStatus != "none") Text(inventory.recoveryMessage, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus == "pending") OutlinedButton(
@@ -53,10 +69,15 @@ fun ExtensionManagerDialog(
                         if (inventory?.recoveryStatus == "blocked") Text("파일과 복구 기록을 그대로 보존했습니다. 기록을 임의로 삭제하지 말고 진단 정보를 전달해 주세요.", style = MaterialTheme.typography.bodySmall)
                         if ((inventory?.skipped ?: 0) > 0) Text("지원 구조나 접근 상태를 확인하지 못한 ${inventory?.skipped}개 항목은 변경하지 않았습니다.")
                     }
-                    items(inventory?.items.orEmpty(), key = { it.id }) { item ->
-                        Card(Modifier.fillMaxWidth()) {
+                    items(entries, key = { it.id }) { item ->
+                        Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
+                            Column {
+                            ToolRow(item.name, listOfNotNull(item.version.ifBlank { null }, item.remoteAhead?.takeIf { it > 0 }?.let { "새 커밋 ${it}개" }).joinToString(" → "),
+                                when { item.disabled -> "꺼짐"; (item.remoteAhead ?: 0) > 0 -> "업데이트"; item.remoteAhead == 0 -> "최신"; else -> "" },
+                                icon = Icons.Outlined.Extension, accent = (item.remoteAhead ?: 0) > 0,
+                                onClick = { openId = if (openId == item.id) null else item.id })
+                            if (openId == item.id)
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(item.name, style = MaterialTheme.typography.titleMedium)
                                 Text("${item.scope} · ${if (item.disabled) "런처에서 비활성" else "사용 가능"}")
                                 Text("버전 ${item.version.ifBlank { "알 수 없음" }} · ${item.commit.ifBlank { "Git 정보 없음" }}", style = MaterialTheme.typography.bodySmall)
                                 if (item.updateRestriction.isNotBlank()) Text(item.updateRestriction, style = MaterialTheme.typography.bodySmall)
@@ -68,6 +89,7 @@ fun ExtensionManagerDialog(
                                 TextButton(onClick = { select(item, ExtensionAction.TRASH) }, enabled = canChange,
                                     modifier = Modifier.fillMaxWidth()) { Text("휴지통으로 이동", color = MaterialTheme.colorScheme.error) }
                             }
+                            }
                         }
                     }
                     if (inventory != null && inventory.items.isEmpty() && !loading) item { Text("지원되는 확장 프로그램이 없습니다.") }
@@ -75,8 +97,22 @@ fun ExtensionManagerDialog(
                         OutlinedButton(onClick = onMore, enabled = !busy && !loading, modifier = Modifier.fillMaxWidth()) { Text("확장 목록 더 보기") }
                     }
                 }
-                TextButton(onClick = onClose, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("닫기") }
+                if (onCheckUpdates != null) OutlinedButton(onClick = onCheckUpdates, enabled = !loading && !busy && entries.any { it.canUpdate },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("새 버전 확인") }
+                if (onUpdateAll != null && outdated.isNotEmpty()) Button(onClick = { bulkRevisions = outdated.associate { it.id to it.revision } }, enabled = canChange,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("확인된 ${outdated.size}개 모두 업데이트") }
+                if (!embedded) TextButton(onClick = onClose, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("닫기") }
             }
+        }
+        bulkRevisions?.let { expected ->
+            val targets = outdated.filter { expected[it.id] == it.revision }
+            AlertDialog(onDismissRequest = { bulkRevisions = null }, title = { Text("확장 ${expected.size}개를 업데이트할까요?") },
+                text = { Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                    Text("각 확장을 순서대로 검사하고 교체해요. 오류나 중단이 발생하면 이미 완료한 확장은 유지하고 나머지는 진행하지 않아요.")
+                    targets.forEach { Text("· ${it.name}") }
+                } }, confirmButton = { Button(onClick = { bulkRevisions = null; onUpdateAll?.invoke(targets) },
+                    enabled = canChange && targets.size == expected.size) { Text("업데이트") } },
+                dismissButton = { TextButton({ bulkRevisions = null }) { Text("취소") } })
         }
         if (selectedId != null) {
             val item = inventory?.items?.singleOrNull { it.id == selectedId && it.revision == selectedRevision }

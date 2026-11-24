@@ -45,10 +45,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-internal fun WorkProgressLog(logText: String, actions: @Composable RowScope.() -> Unit = {}) {
+internal fun WorkProgressLog(logText: String, initiallyExpanded: Boolean = true, actions: @Composable RowScope.() -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
     val scrollState = rememberScrollState()
-    var expanded by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
     FollowLogTail(logText, scrollState, enabled = expanded)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(

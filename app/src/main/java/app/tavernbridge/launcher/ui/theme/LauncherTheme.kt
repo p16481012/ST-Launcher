@@ -1,20 +1,49 @@
 package app.tavernbridge.launcher.ui.theme
 
 import android.app.Activity
-import android.os.Build
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.core.view.WindowCompat
 import app.tavernbridge.launcher.model.AppTheme
+import app.tavernbridge.launcher.model.DisplayPreferences
+
+val LocalV2ReducedMotion = staticCompositionLocalOf { false }
+
+@Composable
+private fun systemMotionReduced(): Boolean {
+    val resolver = LocalContext.current.contentResolver
+    fun read() = Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    var reduced by remember(resolver) { mutableStateOf(read()) }
+    DisposableEffect(resolver) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { reduced = read() }
+        }
+        resolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), false, observer)
+        reduced = read()
+        onDispose { resolver.unregisterContentObserver(observer) }
+    }
+    return reduced
+}
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF4E6073),
@@ -187,14 +216,12 @@ private val BlueberryColors = lightColorScheme(
 @Composable
 fun SillyTavernLauncherTheme(
     appTheme: AppTheme,
+    preferences: DisplayPreferences = DisplayPreferences(),
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
-    val context = LocalContext.current
-    val colors = when (appTheme) {
-        AppTheme.SYSTEM -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && shouldUseDynamicColors(appTheme, Build.VERSION.SDK_INT)) {
-            if (systemDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        } else if (systemDark) DarkColors else LightColors
+    val base = when (appTheme) {
+        AppTheme.SYSTEM -> if (systemDark) DarkColors else LightColors
         AppTheme.LIGHT -> LightColors
         AppTheme.DARK -> DarkColors
         AppTheme.PASTEL -> PastelColors
@@ -207,6 +234,31 @@ fun SillyTavernLauncherTheme(
         AppTheme.SYSTEM -> !systemDark
         else -> true
     }
+    val dark = !useDarkIcons
+    val neutral = appTheme in setOf(AppTheme.SYSTEM, AppTheme.DARK, AppTheme.LIGHT)
+    val ink = if (dark) Color(0xFFF1F2F4) else Color(0xFF17191C)
+    val paper = if (dark) Color(0xFF1A1C1F) else Color.White
+    val secondaryInk = if (dark) Color(0xFFA9AFB7) else Color(0xFF59606A)
+    val rule = if (dark) Color(0xFF2D3035) else Color(0xFFE4E7EB)
+    val accent = Color(if (dark) preferences.accent.darkArgb else preferences.accent.lightArgb)
+    val sheet = if (neutral) base.copy(
+        primary = ink, onPrimary = if (dark) Color(0xFF17191C) else paper, primaryContainer = if (dark) Color(0xFF343941) else Color(0xFFECEEF1),
+        onPrimaryContainer = ink, secondary = secondaryInk, onSecondary = paper,
+        background = if (dark) Color(0xFF111214) else Color(0xFFF4F5F7), onBackground = ink,
+        surface = paper, onSurface = ink, surfaceContainerLowest = paper,
+        surfaceContainer = if (dark) Color(0xFF292D33) else Color(0xFFECEEF1),
+        surfaceVariant = if (dark) Color(0xFF30343B) else Color(0xFFECEEF1),
+        onSurfaceVariant = secondaryInk, outlineVariant = rule,
+    ) else base
+    val colors = sheet.copy(
+        tertiary = accent, onTertiary = if (dark) Color(0xFF17191C) else Color.White,
+        onSurfaceVariant = if (preferences.highContrast) sheet.onSurface else sheet.onSurfaceVariant,
+        outline = if (preferences.highContrast) sheet.onSurface else sheet.outline,
+        outlineVariant = if (preferences.highContrast) sheet.onSurfaceVariant else sheet.outlineVariant,
+    )
+    val density = LocalDensity.current
+    val scaled = remember(density, preferences.textSize) { Density(density.density, preferences.textSize.applyTo(density.fontScale)) }
+    val reduceMotion = preferences.reducedMotion ?: systemMotionReduced()
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -217,9 +269,7 @@ fun SillyTavernLauncherTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colors,
-        typography = LauncherTypography,
-        content = content,
-    )
+    CompositionLocalProvider(LocalDensity provides scaled, LocalV2ReducedMotion provides reduceMotion) {
+        MaterialTheme(colorScheme = colors, typography = LauncherTypography, content = content)
+    }
 }

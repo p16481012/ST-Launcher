@@ -1,6 +1,7 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.clickable
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
@@ -17,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
@@ -145,6 +147,7 @@ internal fun ReplacementBackupChoice(checked: Boolean, onChange: (Boolean) -> Un
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TavernFileManagerDialog(
     state: LauncherUiState,
@@ -167,6 +170,7 @@ internal fun TavernFileManagerDialog(
     onPreview: (String) -> Unit,
     preview: TavernFilePreview?,
     onClosePreview: () -> Unit,
+    embedded: Boolean = false,
 ) {
     var selected by remember { mutableStateOf<TavernFileEntry?>(null) }
     var renameTarget by remember { mutableStateOf<TavernFileEntry?>(null) }
@@ -181,6 +185,25 @@ internal fun TavernFileManagerDialog(
     var selectionMode by remember(state.fileBrowserPath) { mutableStateOf(false) }
     var selectedPaths by remember(state.fileBrowserPath) { mutableStateOf(emptySet<String>()) }
     var batchConfirmation by remember { mutableStateOf<List<TavernFileEntry>?>(null) }
+    var observedReceipt by rememberSaveable { mutableStateOf(state.lastTrashedEntryId) }
+    var showUndo by rememberSaveable { mutableStateOf(false) }
+    val accessibility = LocalAccessibilityManager.current
+    LaunchedEffect(state.lastTrashedEntryId, state.fileBrowserMutating) {
+        if (!state.fileBrowserMutating && observedReceipt != state.lastTrashedEntryId) {
+            observedReceipt = state.lastTrashedEntryId
+            showUndo = observedReceipt.isNotBlank() && state.lastOperationResult?.operation != "restore-st-trash"
+        }
+    }
+    LaunchedEffect(showUndo, observedReceipt) {
+        if (showUndo) {
+            kotlinx.coroutines.delay(accessibility?.calculateRecommendedTimeoutMillis(5000, containsText = true, containsControls = true) ?: 5000L)
+            showUndo = false
+        }
+    }
+    BackHandler(embedded && !state.fileBrowserMutating && (selectionMode || state.fileBrowserPath.isNotEmpty())) {
+        if (selectionMode) { selectionMode = false; selectedPaths = emptySet() }
+        else onNavigate(state.fileBrowserPath.substringBeforeLast('/', ""))
+    }
     val visibleEntries = remember(state.fileBrowserEntries, query, sort) { visibleTavernFiles(state.fileBrowserEntries, query, sort) }
     val canModify = state.canModifyTavernFiles()
     LaunchedEffect(state.fileBrowserEntries, state.fileBrowserPath) {
@@ -191,30 +214,23 @@ internal fun TavernFileManagerDialog(
         else if (selectedPaths.size < MAX_FILE_SELECTION && canSelectTavernFileForTrash(entry)) selectedPaths = selectedPaths + entry.relativePath
     }
     LaunchedEffect(canModify, state.fileBrowserPath) { actionMenu = null }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp),
-            shape = RoundedCornerShape(24.dp), tonalElevation = 6.dp) {
+    ToolPaneHost(embedded, onClose) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { onNavigate(state.fileBrowserPath.substringBeforeLast('/', "")) },
-                        enabled = state.fileBrowserPath.isNotEmpty() && !state.fileBrowserLoading && !state.fileBrowserMutating) {
-                        Icon(Icons.Outlined.ArrowBack, "상위 폴더")
+                    IconButton(onClick = {
+                        when { selectionMode -> { selectionMode = false; selectedPaths = emptySet() }
+                            state.fileBrowserPath.isEmpty() -> onClose()
+                            else -> onNavigate(state.fileBrowserPath.substringBeforeLast('/', "")) }
+                    }, enabled = !state.fileBrowserLoading && !state.fileBrowserMutating) {
+                        Icon(if (selectionMode) Icons.Outlined.Close else Icons.Outlined.ArrowBack, "뒤로")
                     }
-                    Text("SillyTavern 폴더", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    Text(if (selectionMode) "${selectedPaths.size}개 선택" else "파일", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     IconButton(onClick = { onNavigate(state.fileBrowserPath) }, enabled = !state.fileBrowserLoading && !state.fileBrowserMutating) {
                         Icon(Icons.Outlined.Refresh, "폴더 새로고침")
                     }
-                    IconButton(onClick = onClose, enabled = !state.fileBrowserMutating) { Icon(Icons.Outlined.Close, "닫기") }
-                }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = query, onValueChange = { query = it.take(200) }, singleLine = true,
-                        modifier = Modifier.weight(1f), label = { Text("현재 폴더에서 검색") },
-                        leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                        trailingIcon = if (query.isNotEmpty()) ({ IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, "검색어 지우기") } }) else null)
-                    IconButton(onClick = { sortSheet = true }, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.Sort, "정렬: ${sort.label}") }
-                    IconToggleButton(checked = selectionMode, onCheckedChange = { selectionMode = it; selectedPaths = emptySet() },
-                        enabled = canModify, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.Checklist, "여러 항목 선택") }
+                    IconButton(onClick = { sortSheet = true }) { Icon(Icons.Outlined.Sort, "정렬: ${sort.label}") }
+                    IconButton(onClick = onOpenDirectory, enabled = !state.fileBrowserMutating) { Icon(Icons.Outlined.OpenInNew, "외부에서 폴더 열기") }
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
@@ -229,10 +245,18 @@ internal fun TavernFileManagerDialog(
                             TextButton(onClick = { onNavigate(target) }, enabled = !state.fileBrowserMutating) { Text(segment) }
                         }
                     }
+                }
+                if (!selectionMode) OutlinedTextField(value = query, onValueChange = { query = it.take(200) }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), placeholder = { Text("이 폴더에서 찾기") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                    trailingIcon = if (query.isNotEmpty()) ({ IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, "검색어 지우기") } }) else null)
+                val toolbar: @Composable () -> Unit = {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     Box {
-                        IconButton(onClick = { actionMenu = FileActionMenu.CREATE }, enabled = canModify,
-                            modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Outlined.Add, "새로 만들기")
+                        TextButton(onClick = { actionMenu = FileActionMenu.CREATE }, enabled = canModify) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Outlined.Add, null); Text("새로 만들기", style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                         DropdownMenu(expanded = actionMenu == FileActionMenu.CREATE && canModify,
                             onDismissRequest = { actionMenu = null }) {
@@ -245,9 +269,10 @@ internal fun TavernFileManagerDialog(
                         }
                     }
                     Box {
-                        IconButton(onClick = { actionMenu = FileActionMenu.IMPORT }, enabled = canModify,
-                            modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Outlined.FileDownload, "가져오기")
+                        TextButton(onClick = { actionMenu = FileActionMenu.IMPORT }, enabled = canModify) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Outlined.FileDownload, null); Text("가져오기", style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                         DropdownMenu(expanded = actionMenu == FileActionMenu.IMPORT && canModify,
                             onDismissRequest = { actionMenu = null }) {
@@ -259,15 +284,10 @@ internal fun TavernFileManagerDialog(
                                 onClick = { actionMenu = null; onImportFolder() })
                         }
                     }
-                    IconButton(onClick = onOpenDirectory, enabled = !state.fileBrowserMutating,
-                        modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Outlined.OpenInNew, "외부에서 폴더 열기")
+                    TextButton(onClick = { selectionMode = true }, enabled = canModify) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Checklist, null); Text("선택", style = MaterialTheme.typography.labelSmall) }
                     }
-                    if (state.lastTrashedEntryId.isNotBlank()) {
-                        IconButton(onClick = onUndoTrash, enabled = canModify, modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Outlined.Undo, "방금 휴지통으로 옮긴 항목 복구")
-                        }
-                    }
+                }
                 }
                 if (state.environment.processRunning || state.environment.operationActive) Text(
                     "서버·작업 실행 중에는 탐색만 가능합니다.",
@@ -284,12 +304,12 @@ internal fun TavernFileManagerDialog(
                         }
                     }
                 } else {
-                    if (state.fileBrowserLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.fileBrowserLoading) V2BusyIndicator(Modifier.fillMaxWidth())
+                    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                         if (visibleEntries.isEmpty() && !state.fileBrowserLoading) item { Text(if (query.isBlank()) "표시할 항목이 없습니다." else "이 폴더에 일치하는 항목이 없습니다.") }
                         items(visibleEntries, key = { it.relativePath }) { entry ->
                             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color =
-                                if (entry.relativePath in selectedPaths) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer) {
+                                if (entry.relativePath in selectedPaths) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface) {
                                 Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = !state.fileBrowserLoading && !state.fileBrowserMutating) {
                                     if (selectionMode) toggleSelection(entry)
                                     else if (entry.isDirectory) onNavigate(entry.relativePath) else selected = entry
@@ -299,7 +319,7 @@ internal fun TavernFileManagerDialog(
                                     else Icon(if (entry.isDirectory) Icons.Outlined.FolderOpen else Icons.Outlined.InsertDriveFile, null)
                                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                         Text(entry.name, fontWeight = FontWeight.SemiBold)
-                                        Text(if (entry.isDirectory) "폴더" else fileBytes(entry.sizeBytes), style = MaterialTheme.typography.bodySmall)
+                                        Text(listOf(if (entry.isDirectory) "폴더" else fileBytes(entry.sizeBytes), entry.modifiedAt).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                                         if (entry.sensitive) Text("민감한 정보 포함 가능", color = MaterialTheme.colorScheme.error,
                                             style = MaterialTheme.typography.labelSmall)
                                     }
@@ -311,6 +331,15 @@ internal fun TavernFileManagerDialog(
                         }
                     }
                 }
+                if (showUndo && !state.fileBrowserMutating && state.lastTrashedEntryId.isNotBlank()) {
+                    val dismiss = rememberSwipeToDismissBoxState()
+                    LaunchedEffect(dismiss.currentValue) { if (dismiss.currentValue != SwipeToDismissBoxValue.Settled) showUndo = false }
+                    SwipeToDismissBox(state = dismiss, backgroundContent = {}) {
+                        Snackbar(action = { TextButton(onClick = { showUndo = false; onUndoTrash() }, enabled = canModify) { Text("실행 취소", color = MaterialTheme.colorScheme.inversePrimary) } },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) { Text("항목을 휴지통으로 옮겼어요.") }
+                    }
+                }
+                if (!showUndo && !selectionMode && !state.fileBrowserMutating) toolbar()
                 if (selectionMode && !state.fileBrowserMutating) {
                     Surface(tonalElevation = 3.dp) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -330,8 +359,11 @@ internal fun TavernFileManagerDialog(
             }
         }
         selected?.let { entry ->
-            AlertDialog(onDismissRequest = { selected = null }, title = { Text(entry.name) }, text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ModalBottomSheet(onDismissRequest = { selected = null }) {
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(entry.name, style = MaterialTheme.typography.titleLarge)
+                    Text(listOf(if (entry.isDirectory) "폴더" else fileBytes(entry.sizeBytes), entry.modifiedAt).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                    if (entry.sensitive) Text("API 키 등 민감한 정보가 들어 있을 수 있어요.", color = MaterialTheme.colorScheme.error)
                     if (!entry.isDirectory) {
                         Button(onClick = { selected = null; onPreview(entry.relativePath) }, modifier = Modifier.fillMaxWidth(),
                             enabled = !state.fileBrowserLoading) { Text(if (isTavernPng(entry)) "PNG·캐릭터 카드 미리보기" else "텍스트 읽기 전용 미리보기") }
@@ -345,7 +377,7 @@ internal fun TavernFileManagerDialog(
                     OutlinedButton(onClick = { selected = null; trashTarget = entry }, enabled = canModify,
                         modifier = Modifier.fillMaxWidth()) { Text("휴지통으로 이동") }
                 }
-            }, confirmButton = { TextButton(onClick = { selected = null }) { Text("닫기") } })
+            }
         }
         externalFile?.let { entry ->
             AlertDialog(onDismissRequest = { externalFile = null }, title = { Text("다른 앱으로 열까요?") },
@@ -526,7 +558,7 @@ private fun FileOperationProgress(state: LauncherUiState, onCancel: () -> Unit) 
             if (measuredPercent != null) Text("${measuredPercent}%", fontWeight = FontWeight.Bold)
         }
         if (measuredPercent == null) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
+            V2BusyIndicator(Modifier.fillMaxWidth())
         } else {
             LinearProgressIndicator(progress = { measuredPercent / 100f }, modifier = Modifier.fillMaxWidth())
         }

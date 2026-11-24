@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.MainSection
+import app.tavernbridge.launcher.model.launcherTabs
 
 @Composable
 internal fun AdaptiveInfoRow(
@@ -62,12 +64,12 @@ internal fun LauncherNavigationRail(
     icon: (MainSection) -> ImageVector,
     modifier: Modifier = Modifier,
 ) {
-    NavigationRail(modifier = modifier.fillMaxHeight(), containerColor = MaterialTheme.colorScheme.background) {
+    NavigationRail(modifier = modifier.width(96.dp).fillMaxHeight(), containerColor = MaterialTheme.colorScheme.surface) {
         Column(
             modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            MainSection.entries.forEach { section ->
+            launcherTabs.forEach { section ->
                 NavigationRailItem(
                     selected = selected == section,
                     onClick = { onSelect(section) },
@@ -75,6 +77,11 @@ internal fun LauncherNavigationRail(
                     label = { Text(section.label) },
                     modifier = Modifier.heightIn(min = 64.dp),
                     alwaysShowLabel = true,
+                    colors = androidx.compose.material3.NavigationRailItemDefaults.colors(
+                        indicatorColor = MaterialTheme.colorScheme.surface,
+                        selectedIconColor = MaterialTheme.colorScheme.onSurface,
+                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                    ),
                 )
             }
         }

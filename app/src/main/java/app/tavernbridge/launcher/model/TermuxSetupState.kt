@@ -54,7 +54,7 @@ internal fun LauncherUiState.waitForFirstConnection(base: EnvironmentStatus): La
         termuxSetup.status in setOf(TermuxSetupStatus.UNVERIFIED, TermuxSetupStatus.EXTERNAL_APPS_DISABLED) -> termuxSetup
         else -> TermuxSetupState()
     }
-    return finishTermuxSetupCheck(base, next).copy(section = MainSection.SETUP)
+    return finishTermuxSetupCheck(base, next).copy(section = if (setupDeferred) section else MainSection.SETUP)
 }
 
 internal fun LauncherUiState.firstConnectionFailed(base: EnvironmentStatus, failure: TermuxSetupState): LauncherUiState =
@@ -100,7 +100,7 @@ fun LauncherUiState.finishTermuxSetupCheck(
     environment = environment.withTermuxSetup(base, check),
     termuxSetup = check,
     environmentChecked = environmentChecked && check.verified,
-    section = if (check.requiresUserAction && !hasInstallationHistory) MainSection.SETUP else section,
+    section = if (check.requiresUserAction && !hasInstallationHistory && !setupDeferred) MainSection.SETUP else section,
     isWorking = false,
     workingLabel = "",
     workProgress = null,
@@ -114,8 +114,9 @@ fun sectionAfterEnvironmentCheck(
     firstCheck: Boolean,
     requestedSection: MainSection,
     currentSection: MainSection,
+    setupDeferred: Boolean = false,
 ): MainSection = when {
-    !environment.sillyTavernInstalled -> MainSection.SETUP
+    !environment.sillyTavernInstalled -> if (setupDeferred) currentSection else MainSection.SETUP
     firstCheck -> if (requestedSection == MainSection.SETUP) MainSection.HOME else requestedSection
     else -> currentSection
 }

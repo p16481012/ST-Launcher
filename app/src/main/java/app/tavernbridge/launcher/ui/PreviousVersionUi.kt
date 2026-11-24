@@ -76,7 +76,7 @@ internal fun PreviousVersionDialog(
                     if (state.snapshots?.truncated == true) item { Text("검증 가능한 백업 중 최대 50개까지만 표시합니다.", style = MaterialTheme.typography.bodySmall) }
                 }
             }
-            if (state.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            if (state.loading) item { V2BusyIndicator(Modifier.fillMaxWidth()) }
             if (state.error.isNotBlank()) item {
                 Text(state.error, color = MaterialTheme.colorScheme.error)
                 TextButton(onClick = onRefresh, enabled = !state.loading) { Text("다시 확인") }

@@ -28,6 +28,8 @@ function extension(name, gitRepo = true) {
 let checks = 0;
 try {
     const clean = extension('clean'); assert.strictEqual(row('clean')[9], '1', Buffer.from(row('clean')[10], 'base64').toString()); checks++;
+    assert.strictEqual(Buffer.from(row('clean')[11], 'base64').toString(), 'fixture/extensions');
+    assert.strictEqual(Buffer.from(row('clean')[12], 'base64').toString(), 'main'); checks++;
     const original = fs.readFileSync(path.join(clean, 'manifest.json'));
     ok(action('disable', 'clean')); assert(!fs.existsSync(path.join(clean, 'manifest.json'))); assert.deepStrictEqual(fs.readFileSync(path.join(clean, '.st-launcher-disabled-manifest.json')), original);
     assert.strictEqual(row('clean')[6], 'disabled'); assert.strictEqual(row('clean')[9], '0'); ok(action('enable', 'clean')); checks++;

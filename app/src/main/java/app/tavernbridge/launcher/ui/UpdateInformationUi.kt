@@ -41,7 +41,7 @@ internal fun UpdateInformationCard(state: LauncherUiState, onCheck: () -> Unit) 
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (state.updateInfoError.isNotBlank()) Text(state.updateInfoError, color = MaterialTheme.colorScheme.error)
-            if (state.updateInfoLoading) CircularProgressIndicator()
+            if (state.updateInfoLoading) V2BusyIndicator(linear = false)
             TextButton(onClick = onCheck, enabled = !state.updateInfoLoading && !state.isWorking) { Text("업데이트 정보 확인") }
             TextButton(onClick = { runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) } }) { Text("공식 저장소 릴리스 열기") }
         }

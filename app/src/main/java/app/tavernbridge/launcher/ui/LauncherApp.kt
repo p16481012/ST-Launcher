@@ -67,6 +67,12 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Update
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
@@ -157,6 +163,8 @@ import app.tavernbridge.launcher.model.DiagnosticStatus
 import app.tavernbridge.launcher.model.EnvironmentStatus
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.MainSection
+import app.tavernbridge.launcher.model.ToolPage
+import app.tavernbridge.launcher.model.launcherTabs
 import app.tavernbridge.launcher.model.ManagementPanel
 import app.tavernbridge.launcher.model.SettingsPanel
 import app.tavernbridge.launcher.model.ServerReadiness
@@ -256,15 +264,15 @@ fun LauncherApp(viewModel: LauncherViewModel) {
             }
         }
     }
-    LaunchedEffect(state.section, state.diagnosticPanel, state.environment.processRunning, state.isWorking) {
-        if (state.section == MainSection.LOGS && state.diagnosticPanel == DiagnosticPanel.SERVER_LOG && !state.isWorking) {
+    LaunchedEffect(state.section, state.toolPage, state.diagnosticPanel, state.environment.processRunning, state.isWorking) {
+        if (state.section == MainSection.LOGS && state.toolPage == ToolPage.LOGS && state.diagnosticPanel == DiagnosticPanel.SERVER_LOG && !state.isWorking) {
             while (true) {
                 viewModel.refreshLogsSilently()
                 delay(2_000)
             }
         }
     }
-    SillyTavernLauncherTheme(state.theme) {
+    SillyTavernLauncherTheme(state.theme, state.displayPreferences) {
         LauncherScaffold(state, viewModel)
     }
 }
@@ -277,9 +285,15 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     EntryRequestDialog(state.pendingEntry, viewModel.entryActionGate(), viewModel::confirmEntryAction, viewModel::dismissEntryAction)
     val context = LocalContext.current
     val resources = LocalResources.current
-    val largeText = LocalDensity.current.fontScale >= 1.3f
     val snackbarHostState = remember { SnackbarHostState() }
     var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
+    var welcomeAfterInstall by rememberSaveable { mutableStateOf(false) }
+    val showWelcome = welcomeAfterInstall && state.environment.sillyTavernInstalled &&
+        state.section in setOf(MainSection.HOME, MainSection.SETUP, MainSection.BACKUPS) &&
+        state.lastOperationResult?.let { it.succeeded && it.operation in setOf("install", "import-install", "import-backup") } == true
+    val section = if (showWelcome) MainSection.SETUP else state.section
+    val setupFullScreen = section in setOf(MainSection.SETUP, MainSection.BACKUPS) &&
+        (showWelcome || state.shouldShowSetupGuide || state.environmentChecked && !state.environment.sillyTavernInstalled)
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
     var selectedBrowserPackage by rememberSaveable { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -338,6 +352,46 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         )
     }
 
+    val requestUpdate: () -> Unit = {
+        val modifiedFiles = state.updatePreflight?.modifiedFiles.orEmpty()
+        confirmation = Confirmation(
+            title = if (modifiedFiles.isEmpty()) {
+                "SillyTavern을 업데이트할까요?"
+            } else {
+                "수정된 파일이 있어도 업데이트할까요?"
+            },
+            description = if (modifiedFiles.isEmpty()) {
+                "현재 커밋과 패키지를 보존한 뒤 업데이트합니다. 패키지 설치 또는 서버 응답 검사에 실패하면 이전 커밋과 기존 패키지로 자동 롤백합니다."
+            } else {
+                "다음 수정 내용을 별도 안전 파일로 보관한 뒤 Git 작업 트리에서는 제거하고 업데이트합니다. 수정 내용은 자동으로 다시 적용되지 않습니다.\n\n${modifiedFiles.joinToString("\n")}"
+            },
+            confirmLabel = if (modifiedFiles.isEmpty()) "업데이트" else "보관 후 진행",
+            action = ConfirmationAction.UPDATE,
+        )
+    }
+
+    val requestRepair: () -> Unit = {
+        confirmation = Confirmation(
+            title = "설치 패키지를 점검·복구할까요?",
+            description = "캐릭터·대화·설정은 유지하고 Termux 도구와 node_modules를 다시 구성합니다. 서버는 먼저 종료해 주세요.",
+            confirmLabel = "점검·복구",
+            action = ConfirmationAction.REPAIR,
+        )
+    }
+
+    val requestReset: (Boolean) -> Unit = { keepBackup ->
+        val lastBackupAt = state.backupReminder.lastBackupAtMillis
+        val backupDate = if (lastBackupAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(lastBackupAt)) else "확인된 기록 없음"
+        confirmation = Confirmation(
+            title = "SillyTavern을 완전히 초기화할까요?",
+            description = "현재 캐릭터·채팅·설정·확장 프로그램을 제거하고 같은 브랜치를 새로 설치합니다. 재설치가 실패하면 현재 설치로 자동 복구하며, 휴대폰 Download의 ZIP 백업은 삭제하지 않습니다. 서버를 먼저 종료해 주세요.\n\n최근 사용자 데이터 백업 생성 기록: $backupDate\n생성 기록만으로 파일이 남아 있다고 보장하지는 않습니다.",
+            confirmLabel = "초기화 후 재설치",
+            action = ConfirmationAction.RESET,
+            allowBackup = true, backupBefore = keepBackup,
+            withoutBackupLabel = "백업 없이 초기화",
+        )
+    }
+
     LaunchedEffect(state.message, state.error, state.lastOperationResult) {
         val notice = state.error ?: state.message
         if (notice != null) {
@@ -346,6 +400,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 message = notice,
                 actionLabel = if (retryable) "다시 시도" else null,
                 withDismissAction = retryable,
+                duration = androidx.compose.material3.SnackbarDuration.Short,
             )
             viewModel.consumeNotice()
             if (result == SnackbarResult.ActionPerformed) viewModel.retryLastOperation()
@@ -371,6 +426,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         viewModel.showMessage(resources.getString(R.string.ui_confirmation_expired))
                     } else when (pending.action) {
                         ConfirmationAction.INSTALL -> {
+                            welcomeAfterInstall = setupFullScreen
                             viewModel.selectInstallBranch(SillyBranch.entries.first { it.value == pending.arguments.single() })
                             viewModel.install()
                         }
@@ -379,6 +435,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         ConfirmationAction.IMPORT_BACKUP -> {
                             val uri = Uri.parse(pending.arguments.single())
                             if (context.checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION) == PackageManager.PERMISSION_GRANTED) {
+                                welcomeAfterInstall = setupFullScreen
                                 viewModel.importBackup(uri, pending.allowBackup && pending.backupBefore)
                             } else viewModel.showMessage(resources.getString(R.string.ui_document_access_lost))
                         }
@@ -387,7 +444,11 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         ConfirmationAction.REPAIR -> viewModel.repair()
                         ConfirmationAction.RESET -> viewModel.resetInstallation(pending.allowBackup && pending.backupBefore)
                     }
-                }, enabled = !state.isWorking) { Text(if (pending.allowBackup && !pending.backupBefore) pending.withoutBackupLabel else pending.confirmLabel) }
+                }, enabled = !state.isWorking, shape = RoundedCornerShape(14.dp),
+                    colors = if (pending.action in setOf(ConfirmationAction.DELETE_BACKUPS, ConfirmationAction.RESET))
+                        ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)
+                    else ButtonDefaults.buttonColors()
+                ) { Text(if (pending.allowBackup && !pending.backupBefore) pending.withoutBackupLabel else pending.confirmLabel) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmation = null }) { Text(stringResource(R.string.ui_cancel)) }
@@ -399,7 +460,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         InstallationImportConfirmation(
             installation = candidate,
             destinationExists = candidate.destinationExists,
-            onConfirm = viewModel::confirmInstallationImport,
+            onConfirm = { mode, backup ->
+                welcomeAfterInstall = setupFullScreen
+                viewModel.confirmInstallationImport(mode, backup)
+            },
             onDismiss = viewModel::dismissInstallationImport,
         )
     }
@@ -473,44 +537,19 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val useRail = chooseLauncherNavigation(maxWidth.value) == LauncherNavigationMode.RAIL
+    val tab = if (section == MainSection.SETUP) MainSection.LOGS else section
+    val selectTab: (MainSection) -> Unit = { target ->
+        welcomeAfterInstall = false
+        if (target == MainSection.BACKUPS) viewModel.openBackups() else viewModel.selectSection(target)
+    }
+    BackHandler(section == MainSection.SETUP && !setupFullScreen && !state.isWorking) {
+        selectTab(MainSection.LOGS)
+    }
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-                title = {
-                    Column {
-                        Text("실리태번 런처", style = if (largeText) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge)
-                        if (!largeText) Text(
-                            "비공식 Termux 런처",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = viewModel::refresh, enabled = !state.isWorking) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "새로고침")
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            if (!useRail) NavigationBar {
-                MainSection.entries.forEach { section ->
-                    NavigationBarItem(
-                        selected = state.section == section,
-                        onClick = { viewModel.selectSection(section) },
-                        icon = { Icon(section.icon(), contentDescription = null) },
-                        label = { Text(section.label) },
-                    )
-                }
-            }
-        },
+        snackbarHost = { V2NoticeHost(snackbarHostState) },
+        bottomBar = { if (!setupFullScreen && !useRail) V2TabBar(tab, selectTab) },
     ) { padding ->
         Box(
             modifier = Modifier
@@ -519,10 +558,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 .consumeWindowInsets(padding),
         ) {
             Row(Modifier.fillMaxSize()) {
-            if (useRail) LauncherNavigationRail(state.section, viewModel::selectSection, { it.icon() })
+            if (useRail && !setupFullScreen) LauncherNavigationRail(tab, selectTab, { it.icon() })
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-            AnimatedContent(targetState = state.section, label = "section",
-                modifier = Modifier.widthIn(max = 840.dp).fillMaxSize()) { section ->
+            androidx.compose.runtime.key(section) {
                 when (section) {
                     MainSection.HOME -> HomeScreen(
                         state = state,
@@ -547,9 +585,13 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         setupCommand = viewModel.setupCommand,
                         onOpenPermissionSettings = viewModel::openPermissionSettings,
                         onOpenBackups = viewModel::openBackups,
+                        onUpdate = { viewModel.selectTool(ToolPage.UPDATE) },
+                        onLogs = { viewModel.openDiagnostics(DiagnosticPanel.SERVER_LOG) },
+                        onHistory = { viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
+                        onReadHistory = viewModel::refreshHistorySilently,
                         onSnoozeBackupReminder = viewModel::snoozeBackupReminder,
                     )
-                    MainSection.SETUP -> if (!state.environmentChecked && !state.shouldShowSetupGuide) {
+                    MainSection.SETUP, MainSection.BACKUPS -> if (!state.environmentChecked && !state.shouldShowSetupGuide) {
                         EnvironmentCheckingScreen(
                             state = state,
                             onOpenTermuxSettings = viewModel::openTermuxAppSettings,
@@ -562,29 +604,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
                             RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
                         }
-                    } else if (state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
+                    } else if (!showWelcome && state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
                         ManagementScreen(
                             state = state,
+                            panel = if (section == MainSection.BACKUPS) ManagementPanel.BACKUP else state.managementPanel,
                             onSelectPanel = viewModel::selectManagementPanel,
                             onCheckUpdate = viewModel::checkForUpdates,
                             onAutoBackupChange = viewModel::setAutoBackupBeforeUpdate,
-                            onUpdate = {
-                                val modifiedFiles = state.updatePreflight?.modifiedFiles.orEmpty()
-                                confirmation = Confirmation(
-                                    title = if (modifiedFiles.isEmpty()) {
-                                        "SillyTavern을 업데이트할까요?"
-                                    } else {
-                                        "수정된 파일이 있어도 업데이트할까요?"
-                                    },
-                                    description = if (modifiedFiles.isEmpty()) {
-                                        "현재 커밋과 패키지를 보존한 뒤 업데이트합니다. 패키지 설치 또는 서버 응답 검사에 실패하면 이전 커밋과 기존 패키지로 자동 롤백합니다."
-                                    } else {
-                                        "다음 수정 내용을 별도 안전 파일로 보관한 뒤 Git 작업 트리에서는 제거하고 업데이트합니다. 수정 내용은 자동으로 다시 적용되지 않습니다.\n\n${modifiedFiles.joinToString("\n")}"
-                                    },
-                                    confirmLabel = if (modifiedFiles.isEmpty()) "업데이트" else "보관 후 진행",
-                                    action = ConfirmationAction.UPDATE,
-                                )
-                            },
+                            onUpdate = requestUpdate,
                             onCreateBackup = viewModel::createBackup,
                             onRefreshBackups = viewModel::loadBackups,
                             onBackupReminderChange = viewModel::setBackupReminderEnabled,
@@ -619,34 +646,21 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                                     description = "총 ${formatBackupBytes(backups.sumOf { it.sizeBytes })}의 ZIP을 휴대폰 Download 폴더에서 삭제합니다. 삭제한 파일은 앱에서 복구할 수 없습니다.",
                                     confirmLabel = "선택 항목 삭제",
                                     action = ConfirmationAction.DELETE_BACKUPS,
-                                    arguments = backups.map { it.fileName },
+                                    arguments = backups.map(app.tavernbridge.launcher.model.BackupDeleteSelection::key),
                                 )
                             },
                             onSwitchBranch = requestBranchSwitch,
-                            onRepair = {
-                                confirmation = Confirmation(
-                                    title = "설치 패키지를 점검·복구할까요?",
-                                    description = "캐릭터·대화·설정은 유지하고 Termux 도구와 node_modules를 다시 구성합니다. 서버는 먼저 종료해 주세요.",
-                                    confirmLabel = "점검·복구",
-                                    action = ConfirmationAction.REPAIR,
-                                )
-                            },
-                            onResetInstallation = {
-                                val lastBackupAt = state.backupReminder.lastBackupAtMillis
-                                val backupDate = if (lastBackupAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(lastBackupAt)) else "확인된 기록 없음"
-                                confirmation = Confirmation(
-                                    title = "SillyTavern을 완전히 초기화할까요?",
-                                    description = "현재 캐릭터·채팅·설정·확장 프로그램을 제거하고 같은 브랜치를 새로 설치합니다. 재설치가 실패하면 현재 설치로 자동 복구하며, 휴대폰 Download의 ZIP 백업은 삭제하지 않습니다. 서버를 먼저 종료해 주세요.\n\n최근 사용자 데이터 백업 생성 기록: $backupDate\n생성 기록만으로 파일이 남아 있다고 보장하지는 않습니다.",
-                                    confirmLabel = "초기화 후 재설치",
-                                    action = ConfirmationAction.RESET,
-                                    allowBackup = true,
-                                    withoutBackupLabel = "백업 없이 초기화",
-                                )
-                            },
+                            onRepair = requestRepair,
+                            onResetInstallation = { requestReset(true) },
                         )
                     } else {
                         SetupScreen(
                             state = state,
+                            onLeave = {
+                                welcomeAfterInstall = false
+                                if (state.environment.sillyTavernInstalled) viewModel.selectSection(MainSection.HOME)
+                                else viewModel.deferSetup()
+                            },
                             setupCommand = viewModel.setupCommand,
                             onDownloadTermux = viewModel::openTermuxDownload,
                             onOpenTermux = viewModel::openTermux,
@@ -673,42 +687,15 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onCopied = { viewModel.showMessage("명령을 복사하고 Termux를 열었습니다.") },
                         )
                     }
-                    MainSection.LOGS -> DiagnosticsScreen(
-                        state = state,
-                        onSelectPanel = viewModel::openDiagnostics,
-                        onRunDiagnostics = viewModel::runDiagnostics,
-                        onRefresh = viewModel::loadLogs,
-                        onLoadPreviousLogs = viewModel::loadPreviousServerLogs,
-                        onLoadHistory = viewModel::loadOperationHistory,
-                        onOpenTerminalLog = viewModel::openServerLogTerminal,
-                        onOpenBatterySettings = viewModel::openBatteryOptimizationSettings,
-                        onOpenTermuxSettings = viewModel::openTermuxAppSettings,
-                        storageSetupCommand = viewModel.storageSetupCommand,
-                        onOpenTermux = viewModel::openTermux,
-                        onStorageCommandCopied = { viewModel.showMessage("저장공간 연결 명령을 복사하고 Termux를 열었습니다.") },
-                        onCopied = { viewModel.showMessage("내용을 클립보드에 복사했습니다.") },
-                    )
-                    MainSection.SETTINGS -> SettingsScreen(
-                        state = state,
-                        onSelectPanel = viewModel::selectSettingsPanel,
-                        onTheme = viewModel::selectTheme,
-                        onSaveServerConnection = viewModel::saveServerConnection,
-                        onOpenSillyTavernFolder = viewModel::openSillyTavernFolder,
-                        onWakeLockChange = viewModel::setWakeLockEnabled,
-                        onOpenDeviceBatterySettings = viewModel::openDeviceBatterySettings,
-                        onOpenTermuxAppSettings = viewModel::openTermuxAppSettings,
-                        onOpenLauncherAppSettings = viewModel::openLauncherAppSettings,
-                        preferredBrowser = viewModel.preferredBrowser(),
-                        onResetBrowser = viewModel::clearPreferredBrowser,
-                        onAutoOpenBrowserChange = viewModel::setAutoOpenBrowser,
-                        onCheckUpdateInformation = viewModel::checkUpdateInformation,
-                        onOpenExtensions = viewModel::openExtensions,
-                        onRefreshLan = viewModel::refreshLanAddresses,
-                        onSaveLanSecurity = viewModel::saveLanSecurity,
-                    )
+                    MainSection.LOGS -> V2ToolsScreen(state, viewModel,
+                        onUpdate = requestUpdate, onRepair = requestRepair, onReset = requestReset,
+                        onOpenInstallation = {
+                            viewModel.selectManagementPanel(ManagementPanel.INSTALL)
+                            viewModel.selectSection(MainSection.SETUP)
+                        })
+                    MainSection.SETTINGS -> V2SettingsScreen(state, viewModel)
                 }
             }
-
             }
             }
             if (state.safetyInventory.open && !state.isWorking) {
@@ -753,7 +740,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     onCancel = viewModel::cancelCurrentOperation,
                 )
             }
-            if (state.fileBrowserOpen) {
+            if (state.fileBrowserOpen && !(state.section == MainSection.LOGS && state.toolPage == ToolPage.FILES)) {
                 TavernFileManagerDialog(
                     state = state,
                     onNavigate = viewModel::loadSillyTavernFolder,
@@ -804,62 +791,29 @@ private fun HomeScreen(
     setupCommand: String,
     onOpenPermissionSettings: () -> Unit,
     onOpenBackups: () -> Unit,
+    onUpdate: () -> Unit,
+    onLogs: () -> Unit,
+    onHistory: () -> Unit,
+    onReadHistory: () -> Unit,
     onSnoozeBackupReminder: () -> Unit,
 ) {
-    val environment = state.environment
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp, 12.dp, 20.dp, 28.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            if (state.shouldShowSetupGuide) {
+    val env = state.environment
+    if (state.environmentChecked && env.sillyTavernInstalled && !env.recoveryPending) {
+        V2HomeDashboard(state, onOpen, onStart, onStop, onRestart, onOpenBackups,
+            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder)
+    } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        when {
+            state.shouldShowSetupGuide || (state.setupDeferred && !state.hasInstallationHistory) ->
                 EmptyHomeCard(onSetup)
-            } else if (!state.environmentChecked) {
-                EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
-                    setupCommand, onOpenPermissionSettings)
-            } else if (environment.recoveryPending) {
-                RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
-            } else if (!environment.sillyTavernInstalled) {
-                EmptyHomeCard(onSetup)
-            } else {
-                ServerHeroCard(environment, onOpen, onStart, onStop)
-            }
+            !state.environmentChecked -> EnvironmentCheckingCard(state, onOpenTermuxSettings, onOpenTermux, onRefresh,
+                setupCommand, onOpenPermissionSettings)
+            env.recoveryPending -> RestoreRecoveryCard(state, onRepair, onStop, onOpenTermux)
+            else -> EmptyHomeCard(onSetup)
         }
-        if (!environment.recoveryPending) state.lastOperationResult?.let { summary ->
-            item { OperationResultCard(summary, onRetry) }
-        }
-        if (state.environmentChecked && !environment.recoveryPending && !state.isWorking) {
-            state.backupReminder.notice(state.backupReminderNowMillis, environment.sillyTavernInstalled)?.let { notice ->
-                item { BackupReminderCard(notice, onOpenBackups, onSnoozeBackupReminder) }
-            }
-        }
-        if (state.environmentChecked && environment.sillyTavernInstalled && !environment.recoveryPending) {
-            if (environment.processRunning) {
-            item {
-                QuickAction(
-                    modifier = Modifier.fillMaxWidth(),
-                    icon = Icons.Outlined.RestartAlt,
-                    label = "서버 재시작",
-                    onClick = onRestart,
-                )
-            }
-            }
-            item {
-                ServerSessionCard(environment)
-            }
-            item {
-                Text(
-                    if (environment.externalAccessEnabled) "외부 접속이 허용되어 있습니다. 다른 기기의 접속은 서버의 네트워크·접근 허용 설정에 따릅니다."
-                    else "현재 설정은 이 기기에서만 접속하도록 되어 있습니다. 설정 변경은 서버를 다시 시작한 뒤 적용됩니다.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        }
+        if (!env.recoveryPending) state.lastOperationResult?.let { OperationResultCard(it, onRetry) }
     }
 }
-
 @Composable
 private fun RestoreRecoveryCard(
     state: LauncherUiState,
@@ -1011,173 +965,8 @@ private fun EmptyHomeCard(onSetup: () -> Unit) {
                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .76f),
             )
             Button(onClick = onSetup, modifier = Modifier.fillMaxWidth()) {
-                Text("설치 상태 확인")
+                Text("설정 이어하기")
             }
-        }
-    }
-}
-
-@Composable
-private fun ServerHeroCard(
-    environment: EnvironmentStatus,
-    onOpen: () -> Unit,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
-) {
-    val readiness = environment.serverReadiness
-    val online = readiness == ServerReadiness.READY
-    val containerColor = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor,
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (online) 0.dp else 1.dp),
-        shape = RoundedCornerShape(28.dp),
-    ) {
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(11.dp)
-                        .clip(CircleShape)
-                        .background(serverStatusIndicatorColor(readiness, containerColor)),
-                )
-                Spacer(Modifier.width(9.dp))
-                Text(
-                    when (readiness) {
-                        ServerReadiness.READY -> "서버 정상 응답"
-                        ServerReadiness.STARTING -> "서버 시작 중"
-                        ServerReadiness.UNRESPONSIVE -> "서버 응답 없음"
-                        ServerReadiness.PORT_CONFLICT -> "다른 프로세스가 포트 사용 중"
-                        ServerReadiness.OFFLINE -> "서버 꺼짐"
-                    },
-                    color = if (online) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Column {
-                Text(
-                    when (readiness) {
-                        ServerReadiness.READY -> "바로 대화를 시작하세요"
-                        ServerReadiness.PORT_CONFLICT -> "포트 상태를 진단해 주세요"
-                        ServerReadiness.UNRESPONSIVE -> "서버 로그를 확인해 주세요"
-                        else -> "SillyTavern을 시작하세요"
-                    },
-                    color = if (online) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.headlineMedium,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "127.0.0.1:${environment.port}",
-                    color = if (online) MaterialTheme.colorScheme.onPrimary.copy(alpha = .68f)
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            if (online) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = onOpen,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface,
-                        ),
-                    ) {
-                        Icon(Icons.Outlined.Launch, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("브라우저로 열기")
-                    }
-                    OutlinedButton(
-                        onClick = onStop,
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onPrimary.copy(alpha = .72f)),
-                    ) {
-                        Icon(
-                            Icons.Outlined.Stop,
-                            contentDescription = "종료",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    }
-                }
-            } else {
-                Button(
-                    onClick = onStart,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = readiness != ServerReadiness.PORT_CONFLICT && readiness != ServerReadiness.STARTING,
-                ) {
-                    Icon(Icons.Outlined.PlayArrow, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("SillyTavern 시작")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun QuickAction(modifier: Modifier, icon: ImageVector, label: String, onClick: () -> Unit) {
-    FilledTonalButton(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 52.dp),
-        shape = RoundedCornerShape(16.dp),
-    ) {
-        Icon(icon, null)
-        Spacer(Modifier.width(8.dp))
-        Text(label)
-    }
-}
-
-@Composable
-private fun ServerSessionCard(environment: EnvironmentStatus) {
-    var now by remember(environment.sessionStartedEpoch, environment.processRunning) {
-        mutableStateOf(System.currentTimeMillis())
-    }
-    LaunchedEffect(environment.sessionStartedEpoch, environment.processRunning) {
-        while (environment.processRunning) {
-            now = System.currentTimeMillis()
-            delay(1_000)
-        }
-    }
-    val elapsedSeconds = if (environment.processRunning && environment.sessionStartedEpoch > 0) {
-        ((now / 1_000) - environment.sessionStartedEpoch).coerceAtLeast(0)
-    } else 0
-    val elapsed = when {
-        !environment.processRunning -> "실행 중인 세션 없음"
-        environment.sessionStartedEpoch <= 0 -> "확인 중"
-        elapsedSeconds >= 86_400 -> "%d일 %02d:%02d:%02d".format(
-            elapsedSeconds / 86_400,
-            elapsedSeconds % 86_400 / 3_600,
-            elapsedSeconds % 3_600 / 60,
-            elapsedSeconds % 60,
-        )
-        else -> "%02d:%02d:%02d".format(
-            elapsedSeconds / 3_600,
-            elapsedSeconds % 3_600 / 60,
-            elapsedSeconds % 60,
-        )
-    }
-    val recentStatus = when (environment.lastServerAction) {
-        "start" -> "서버 시작"
-        "restart" -> "서버 재시작"
-        "detected_running" -> "실행 중인 서버 인식"
-        "stop" -> "정상 종료"
-        "unexpected_stop" -> "예기치 않게 종료됨"
-        "start_failed" -> "시작 실패"
-        else -> "기록 없음"
-    }
-    Card(shape = RoundedCornerShape(22.dp)) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("현재 서버 세션", style = MaterialTheme.typography.titleLarge)
-            InfoRow("세션", if (environment.processRunning) "실행 중" else "종료됨")
-            InfoRow("실행 시간", elapsed, monospace = environment.processRunning)
-            InfoRow("시작 시각", environment.sessionStartedAt.ifBlank { "기록 없음" })
-            HorizontalDivider()
-            InfoRow("최근 상태", recentStatus)
-            InfoRow("상태 시각", environment.lastServerActionAt.ifBlank { "기록 없음" })
         }
     }
 }
@@ -1231,14 +1020,16 @@ private fun DirectSpinner(
 }
 
 @Composable
-private fun BackupCreatorCard(
+internal fun BackupCreatorCard(
     serverRunning: Boolean,
+    includeSecretsByDefault: Boolean,
     availableFolders: List<app.tavernbridge.launcher.model.CustomBackupFolder>,
+    canStart: Boolean,
     onCreateBackup: (Set<BackupCategory>, Boolean, Set<String>) -> Unit,
 ) {
     var selectedKeys by rememberSaveable { mutableStateOf(listOf(BackupCategory.USER_DATA.key)) }
     var selectedFolders by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var includeSecrets by rememberSaveable { mutableStateOf(false) }
+    var includeSecrets by rememberSaveable { mutableStateOf(includeSecretsByDefault) }
     var confirmPause by rememberSaveable { mutableStateOf(false) }
     val selected = selectedKeys.mapNotNull(BackupCategory::fromKey).toSet()
     val canIncludeSecrets = BackupCategory.USER_DATA in selected || BackupCategory.FULL in selected
@@ -1247,7 +1038,7 @@ private fun BackupCreatorCard(
         onDismissRequest = { confirmPause = false },
         title = { Text("서버를 잠시 멈추고 백업할까요?") },
         text = { Text("백업 중 대화할 수 없습니다. 백업 후 원래 실행 중이었던 서버만 다시 시작합니다. 작업을 중단하면 서버는 종료 상태로 남습니다.") },
-        confirmButton = { TextButton(onClick = {
+        confirmButton = { TextButton(enabled = canStart, onClick = {
             confirmPause = false
             onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
         }) { Text("중지 후 백업") } },
@@ -1354,7 +1145,7 @@ private fun BackupCreatorCard(
                     else onCreateBackup(selected, includeSecrets && canIncludeSecrets, selectedFolders.toSet())
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = selected.isNotEmpty() &&
+                enabled = canStart && selected.isNotEmpty() &&
                     (BackupCategory.CUSTOM !in selected || selectedFolders.isNotEmpty()),
             ) {
                 Icon(Icons.Outlined.CloudDownload, null)
@@ -1370,110 +1161,9 @@ private fun BackupCreatorCard(
     }
 }
 
-@Composable
-private fun BackupArchiveCard(
-    backup: BackupArchive,
-    serverRunning: Boolean,
-    selectionMode: Boolean,
-    selected: Boolean,
-    onSelectedChange: (Boolean) -> Unit,
-    onRestore: () -> Unit,
-    onSelectiveRestore: () -> Unit,
-    onShare: () -> Unit,
-    onExport: () -> Unit,
-    annotation: app.tavernbridge.launcher.model.BackupAnnotation,
-    onSaveAnnotation: (Boolean, String) -> Unit,
-) {
-    var transferMenuOpen by remember(backup.fileName) { mutableStateOf(false) }
-    val itemLabels = backup.categories.map { it.label }.toMutableList().apply {
-        if (backup.customFolders.isNotEmpty()) add("직접 선택 ${backup.customFolders.size}개")
-    }
-    Card(shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (selectionMode) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = selected, onCheckedChange = onSelectedChange, enabled = !annotation.pinned && annotation.trusted)
-                    Text(if (annotation.pinned) "고정된 백업 · 삭제 보호" else if (selected) "삭제 대상으로 선택됨" else "삭제할 백업 선택")
-                }
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(backup.createdAt.ifBlank { "날짜 알 수 없음" }, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text(formatBackupBytes(backup.sizeBytes), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (!selectionMode) Box {
-                    IconButton(onClick = { transferMenuOpen = true }) {
-                        Icon(Icons.Outlined.MoreHoriz, contentDescription = "백업 공유·저장 메뉴")
-                    }
-                    DropdownMenu(expanded = transferMenuOpen, onDismissRequest = { transferMenuOpen = false }) {
-                        DropdownMenuItem(text = { Text("캐릭터·채팅 선택 복원") }, enabled = !serverRunning,
-                            onClick = { transferMenuOpen = false; onSelectiveRestore() })
-                        DropdownMenuItem(text = { Text("공유") }, leadingIcon = { Icon(Icons.Outlined.Share, null) },
-                            onClick = { transferMenuOpen = false; onShare() })
-                        DropdownMenuItem(text = { Text("다른 위치에 저장") }, leadingIcon = { Icon(Icons.Outlined.Download, null) },
-                            onClick = { transferMenuOpen = false; onExport() })
-                    }
-                }
-            }
-            Text(
-                itemLabels.distinct().joinToString(" · ").ifBlank { "포함 항목 알 수 없음" },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (backup.sillyTavernVersion.isNotBlank()) {
-                Text("SillyTavern ${backup.sillyTavernVersion}", style = MaterialTheme.typography.bodySmall)
-            }
-            if (backup.expandedBytes > 0) {
-                Text(
-                    "해제 크기 ${formatBackupBytes(backup.expandedBytes)} · 항목 ${backup.entryCount}개",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (backup.integrity.isNotBlank()) {
-                Text(
-                    "무결성 검사 ${if (backup.integrity == "zip-crc32") "ZIP CRC" else backup.integrity}",
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (!backup.restoreSpaceReady) {
-                Text(
-                    "복원 공간 부족 · ${formatBackupBytes(backup.requiredRestoreBytes)} 필요",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            if (backup.includesSecrets) {
-                Text(
-                    "비밀 설정 포함 · 외부 공유 주의",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            BackupAnnotationControl(backup, annotation, onSaveAnnotation)
-            OutlinedButton(
-                onClick = onRestore,
-                enabled = !serverRunning && backup.restoreSpaceReady,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Outlined.RestartAlt, null)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        serverRunning -> "서버 종료 후 복원"
-                        !backup.restoreSpaceReady -> "저장공간 확보 후 복원"
-                        else -> "복원 내용 미리보기"
-                    },
-                )
-            }
-        }
-    }
-}
 
 @Composable
-private fun BackupStorageSetupCard(
+internal fun BackupStorageSetupCard(
     command: String,
     onOpenTermux: () -> Unit,
     onRefresh: () -> Unit,
@@ -1544,7 +1234,7 @@ private fun backupRestorePreview(backup: BackupArchive, currentVersion: String):
     append("현재 데이터를 백업 내용으로 교체합니다. 백업 이후 생긴 대화는 사라질 수 있습니다. 실패 시 복구용 임시 사본은 성공 후 삭제됩니다.")
 }.trim()
 
-private fun formatBackupBytes(bytes: Long): String = when {
+internal fun formatBackupBytes(bytes: Long): String = when {
     bytes >= 1024L * 1024 * 1024 -> String.format(Locale.KOREA, "%.1f GB", bytes / 1073741824.0)
     bytes >= 1024L * 1024 -> String.format(Locale.KOREA, "%.1f MB", bytes / 1048576.0)
     bytes >= 1024L -> String.format(Locale.KOREA, "%.0f KB", bytes / 1024.0)
@@ -1581,22 +1271,23 @@ private fun ManagementScreen(
     onSwitchBranch: (SillyBranch) -> Unit,
     onRepair: () -> Unit,
     onResetInstallation: () -> Unit,
+    panel: ManagementPanel = state.managementPanel,
 ) {
+    if (panel == ManagementPanel.BACKUP) {
+        V2BackupScreen(
+            state, onCreateBackup, onRefreshBackups, onBackupReminderChange, onTransferBackup,
+            onOpenBackupFolder, onOpenSafetyInventory, onInspectStorage, onPreviewCleanup,
+            onSaveBackupAnnotation, onEncryptedBackup, onSelectiveRestore, onImportBackup,
+            storageSetupCommand, onOpenTermux, onStorageCommandCopied, onRestoreBackup, onDeleteBackups,
+        )
+        return
+    }
     val environment = state.environment
     val updateReport = state.updatePreflight
     val updateReady = updateReport != null && updateReport.updateAvailable &&
         updateReport.nodeCompatible && updateReport.spaceReady &&
         (!state.autoBackupBeforeUpdate || updateReport.backupStorageReady)
-    val selectedPanel = state.managementPanel
-    var backupDeleteMode by rememberSaveable { mutableStateOf(false) }
-    var selectedBackupFiles by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    LaunchedEffect(selectedPanel, state.environment.managerConnected) {
-        if (selectedPanel == ManagementPanel.BACKUP && state.environment.managerConnected) onRefreshBackups()
-    }
-    LaunchedEffect(state.backups.map { it.fileName }) {
-        selectedBackupFiles = selectedBackupFiles.filter { selected -> state.backups.any { it.fileName == selected } }
-        if (backupDeleteMode && selectedBackupFiles.isEmpty()) backupDeleteMode = false
-    }
+    val selectedPanel = panel
     Column(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
@@ -1829,546 +1520,10 @@ private fun ManagementScreen(
         }
             }
 
-            if (selectedPanel == ManagementPanel.BACKUP) {
-        item { StorageManagementCard(state, onInspectStorage, onPreviewCleanup) }
-        item { EncryptedBackupCard(!state.isWorking, onEncryptedBackup) }
-        item {
-            BackupReminderSetting(state.backupReminder.enabled, onBackupReminderChange)
-        }
-        item {
-            OutlinedButton(onClick = onOpenSafetyInventory, modifier = Modifier.fillMaxWidth()) {
-                Text("내부 안전 사본·휴지통 관리")
-            }
-        }
-        if (state.backupStorageReady == false) {
-            item {
-                BackupStorageSetupCard(
-                    command = storageSetupCommand,
-                    onOpenTermux = onOpenTermux,
-                    onRefresh = onRefreshBackups,
-                    onCopied = onStorageCommandCopied,
-                )
-            }
-        } else if (state.backupStorageReady == true) {
-            item {
-                BackupCreatorCard(
-                    serverRunning = environment.processRunning,
-                    availableFolders = state.backupFolders,
-                    onCreateBackup = onCreateBackup,
-                )
-            }
-        } else {
-            item {
-                Card(shape = RoundedCornerShape(22.dp)) {
-                    Row(
-                        modifier = Modifier.padding(20.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        DirectSpinner(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Text("백업 저장공간 연결 상태를 확인하고 있습니다.")
-                    }
-                }
-            }
-        }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text("저장된 백업", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "내 파일 → Download",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Row {
-                    IconButton(onClick = onOpenBackupFolder) {
-                        Icon(Icons.Outlined.FolderOpen, contentDescription = "Download 폴더 열기")
-                    }
-                    IconButton(onClick = onRefreshBackups) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "백업 목록 새로고침")
-                    }
-                }
-            }
-        }
-        if (state.backups.isNotEmpty()) {
-            item {
-                if (backupDeleteMode) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    selectedBackupFiles = if (selectedBackupFiles.size == state.backups.size) {
-                                        emptyList()
-                                    } else {
-                                        state.backups.filter { state.backupAnnotations[it.fileName]?.let { note -> !note.pinned && note.trusted } != false }.take(200).map { it.fileName }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                            ) { Text(if (selectedBackupFiles.size == state.backups.size) "전체 해제" else "전체 선택") }
-                            TextButton(
-                                onClick = {
-                                    backupDeleteMode = false
-                                    selectedBackupFiles = emptyList()
-                                },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("취소") }
-                        }
-                        Button(
-                            onClick = {
-                                val selected = state.backups.filter { it.fileName in selectedBackupFiles }
-                                if (selected.isNotEmpty()) onDeleteBackups(selected)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = selectedBackupFiles.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError,
-                            ),
-                        ) { Text("선택한 백업 ${selectedBackupFiles.size}개 삭제") }
-                    }
-                } else {
-                    OutlinedButton(
-                        onClick = { backupDeleteMode = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("백업 선택 삭제") }
-                }
-            }
-        }
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onImportBackup,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !environment.processRunning && state.backupStorageReady == true,
-                ) {
-                    Icon(Icons.Outlined.CloudDownload, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("ZIP에서 바로 복원")
-                }
-                if (environment.processRunning) {
-                    Text(
-                        "백업 ZIP을 가져오려면 먼저 서버를 종료해 주세요.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else {
-                    Text(
-                        "런처 백업과 일반 SillyTavern ZIP을 검사한 뒤 바로 복원합니다. 변환용 ZIP을 새로 만들지 않으며, secrets.json이 포함되어 있으면 비밀 설정도 복원될 수 있습니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-        if (!state.backupsLoaded && state.backupStorageReady == true) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    DirectSpinner(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text("Download 폴더의 백업 파일을 검색하고 있습니다.")
-                }
-            }
-        }
-        if (state.backupsLoaded && state.backups.isEmpty()) {
-            item {
-                Text(
-                    "아직 런처에서 만든 ZIP 백업이 없습니다.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        items(state.backups, key = { it.fileName }) { backup ->
-            BackupArchiveCard(
-                backup = backup,
-                serverRunning = environment.processRunning,
-                selectionMode = backupDeleteMode,
-                selected = backup.fileName in selectedBackupFiles,
-                onSelectedChange = { selected ->
-                    selectedBackupFiles = if (selected) {
-                        (selectedBackupFiles + backup.fileName).distinct().take(200)
-                    } else {
-                        selectedBackupFiles - backup.fileName
-                    }
-                },
-                onRestore = { onRestoreBackup(backup) },
-                onSelectiveRestore = { onSelectiveRestore(backup) },
-                onShare = { onTransferBackup(backup, BackupTransferAction.SHARE) },
-                onExport = { onTransferBackup(backup, BackupTransferAction.EXPORT) },
-                annotation = state.backupAnnotations[backup.fileName] ?: app.tavernbridge.launcher.model.BackupAnnotation(),
-                onSaveAnnotation = { pinned, memo -> onSaveBackupAnnotation(backup.fileName, pinned, memo) },
-            )
-        }
-            }
         }
     }
 }
 
-@Composable
-private fun SetupScreen(
-    state: LauncherUiState,
-    setupCommand: String,
-    onDownloadTermux: () -> Unit,
-    onOpenTermux: () -> Unit,
-    onRequestPermission: () -> Unit,
-    onOpenPermissionSettings: () -> Unit,
-    onVerifyTermux: () -> Unit,
-    onConfirmFirstConnection: () -> Unit,
-    onConnect: () -> Unit,
-    onSelectBranch: (SillyBranch) -> Unit,
-    onInstall: () -> Unit,
-    onSwitchBranch: (SillyBranch) -> Unit,
-    onBackup: () -> Unit,
-    onCopied: () -> Unit,
-    onPickInstallation: () -> Unit,
-    onInspectInstallation: (String) -> Unit,
-    onImportBackup: () -> Unit,
-) {
-    val env = state.environment
-    val clipboard = LocalClipboardManager.current
-    val eligibleStep = setupEligibleStep(env, state.termuxSetup)
-    // Navigation is never proof of setup. A fresh/revoked connection immediately locks later steps.
-    var requestedStep by remember { mutableStateOf(eligibleStep) }
-    val currentStep = requestedStep.coerceIn(1, eligibleStep)
-    val checking = state.termuxSetup.status == TermuxSetupStatus.CHECKING
-    val setupReady = state.termuxSetup.verified
-
-    LaunchedEffect(eligibleStep) {
-        requestedStep = eligibleStep
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("처음 설정", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    "$currentStep / 5 · 한 단계씩 진행해요",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (currentStep > 1 && !state.isWorking) {
-                TextButton(onClick = { requestedStep = currentStep - 1 }) { Text("이전") }
-            }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            repeat(5) { index ->
-                Surface(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(5.dp),
-                    color = if (index < currentStep) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = CircleShape,
-                ) {}
-            }
-        }
-
-        AnimatedContent(
-            targetState = currentStep,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            label = "setup-step",
-        ) { step ->
-            when (step) {
-                1 -> WizardStepCard(
-                    icon = Icons.Outlined.Terminal,
-                    title = "Termux를 준비할게요",
-                    description = if (env.termuxInstalled) {
-                        "Termux가 확인됐어요. 기존 설치와 파일은 그대로 유지됩니다."
-                    } else {
-                        "Termux는 SillyTavern이 실행되는 앱이에요. F-Droid판을 설치하고 한 번 열어 주세요."
-                    },
-                ) {
-                    Button(
-                        onClick = { if (env.termuxInstalled) requestedStep = 2 else onDownloadTermux() },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.isWorking,
-                    ) { Text(if (env.termuxInstalled) "다음" else "F-Droid에서 받기") }
-                    if (env.termuxInstalled) {
-                        OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {
-                            Text("Termux 열어보기")
-                        }
-                    } else {
-                        OutlinedButton(
-                            onClick = onVerifyTermux,
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = !checking && !state.isWorking,
-                        ) { Text("설치했어요 · 다시 확인") }
-                    }
-                }
-
-                2 -> WizardStepCard(
-                    icon = Icons.Outlined.CheckCircle,
-                    title = "실행 권한을 허용해요",
-                    description = if (env.commandPermissionGranted) {
-                        "Android 실행 권한이 허용됐어요. 다음으로 Termux 안의 설정을 확인할게요."
-                    } else {
-                        "런처가 Termux에 명령을 보낼 수 있도록 Android 권한이 필요해요."
-                    },
-                ) {
-                    if (!env.commandPermissionGranted) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            shape = RoundedCornerShape(14.dp),
-                        ) {
-                            Text(
-                                "↓ 여기를 누르고, 뜨는 창에서 ‘허용’을 눌러 주세요.",
-                                modifier = Modifier.padding(14.dp),
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                    }
-                    Button(
-                        onClick = { if (env.commandPermissionGranted) requestedStep = 3 else onRequestPermission() },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.isWorking,
-                    ) { Text(if (env.commandPermissionGranted) "다음" else "권한 허용") }
-                    if (!env.commandPermissionGranted) {
-                        Text(
-                            "허용 창이 안 뜨거나 거절했다면, 아래 설정에서 ‘Termux 환경에서 명령 실행’을 허용해 주세요.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        OutlinedButton(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
-                            Text("앱 권한 설정 열기")
-                        }
-                    }
-                }
-
-                3 -> WizardStepCard(
-                    icon = Icons.Outlined.ContentCopy,
-                    title = "붙여넣고 Enter를 눌러요",
-                    description = "Termux 안에서도 외부 명령을 허용해야 해요. 아래 순서대로 한 번만 진행해 주세요. 기존 SillyTavern 파일은 바뀌지 않아요.",
-                ) {
-                    TermuxPasteIllustration()
-                    SetupInstruction("1", "아래 버튼을 눌러 명령을 복사하고 Termux를 열어요.")
-                    SetupInstruction("2", "검은 화면의 빈 곳을 길게 누르고 ‘붙여넣기’를 눌러요.")
-                    SetupInstruction("3", "키보드의 Enter(↵)를 누른 뒤 이 런처로 돌아와요.")
-                    Button(
-                        onClick = {
-                            clipboard.setText(AnnotatedString(setupCommand))
-                            onCopied()
-                            onOpenTermux()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !checking && !state.isWorking,
-                    ) {
-                        Icon(Icons.Outlined.ContentCopy, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("복사하고 Termux 열기")
-                    }
-                    var showCommand by remember { mutableStateOf(false) }
-                    TextButton(onClick = { showCommand = !showCommand }, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (showCommand) "복사할 명령 접기" else "복사할 명령 보기")
-                    }
-                    if (showCommand) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(14.dp),
-                        ) {
-                            SelectionContainer {
-                                Text(
-                                    setupCommand,
-                                    modifier = Modifier.padding(14.dp),
-                                    fontFamily = FontFamily.Monospace,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                    }
-                    TermuxSetupFeedback(state)
-                    OutlinedButton(
-                        onClick = onConfirmFirstConnection,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !setupReady && !checking && !state.isWorking,
-                    ) {
-                        if (checking) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Outlined.Refresh, null)
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (checking) "연결 확인 중…" else "실행했어요 · 연결 확인")
-                    }
-                    Button(
-                        onClick = { if (setupReady) requestedStep = 4 },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = setupReady && !state.isWorking,
-                    ) {
-                        if (!setupReady) {
-                            Icon(Icons.Outlined.Lock, null)
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(if (setupReady) "다음" else "연결이 확인되면 다음으로")
-                    }
-                }
-
-                4 -> WizardStepCard(
-                    icon = Icons.Outlined.InstallMobile,
-                    title = "런처를 연결할게요",
-                    description = "Termux 연결이 확인됐어요. 이제 관리 스크립트를 설치하고 기존 ~/SillyTavern을 안전하게 확인할게요.",
-                ) {
-                    Button(
-                        onClick = { if (env.managerConnected) requestedStep = 5 else onConnect() },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = setupReady && !state.isWorking,
-                    ) {
-                        Text(if (env.managerConnected) "다음" else "연결 시작")
-                    }
-                    Text(
-                        "삭제나 덮어쓰기는 하지 않아요.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-
-                else -> Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    if (env.sillyTavernInstalled) {
-                        ExistingInstallCard(env, onSwitchBranch, onBackup, enabled = setupReady && !state.isWorking && env.managerConnected)
-                    } else {
-                        ExistingInstallationImportCard(
-                            enabled = !state.isWorking && setupReady && env.managerConnected && !env.processRunning,
-                            onPickFolder = onPickInstallation,
-                            onInspectPath = onInspectInstallation,
-                        )
-                        InstallBranchCard(state.selectedInstallBranch, onSelectBranch, onInstall,
-                            enabled = setupReady && !state.isWorking && env.managerConnected)
-                        OutlinedButton(onClick = onImportBackup, enabled = !state.isWorking && setupReady && env.managerConnected,
-                            modifier = Modifier.fillMaxWidth()) { Text("전체 설치 ZIP에서 복원") }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WizardStepCard(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(26.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(22.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Surface(
-                modifier = Modifier.size(48.dp),
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(icon, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                }
-            }
-            Text(title, style = MaterialTheme.typography.headlineSmall)
-            Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(4.dp))
-            content()
-        }
-    }
-}
-
-@Composable
-private fun InstallBranchCard(
-    selected: SillyBranch,
-    onSelect: (SillyBranch) -> Unit,
-    onInstall: () -> Unit,
-    enabled: Boolean,
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        shape = RoundedCornerShape(22.dp),
-    ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("SillyTavern 설치", style = MaterialTheme.typography.titleLarge)
-            Text("설치할 브랜치를 선택하세요. 설치 전 Termux 패키지를 함께 갱신하며 기존 설정 파일은 유지합니다.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .72f))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SillyBranch.entries.forEach { branch ->
-                    FilterChip(
-                        selected = selected == branch,
-                        enabled = enabled,
-                        onClick = { onSelect(branch) },
-                        label = { Text(branch.label) },
-                    )
-                }
-            }
-            Text(selected.description, style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = onInstall, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Outlined.Download, null)
-                Spacer(Modifier.width(8.dp))
-                Text("${selected.label} 설치")
-            }
-        }
-    }
-}
-
-@Composable
-private fun ExistingInstallCard(
-    environment: EnvironmentStatus,
-    onSwitchBranch: (SillyBranch) -> Unit,
-    onBackup: () -> Unit,
-    enabled: Boolean,
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        shape = RoundedCornerShape(22.dp),
-    ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Icon(Icons.Outlined.CheckCircle, null, modifier = Modifier.size(32.dp))
-            Text("기존 설치 연결됨", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "~/SillyTavern의 데이터를 그대로 사용합니다. 현재 ${environment.branch?.label ?: "알 수 없는"} 브랜치입니다.",
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .76f),
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .12f))
-            BranchChangeButtons(environment.branch, onSwitchBranch, enabled)
-            Button(
-                onClick = onBackup,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    contentColor = MaterialTheme.colorScheme.primaryContainer,
-                ),
-            ) {
-                Icon(Icons.Outlined.CloudDownload, null)
-                Spacer(Modifier.width(8.dp))
-                Text("전체 백업 만들기 (.zip)")
-            }
-            Text(
-                "캐릭터·대화·설정 등 ~/SillyTavern을 Android 다운로드 폴더에 압축합니다. 다시 받을 수 있는 node_modules는 제외합니다.",
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .72f),
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
 
 @Composable
 private fun DiagnosticsScreen(
@@ -2635,297 +1790,6 @@ private fun DiagnosticResultCard(
     }
 }
 
-@Composable
-private fun SettingsScreen(
-    state: LauncherUiState,
-    onSelectPanel: (SettingsPanel) -> Unit,
-    onTheme: (AppTheme) -> Unit,
-    onSaveServerConnection: (Int, Boolean, String) -> Unit,
-    onOpenSillyTavernFolder: () -> Unit,
-    onWakeLockChange: (Boolean) -> Unit,
-    onOpenDeviceBatterySettings: () -> Unit,
-    onOpenTermuxAppSettings: () -> Unit,
-    onOpenLauncherAppSettings: () -> Unit,
-    preferredBrowser: BrowserOption?,
-    onResetBrowser: () -> Unit,
-    onAutoOpenBrowserChange: (Boolean) -> Unit,
-    onCheckUpdateInformation: () -> Unit,
-    onOpenExtensions: () -> Unit,
-    onRefreshLan: () -> Unit,
-    onSaveLanSecurity: (app.tavernbridge.launcher.model.LanSecurityChange) -> Unit,
-) {
-    val selectedTheme = state.theme
-    val background = state.backgroundStatus
-    val selectedPanel = state.settingsPanel
-    var portText by rememberSaveable(state.configuredPort) { mutableStateOf(state.configuredPort.toString()) }
-    val externalAccess = state.environment.externalAccessEnabled
-    val whitelistText = state.environment.whitelist.joinToString("\n")
-    var lanSettingsOpen by rememberSaveable { mutableStateOf(false) }
-    val clipboard = LocalClipboardManager.current
-    val parsedPort = portText.toIntOrNull()
-    var confirmConnectionSave by rememberSaveable { mutableStateOf(false) }
-    val connectionChanged = parsedPort != state.configuredPort
-    if (lanSettingsOpen) LANSecuritySettingsDialog(
-        current = app.tavernbridge.launcher.model.LanSecuritySnapshot(externalAccess, state.environment.whitelist,
-            state.environment.basicAuthEnabled, state.environment.perUserBasicAuth),
-        busy = state.isWorking, onDismiss = { lanSettingsOpen = false },
-        onConfirm = { change -> lanSettingsOpen = false; onSaveLanSecurity(change) },
-    )
-    if (confirmConnectionSave) AlertDialog(
-        onDismissRequest = { confirmConnectionSave = false },
-        title = { Text("서버 연결 설정을 적용할까요?") },
-        text = { Text(listOfNotNull(
-            if (state.environment.processRunning) "실행 중인 서버를 잠시 멈추고 설정을 저장한 뒤 다시 시작합니다. 작업을 중단하면 종료 상태로 남습니다." else "다음 서버 시작부터 적용됩니다.",
-            if (externalAccess) "외부 접속을 허용하면 허용 목록의 다른 기기가 서버에 접속할 수 있습니다. 신뢰하는 네트워크에서만 사용하세요." else null,
-        ).joinToString("\n\n")) },
-        confirmButton = { TextButton(onClick = {
-            confirmConnectionSave = false
-            parsedPort?.let { onSaveServerConnection(it, externalAccess, whitelistText) }
-        }, enabled = !state.isWorking) { Text("적용") } },
-        dismissButton = { TextButton(onClick = { confirmConnectionSave = false }) { Text("취소") } },
-    )
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp, 12.dp, 20.dp, 28.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("설정", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-                SectionTabs(SettingsPanel.entries, selectedPanel, onSelectPanel) { it.label }
-            }
-        }
-        if (selectedPanel == SettingsPanel.BATTERY) {
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("배터리·백그라운드", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "Android의 Doze와 절전 정책은 화면이 꺼진 뒤 Termux의 CPU·네트워크 작업을 지연시킬 수 있습니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    HorizontalDivider()
-                    InfoRow(
-                        "Termux 배터리",
-                        if (background.termuxBatteryUnrestricted) "제한 없음" else "최적화 대상",
-                    )
-                    InfoRow(
-                        "Termux 알림",
-                        "직접 확인 필요",
-                    )
-                    InfoRow(
-                        "Termux Wake lock",
-                        when {
-                            background.wakeLockActive -> "Termux에서 작동 중"
-                            background.wakeLockEnabled -> "켜짐 · 서버 시작 시 적용"
-                            else -> "꺼짐"
-                        },
-                    )
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Termux Wake lock", style = MaterialTheme.typography.titleLarge)
-                            Text(
-                                "서버 실행 중 Termux가 CPU와 Wi-Fi 절전을 방지합니다. 런처 알림은 추가되지 않습니다.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Switch(
-                            checked = background.wakeLockEnabled,
-                            onCheckedChange = onWakeLockChange,
-                        )
-                    }
-                    Surface(
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        Text(
-                            "Wake lock은 배터리 소모를 늘리며 CPU와 Wi-Fi 절전을 방지합니다. 삼성 등 제조사 정책에 따른 Termux 프로세스 종료까지 완전히 막는 기능은 아닙니다.",
-                            modifier = Modifier.padding(14.dp),
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            }
-        }
-        if (background.isSamsung) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                    shape = RoundedCornerShape(22.dp),
-                ) {
-                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("삼성 절전 예외 등록 안내", style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            "아래 순서대로 한 단계씩 확인해 주세요. One UI 버전에 따라 메뉴 이름이 조금 다를 수 있습니다.",
-                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = .78f),
-                        )
-                        SamsungBatteryStep("1", "배터리 설정 열기", "백그라운드 사용 제한을 선택합니다.")
-                        SamsungBatteryStep("2", "절전 목록에서 제거", "절전 상태 앱·초절전 상태 앱에 Termux가 있으면 제거합니다.")
-                        SamsungBatteryStep("3", "절전 예외에 추가", "자동 절전 안 함 앱 또는 절전 예외 앱에 Termux를 추가합니다.")
-                        SamsungBatteryStep("4", "Termux를 제한 없음으로", "Termux 앱 정보 → 배터리에서 제한 없음을 선택합니다.")
-                        Button(onClick = onOpenDeviceBatterySettings, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Outlined.Settings, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Termux 배터리 설정 열기")
-                        }
-                        OutlinedButton(onClick = onOpenTermuxAppSettings, modifier = Modifier.fillMaxWidth()) {
-                            Text("Termux 앱 정보 열기")
-                        }
-                    }
-                }
-            }
-        }
-        }
-        if (selectedPanel == SettingsPanel.SERVER) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-            ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("열 앱 선택", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        if (preferredBrowser == null) {
-                            "아직 ‘항상’ 사용할 앱을 선택하지 않았습니다. 홈에서 SillyTavern을 열 때 선택할 수 있습니다."
-                        } else {
-                            "현재 항상 사용하는 앱: ${preferredBrowser.label}"
-                        },
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    if (preferredBrowser != null) {
-                        OutlinedButton(
-                            onClick = onResetBrowser,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("열 앱 다시 선택")
-                        }
-                    }
-                    BrowserAutoOpenSetting(state.autoOpenBrowser, onAutoOpenBrowserChange)
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("서버 주소", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "런처 실행 포트: ${state.configuredPort} · config.yaml: ${state.environment.configPort?.toString() ?: "확인되지 않음"}\n런처로 시작하면 런처의 포트 설정을 우선 사용합니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        "변경한 주소는 다음 서버 시작부터 적용됩니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    OutlinedTextField(
-                        value = portText,
-                        onValueChange = { value ->
-                            if (value.length <= 5 && value.all(Char::isDigit)) portText = value
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("포트 번호") },
-                        prefix = { Text(if (externalAccess) "0.0.0.0:" else "127.0.0.1:") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        isError = parsedPort != null && parsedPort !in 1024..65535,
-                        supportingText = { Text("사용 가능 범위: 1024–65535") },
-                    )
-                    Button(onClick = { confirmConnectionSave = true }, modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.isWorking && parsedPort != null && parsedPort in 1024..65535 && connectionChanged) {
-                        Text(if (state.environment.processRunning) "서버 잠시 중지 후 포트 저장" else "포트 저장")
-                    }
-                }
-            }
-        }
-        item {
-            LanConnectionCard(externalAccess, state.lanEndpoints, onRefreshLan, { lanSettingsOpen = true },
-                { clipboard.setText(AnnotatedString(it)) })
-        }
-        }
-        if (selectedPanel == SettingsPanel.GENERAL) {
-        item { UpdateInformationCard(state, onCheckUpdateInformation) }
-        item { LauncherEntrySettingsCard() }
-        item {
-            OutlinedButton(onClick = onOpenExtensions, enabled = state.environment.sillyTavernInstalled && !state.isWorking, modifier = Modifier.fillMaxWidth()) {
-                Text(if (state.environment.extensionRecovery != "none") "중단된 확장 교체 확인·복구" else "확장 프로그램 관리")
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("테마", style = MaterialTheme.typography.titleLarge)
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        AppTheme.entries.forEach { theme ->
-                            FilterChip(
-                                selected = selectedTheme == theme,
-                                onClick = { onTheme(theme) },
-                                leadingIcon = { Icon(theme.icon(), null, modifier = Modifier.size(18.dp)) },
-                                label = { Text(theme.label) },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("SillyTavern 폴더", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "실제 설치 폴더를 탐색하고 파일과 폴더를 관리합니다. 변경 작업은 서버를 종료한 뒤 사용할 수 있습니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    OutlinedButton(
-                        onClick = onOpenSillyTavernFolder,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = state.environment.sillyTavernInstalled,
-                    ) {
-                        Icon(Icons.Outlined.FolderOpen, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("SillyTavern 폴더 관리")
-                    }
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("앱 정보", style = MaterialTheme.typography.titleLarge)
-                    InfoRow("앱 버전", BuildConfig.VERSION_NAME)
-                    InfoRow("제작·배포", "깡통 커뮤니티")
-                    Text(
-                        "SillyTavern 및 Termux와 별개로 제작되는 비공식 런처입니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    OutlinedButton(onClick = onOpenLauncherAppSettings, modifier = Modifier.fillMaxWidth()) {
-                        Text("런처 앱 상세 설정 열기")
-                    }
-                }
-            }
-        }
-        }
-    }
-}
 
 
 @Composable
@@ -2940,7 +1804,6 @@ private fun WorkingOverlay(
     val finalConfirmation = label == "작업 완료" || label == "진단 완료"
     val finalizing = progress?.status == "success" && !finalConfirmation
     val measuredPercent = progress?.measuredPercent.takeUnless { finalizing }
-    val largeText = LocalDensity.current.fontScale >= 1.3f
     val fallbackPhase = stringResource(R.string.ui_processing)
     val phase = if (finalizing) stringResource(R.string.ui_finalizing) else progress?.phase?.takeIf(String::isNotBlank)
         ?: label.takeIf(String::isNotBlank) ?: fallbackPhase
@@ -2951,87 +1814,55 @@ private fun WorkingOverlay(
             stringResource(R.string.ui_progress_files, progress.completedFiles.coerceIn(0, progress.totalFiles), progress.totalFiles)
         else -> ""
     }
-    if (collapsed) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(20.dp),
-            contentAlignment = Alignment.BottomEnd,
-        ) {
-            Card(modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth().clickable { collapsed = false },
-                shape = RoundedCornerShape(20.dp)) {
-                Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(phase, fontWeight = FontWeight.SemiBold)
-                        WorkElapsedTime(startedAtMillis)
-                        if (measuredCount.isNotBlank()) Text(measuredCount, style = MaterialTheme.typography.bodySmall)
-                    }
-                    Icon(Icons.Outlined.KeyboardArrowUp, stringResource(R.string.ui_expand_progress))
-                }
-            }
-        }
-    } else Dialog(
-        onDismissRequest = {},
-        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false),
-    ) { Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = .36f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Surface(
-            modifier = Modifier
-                .padding(horizontal = 24.dp, vertical = 24.dp)
-                .widthIn(max = 640.dp)
-                .fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
-            tonalElevation = 6.dp,
-        ) {
-            Column(
-                modifier = Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 22.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 3.dp,
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    if (!largeText) Text(phase, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                    else Spacer(Modifier.weight(1f))
-                    if (measuredPercent != null) {
-                        Text(stringResource(R.string.ui_progress_percent, measuredPercent), fontWeight = FontWeight.Bold)
-                    }
-                    IconButton(onClick = { collapsed = true }) {
-                        Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = stringResource(R.string.ui_collapse_progress))
-                    }
-                }
-                if (largeText) Text(phase, fontWeight = FontWeight.SemiBold)
-                if (measuredPercent != null) {
-                    LinearProgressIndicator(
-                        progress = { measuredPercent / 100f },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } else {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-                WorkElapsedTime(startedAtMillis)
-                WorkProgressLog(progress?.logText.orEmpty()) {
-                    OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel,
-                        modifier = Modifier.weight(1f))
-                }
-            }
-        }
+    val reduce = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
+    val title = label.ifBlank { phase }
+    val bar: @Composable () -> Unit = {
+        if (measuredPercent != null) LinearProgressIndicator(progress = { measuredPercent / 100f },
+            color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth().height(4.dp))
+        else if (!reduce) LinearProgressIndicator(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth().height(4.dp))
+        else HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.outlineVariant)
     }
+    if (collapsed) {
+        Box(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.BottomCenter) {
+            Surface(onClick = { collapsed = false }, modifier = Modifier.widthIn(max = 550.dp).fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(14.dp)) {
+                Column {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                        measuredPercent?.let { Text("$it%", fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono) }
+                        Icon(Icons.Outlined.KeyboardArrowUp, stringResource(R.string.ui_expand_progress))
+                    }
+                    bar()
+                }
+            }
+        }
+    } else V2BottomSheet(onClose = { collapsed = true }) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            measuredPercent?.let { Text("$it%", style = MaterialTheme.typography.titleLarge) }
+            IconButton(onClick = { collapsed = true }) {
+                Icon(Icons.Outlined.KeyboardArrowDown, stringResource(R.string.ui_collapse_progress))
+            }
+        }
+        bar()
+        if (phase != title) Text(phase, style = MaterialTheme.typography.bodyMedium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            if (measuredCount.isNotEmpty()) Text(measuredCount, Modifier.weight(1f), fontFamily = app.tavernbridge.launcher.ui.theme.V2Mono,
+                style = MaterialTheme.typography.bodySmall)
+            WorkElapsedTime(startedAtMillis)
+        }
+        WorkProgressLog(progress?.logText.orEmpty(), initiallyExpanded = false) {
+            OperationCancelControl(progress, cancellationRequested, startedAtMillis, onCancel, modifier = Modifier.weight(1f))
+        }
     }
 }
-
-private fun MainSection.icon(): ImageVector = when (this) {
+internal fun MainSection.icon(): ImageVector = when (this) {
     MainSection.HOME -> Icons.Outlined.Home
     MainSection.SETUP -> Icons.Outlined.Update
-    MainSection.LOGS -> Icons.Outlined.HealthAndSafety
+    MainSection.BACKUPS -> Icons.Outlined.FileDownload
+    MainSection.LOGS -> Icons.Outlined.Build
     MainSection.SETTINGS -> Icons.Outlined.Settings
 }
 

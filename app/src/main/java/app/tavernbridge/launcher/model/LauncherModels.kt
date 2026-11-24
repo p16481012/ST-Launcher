@@ -22,10 +22,14 @@ enum class SillyBranch(val value: String, val label: String, val description: St
 
 enum class MainSection(val label: String) {
     HOME("홈"),
-    SETUP("관리"),
-    LOGS("진단"),
+    BACKUPS("백업"),
+    LOGS("도구"),
     SETTINGS("설정"),
+    // Not a top-level tab: entered by the installation guide or Tools > installation.
+    SETUP("설치"),
 }
+
+val launcherTabs = listOf(MainSection.HOME, MainSection.BACKUPS, MainSection.LOGS, MainSection.SETTINGS)
 
 enum class ManagementPanel(val label: String) {
     INSTALL("설치"),
@@ -109,9 +113,11 @@ data class BackgroundStatus(
 
 data class LauncherUiState(
     val section: MainSection = MainSection.HOME,
+    val setupDeferred: Boolean = false,
     val managementPanel: ManagementPanel = ManagementPanel.INSTALL,
     val settingsPanel: SettingsPanel = SettingsPanel.GENERAL,
     val theme: AppTheme = AppTheme.SYSTEM,
+    val displayPreferences: DisplayPreferences = DisplayPreferences(),
     val selectedInstallBranch: SillyBranch = SillyBranch.RELEASE,
     val configuredPort: Int = 8000,
     val environment: EnvironmentStatus = EnvironmentStatus(),
@@ -134,6 +140,7 @@ data class LauncherUiState(
     val previousServerLogs: String = "아직 보관된 이전 서버 로그가 없습니다.",
     val operationHistory: String = "아직 불러온 작업 기록이 없습니다.",
     val diagnosticPanel: DiagnosticPanel = DiagnosticPanel.OVERVIEW,
+    val toolPage: ToolPage = ToolPage.INDEX,
     val diagnosticReport: DiagnosticReport? = null,
     val latestVersion: String = "",
     val updateAvailable: Boolean? = null,

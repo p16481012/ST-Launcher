@@ -77,7 +77,7 @@ internal fun SelectiveRestoreDialog(
                     if (page?.nextCursor != null && page.items.size < 1000) item { TextButton(onClick = onMore, enabled = !state.loading) { Text("더 불러오기") } }
                     if (page?.items?.size == 1000 && page.nextCursor != null) item { Text("한 번에 목록 1,000개까지 표시합니다.", style = MaterialTheme.typography.bodySmall) }
                 }
-                if (state.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                if (state.loading) item { V2BusyIndicator(Modifier.fillMaxWidth()) }
                 if (state.error.isNotBlank()) item {
                     Text(state.error, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = onRefresh, enabled = !state.loading) { Text("목록 다시 확인") }

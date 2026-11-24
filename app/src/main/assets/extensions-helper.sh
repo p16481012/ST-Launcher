@@ -401,7 +401,8 @@ function list() {
         const row = ['extension', b64(relative), revision(target, m), b64(cleanText(m.data.display_name, 256) || path.basename(target)),
             b64(cleanText(m.data.version, 80)), b64(relative.startsWith('public/') ? '공용 · 모든 계정' : `사용자 ${relative.split('/')[1]}`),
             m.disabled ? 'disabled' : 'enabled', info ? info.clean ? 'clean' : 'dirty' : 'unsupported', info?.commit || '',
-            info?.clean && !m.disabled && r.status === 'none' ? '1' : '0', b64(restriction)].join('\t');
+            info?.clean && !m.disabled && r.status === 'none' ? '1' : '0', b64(restriction),
+            b64(info ? info.origin.slice('https://github.com/'.length).replace(/\.git$/i, '') : ''), b64(info?.branch || '')].join('\t');
         if (rowBytes + Buffer.byteLength(row) > 40 * 1024) break;
         rows.push(row); rowBytes += Buffer.byteLength(row) + 1; processed++;
     } catch (_) { skipped++; processed++; }

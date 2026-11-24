@@ -54,7 +54,7 @@ internal fun BackupReminderSetting(enabled: Boolean, onChange: (Boolean) -> Unit
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("백업 알림", fontWeight = FontWeight.SemiBold)
-            Text("사용자 데이터 백업 기록이 없거나 7일이 지나면 홈에서 안내합니다. 자동 백업은 실행하지 않습니다.",
+            Text("사용자 데이터 백업 기록이 없거나 설정한 주기가 지나면 홈에서 안내합니다. 자동 백업은 실행하지 않습니다.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = enabled, onCheckedChange = onChange)

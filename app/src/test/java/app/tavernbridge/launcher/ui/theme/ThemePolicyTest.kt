@@ -1,6 +1,7 @@
 package app.tavernbridge.launcher.ui.theme
 
-import app.tavernbridge.launcher.model.AppTheme
+import app.tavernbridge.launcher.model.LauncherAccent
+import app.tavernbridge.launcher.model.LauncherTextSize
 import app.tavernbridge.launcher.model.ServerReadiness
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,13 +10,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ThemePolicyTest {
-    @Test fun dynamicColorsAreOnlyForSystemThemeOnAndroid12AndLater() {
-        assertFalse(shouldUseDynamicColors(AppTheme.SYSTEM, 30))
-        assertTrue(shouldUseDynamicColors(AppTheme.SYSTEM, 31))
-        assertTrue(shouldUseDynamicColors(AppTheme.SYSTEM, 36))
-        AppTheme.entries.filter { it != AppTheme.SYSTEM }.forEach {
-            assertFalse(shouldUseDynamicColors(it, 36))
+    @Test fun explicitAccentHasReadableLightAndDarkVariants() {
+        LauncherAccent.entries.forEach {
+            assertTrue(statusColorContrast(statusColorLuminance(it.lightArgb), statusColorLuminance(0xfff4f5f7)) >= 4.5)
+            assertTrue(statusColorContrast(statusColorLuminance(it.darkArgb), statusColorLuminance(0xff202328)) >= 4.5)
         }
+    }
+
+    @Test fun textSizeMultipliesDeviceScaleAndCapsAtTwo() {
+        assertEquals(1.38f, LauncherTextSize.LARGE.applyTo(1.2f), .001f)
+        assertEquals(2f, LauncherTextSize.MAXIMUM.applyTo(1.8f), .001f)
+        assertEquals(.9f, LauncherTextSize.SMALL.applyTo(1f), .001f)
     }
 
     @Test fun serverStatesHaveDistinctSemanticMeanings() {

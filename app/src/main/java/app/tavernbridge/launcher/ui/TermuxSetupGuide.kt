@@ -206,7 +206,7 @@ internal fun TermuxSetupFeedback(state: LauncherUiState) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
                 if (checking) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    V2BusyIndicator(modifier = Modifier.size(20.dp), linear = false)
                 } else {
                     Icon(
                         when {

@@ -43,7 +43,8 @@ object ConfirmationCodec {
         val valid = when (action) {
             ConfirmationAction.INSTALL, ConfirmationAction.SWITCH_BRANCH -> arguments.size == 1 && arguments[0] in setOf("release", "staging")
             ConfirmationAction.RESTORE_BACKUP -> arguments.size == 1 && fileName(arguments[0])
-            ConfirmationAction.DELETE_BACKUPS -> arguments.isNotEmpty() && arguments.size <= 256 && arguments.all(::fileName) && arguments.distinct().size == arguments.size
+            // Old filename-only delete prompts cannot identify a replaced file; expire safely.
+            ConfirmationAction.DELETE_BACKUPS -> app.tavernbridge.launcher.model.BackupDeleteSelection.valid(arguments)
             ConfirmationAction.IMPORT_BACKUP -> arguments.size == 1 && arguments[0].length <= 8192 &&
                 URI(arguments[0]).let { it.scheme == "content" && !it.authority.isNullOrBlank() && it.fragment == null }
             else -> arguments.isEmpty()

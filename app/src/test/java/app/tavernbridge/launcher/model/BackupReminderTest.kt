@@ -8,6 +8,15 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class BackupReminderTest {
+    @Test fun chosenIntervalStartsExactlyAtItsBoundary() {
+        val day = 86_400_000L
+        val created = 100L * day
+        for (interval in BackupInterval.entries) {
+            val state = BackupReminderState(lastBackupAtMillis = created, interval = interval)
+            assertNull(state.notice(created + interval.days * day - 1, true))
+            assertEquals(interval.days, state.notice(created + interval.days * day, true)?.ageDays)
+        }
+    }
     private val now = Instant.parse("2026-11-23T10:00:00Z").toEpochMilli()
     private val day = 86_400_000L
     private val request = BackupRequest("50bd0d3a-9540-4a33-b81d-1aa37e447f00", setOf(BackupCategory.USER_DATA), false, emptySet())

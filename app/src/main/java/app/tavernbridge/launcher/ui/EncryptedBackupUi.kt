@@ -20,8 +20,8 @@ import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
 
 @Composable
-internal fun EncryptedBackupCard(enabled: Boolean, onBegin: (EncryptedBackupMode) -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
+internal fun EncryptedBackupCard(enabled: Boolean, onBegin: (EncryptedBackupMode) -> Unit, initiallyExpanded: Boolean = false) {
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) { Text("암호화 백업 ${if (expanded) "접기" else "보기"}") }
@@ -84,7 +84,7 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
                 if(transfer.total>0) {
                     LinearProgressIndicator(progress = { (transfer.bytes.toDouble()/transfer.total).coerceIn(0.0,1.0).toFloat() }, modifier=Modifier.fillMaxWidth())
                     Text("${transfer.bytes / 1048576} / ${transfer.total / 1048576} MiB")
-                } else CircularProgressIndicator()
+                } else V2BusyIndicator(linear = false)
                 Text("처리 후 인증·파일 기록까지 완료되어야 성공으로 표시합니다.", style=MaterialTheme.typography.bodySmall)
             } else if(restoring) {
                 Text("같은 항목의 현재 데이터는 백업 내용으로 교체됩니다. 백업 이후의 대화가 사라질 수 있습니다. 원본 암호화 파일은 유지합니다.")

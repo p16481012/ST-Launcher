@@ -1,6 +1,8 @@
 package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -20,8 +22,8 @@ private fun storageSize(bytes: Long): String = when {
 }
 
 @Composable
-internal fun StorageManagementCard(state: LauncherUiState, onScan: () -> Unit, onPreview: (Int, Int) -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
+internal fun StorageManagementCard(state: LauncherUiState, onScan: () -> Unit, onPreview: (Int, Int) -> Unit, initiallyExpanded: Boolean = false) {
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     var keep by rememberSaveable { mutableStateOf("3") }
     var days by rememberSaveable { mutableStateOf("30") }
     Card(Modifier.fillMaxWidth()) {
@@ -77,10 +79,12 @@ internal fun BackupCleanupDialog(preview: BackupRetentionPreview, onClose: () ->
     var selected by rememberSaveable(preview) { mutableStateOf(emptyList<String>()) }
     var confirm by rememberSaveable(preview) { mutableStateOf(false) }
     AlertDialog(onDismissRequest = onClose, title = { Text("백업 정리 미리보기") },
-        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("후보 ${preview.candidates.size}개 · 최대 ${storageSize(preview.reclaimableBytes)}\n보호 ${preview.protectedCount}개 · 날짜 미확인 ${preview.unknownDateCount}개")
-            Text("기본 선택은 없습니다. 최대 200개를 직접 선택하세요. 백업만 삭제하며 설치 데이터는 변경하지 않습니다.", style = MaterialTheme.typography.bodySmall)
-            preview.candidates.forEach { backup ->
+        text = { LazyColumn(Modifier.fillMaxWidth().heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item {
+                Text("후보 ${preview.candidates.size}개 · 최대 ${storageSize(preview.reclaimableBytes)}\n보호 ${preview.protectedCount}개 · 날짜 미확인 ${preview.unknownDateCount}개")
+                Text("기본 선택은 없습니다. 최대 200개를 직접 선택하세요. 백업만 삭제하며 설치 데이터는 변경하지 않습니다.", style = MaterialTheme.typography.bodySmall)
+            }
+            items(preview.candidates, key = { it.fileName }) { backup ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(backup.fileName in selected, { checked -> selected = if (checked) (selected + backup.fileName).distinct() else selected - backup.fileName },
                         enabled = backup.fileName in selected || selected.size < 200)

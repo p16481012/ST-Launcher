@@ -15,6 +15,9 @@ data class ManagedExtension(
     val commit: String,
     val canUpdate: Boolean,
     val updateRestriction: String,
+    val gitHubRepository: String = "",
+    val gitBranch: String = "",
+    val remoteAhead: Int? = null,
 )
 
 data class ExtensionInventory(
