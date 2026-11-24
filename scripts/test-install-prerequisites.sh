@@ -145,4 +145,4 @@ for entry in preserve-node:62 preserve-npm:63; do
     [[ "$(cat "$TEST_ROOT/$name/install/data/keep")" == user-data ]] || fail 'runtime failure changed user data'
     if grep -Eq '^(upgrade|npm-install)$' "$TEST_ROOT/$name/trace"; then fail 'dependency recheck unexpectedly upgraded packages or ran npm install'; fi
 done
-echo 'PASS: runtime failure preserves existing modules/data and does not trigger a full upgrade outside fresh installation'
+echo 'PASS: a standalone dependency rebuild never upgrades Termux packages and preserves existing modules/data on runtime failure'

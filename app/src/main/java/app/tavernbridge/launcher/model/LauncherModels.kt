@@ -141,6 +141,8 @@ data class LauncherUiState(
     val pendingEntry: app.tavernbridge.launcher.entry.LauncherEntryRequest? = null,
     val encryptedBackup: EncryptedBackupState? = null,
     val lastOperationResult: OperationResultSummary? = null,
+    // Single-use offer for a live, verified repair result. Never persist or restore consent.
+    val runtimeSyncFailureAt: Long? = null,
     val recentResults: List<OperationResultSummary> = emptyList(),
     val logs: String = "아직 불러온 로그가 없습니다.",
     val previousServerLogs: String = "아직 보관된 이전 서버 로그가 없습니다.",

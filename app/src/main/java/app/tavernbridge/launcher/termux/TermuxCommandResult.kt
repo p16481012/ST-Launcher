@@ -17,6 +17,10 @@ data class TermuxCommandResult(
     val stableErrorCode: String
         get() = LauncherErrorCode.resolve(stdout, stderr, exitCode, errorCode)
 
+    // 71 alone is not unique across helpers; do not infer consent eligibility from diagnostic text.
+    internal val isRepairLinkerFailure: Boolean
+        get() = errorCode == Activity.RESULT_OK && exitCode == 71 && stableErrorCode == "NODE_LINKER_FAILED"
+
     fun readableError(): String {
         val detail = LauncherErrorCode.withoutProtocolLines(stderr)
             .ifBlank { errorMessage.trim() }

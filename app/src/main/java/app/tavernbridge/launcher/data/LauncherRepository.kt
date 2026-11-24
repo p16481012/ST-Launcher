@@ -705,6 +705,9 @@ class LauncherRepository(private val context: Context) {
     suspend fun repair(): TermuxCommandResult =
         runManager("repair", timeoutMillis = 30 * 60_000L)
 
+    suspend fun repairAfterRuntimeSyncConsent(): TermuxCommandResult =
+        runManager("repair --sync-runtime-libraries", timeoutMillis = 60 * 60_000L)
+
     suspend fun logs(): TermuxCommandResult =
         runExistingManager("server-logs 500", timeoutMillis = 20_000)
 

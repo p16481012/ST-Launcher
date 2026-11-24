@@ -326,8 +326,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
             Lead("실행 파일만 다시 맞춰요", "약 3–5분 · 인터넷 필요 (기기·네트워크에 따라 더 걸릴 수 있어요)")
             Text("✓  캐릭터·채팅·설정은 건드리지 않아요")
             ToolGroup("진행 순서") {
-                ToolRow("①   Termux 패키지 확인", "오래된 패키지를 최신으로 맞춰요"); ToolDivider()
-                ToolRow("②   Git·Node.js 다시 설치", "실행 도구가 망가졌을 때 바로잡아요"); ToolDivider()
+                ToolRow("①   Termux 패키지 목록 확인", "목록을 갱신해요. 패키지 전체를 자동으로 갱신하지는 않아요."); ToolDivider()
+                ToolRow("②   Git·Node.js 확인", "필요한 도구를 설치하고 Node.js·npm이 실행되는지 확인해요."); ToolDivider()
                 ToolRow("③   실행 모듈 다시 구성", "node_modules를 새로 받아요")
             }
         }

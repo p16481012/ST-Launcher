@@ -124,6 +124,7 @@ import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.BackupTransferAction
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
+import app.tavernbridge.launcher.model.canOfferRuntimeSync
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.ToolPage
 import app.tavernbridge.launcher.model.ManagementPanel
@@ -395,7 +396,13 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         }
     }
     if (summary != null && !state.isWorking && failedResult == summary.completedAtMillis && !summary.succeeded) {
-        V2BottomSheet(onClose = { failedResult = -1L }, footer = {
+        if (state.canOfferRuntimeSync(failedResult)) {
+            RuntimeLibraryRepairSheet(state, failedResult,
+                onDismiss = { failedResult = -1L },
+                onRetry = { failedResult = -1L; viewModel.retryLastOperation() },
+                onHistory = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
+                onSync = { time -> failedResult = -1L; viewModel.confirmRuntimeLibrarySync(time) })
+        } else V2BottomSheet(onClose = { failedResult = -1L }, footer = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 V2SheetPrimaryButton(if (summary.canRetry) "다시 시도" else "진단 열기") {
                     failedResult = -1L

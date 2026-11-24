@@ -221,6 +221,7 @@ manager_error_code() {
         *:61) echo "TERMUX_PACKAGE_UPGRADE_FAILED" ;;
         *:62) echo "NODE_RUNTIME_FAILED" ;;
         *:63) echo "NPM_RUNTIME_FAILED" ;;
+        repair:71) echo "NODE_LINKER_FAILED" ;;
         *:64) echo "INVALID_ARGUMENT" ;;
         safety-*:65) echo "SAFETY_ITEM_CHANGED" ;;
         safety-*:66) echo "SAFETY_PATH_UNSAFE" ;;
@@ -973,35 +974,49 @@ refresh_package_indexes() {
 upgrade_install_packages() {
     # Termux is rolling-release: updating only Node can leave an older libc++
     # (or another runtime library) unable to satisfy its exported symbols.
-    # Keep this explicit upgrade in the fresh-install workflow only.
+    # Only fresh installation or an explicitly approved, live-confirmed repair.
+    local -a safety_options=()
+    if [[ "$CURRENT_OPERATION" == repair ]]; then safety_options+=(--no-remove); fi
     write_progress 14 "Termux 패키지 확인·갱신" "실행 도구와 라이브러리를 함께 갱신합니다. 기존 설정 파일은 유지합니다."
     if ! DEBIAN_FRONTEND=noninteractive apt_with_selected_sources \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-        -o Acquire::Retries=3 full-upgrade -y >> "$LOG_FILE" 2>&1; then
+        -o Acquire::Retries=3 "${safety_options[@]}" full-upgrade -y >> "$LOG_FILE" 2>&1; then
         write_progress 0 "Termux 패키지 갱신 실패" "Termux에서 pkg upgrade를 완료한 뒤 다시 시도해 주세요." error
         echo "Termux 패키지 전체 갱신에 실패했습니다. Termux에서 pkg upgrade를 완료한 뒤 다시 시도해 주세요." >&2
         tail -n 40 "$LOG_FILE" >&2 || true
         return 61
     fi
-    record_processing "Termux 패키지 전체 갱신 완료 · 실행 도구 설치를 진행합니다."
+    record_processing "Termux 패키지 전체 갱신 완료"
 }
 
 verify_node_runtime() {
-    local tool title code output="$RUN_DIR/runtime-check-$$.log" version
+    local mode="${1:-normal}" tool title code output="$RUN_DIR/runtime-check-$$.log" version tool_exit
     for tool in node npm; do
+        tool_exit=0
         if [[ "$tool" == node ]]; then title="Node.js"; code=62; else title="npm"; code=63; fi
         write_progress 0 "$title 실행 검사" "설치된 $title 명령이 실제로 실행되는지 확인합니다."
         if ! command -v "$tool" >/dev/null 2>&1; then
             printf '%s 명령을 찾을 수 없습니다.\n' "$tool" > "$output"
-        elif run_cancellable "$tool" --version > "$output" 2>&1 && \
-            grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([+-][[:alnum:].-]+)?[[:space:]]*$' "$output"; then
-            version="$(tr -d '\r\n' < "$output")"
-            record_processing "$title 실행 검사 통과 · $version"
-            rm -f -- "$output"
-            continue
+        else
+            run_cancellable "$tool" --version > "$output" 2>&1 || tool_exit=$?
+            if (( tool_exit == 0 )) && grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([+-][[:alnum:].-]+)?[[:space:]]*$' "$output"; then
+                version="$(tr -d '\r\n' < "$output")"
+                record_processing "$title 실행 검사 통과 · $version"
+                rm -f -- "$output"
+                continue
+            fi
         fi
         printf '[launcher] %s 실행 검사 실패\n' "$title" >> "$LOG_FILE"
         cat "$output" >> "$LOG_FILE"
+        if (( tool_exit == 130 )); then rm -f -- "$output"; return 130; fi
+        # This is the current node process's captured output, not npm output or
+        # the accumulated operation log. Never offer a full upgrade on a guess.
+        if [[ "$mode" == repair-probe && "$tool" == node ]] && (( tool_exit != 0 )) && \
+            LC_ALL=C grep -Eq '^CANNOT LINK EXECUTABLE "([^"]*/)?node": (library "[^"]+" not found([:[:space:]]|$)|cannot locate symbol "[^"]+")' "$output"; then
+            tail -n 40 "$output" >&2 || true
+            rm -f -- "$output"
+            return 71
+        fi
         write_progress 0 "$title 실행 실패" "Termux에서 pkg upgrade를 완료한 뒤 다시 확인해 주세요." error
         printf '%s를 실행하지 못했습니다. Termux에서 pkg upgrade를 완료한 뒤 다시 시도해 주세요.\n' "$title" >&2
         tail -n 40 "$output" >&2 || true
@@ -4059,6 +4074,11 @@ restore_extracted_tree() {
 }
 
 repair_st() {
+    local sync_runtime=0 runtime_status=0 node_package=nodejs-lts candidate
+    if (( $# )); then
+        [[ $# == 1 && "$1" == --sync-runtime-libraries ]] || { echo "알 수 없는 점검·복구 옵션입니다." >&2; exit 64; }
+        sync_runtime=1
+    fi
     if [[ ! -d "$ST_HOME/.git" || ! -f "$ST_HOME/package.json" ]]; then
         write_progress 0 "복구 실패" "SillyTavern 설치를 찾을 수 없습니다." error repair
         echo "복구할 SillyTavern 설치를 찾을 수 없습니다: $ST_HOME" >&2
@@ -4075,13 +4095,33 @@ repair_st() {
     if ! refresh_package_indexes; then
         write_progress 0 "복구 실패" "Termux 패키지 목록을 갱신하지 못했습니다." error
         echo "Termux 패키지 목록 갱신에 실패했습니다." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
         exit 14
     fi
     write_progress 20 "필수 도구 복구" "Git과 Node.js를 다시 확인하고 있습니다."
-    if ! apt_with_selected_sources install -y git nodejs-lts nano >> "$LOG_FILE" 2>&1; then
+    # The regular and LTS Termux packages conflict. A repair must not switch an
+    # existing flavor, even if another variant is currently the repo default.
+    for candidate in nodejs-lts nodejs nodejs-current; do
+        if [[ "$(dpkg-query -W -f='${db:Status-Status}' "$candidate" 2>/dev/null)" == installed ]]; then
+            node_package="$candidate"; break
+        fi
+    done
+    if ! DEBIAN_FRONTEND=noninteractive apt_with_selected_sources \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        --no-remove install -y git "$node_package" nano >> "$LOG_FILE" 2>&1; then
         write_progress 0 "복구 실패" "Git 또는 Node.js를 복구하지 못했습니다." error
         echo "Git 또는 Node.js 복구에 실패했습니다." >&2
+        tail -n 40 "$LOG_FILE" >&2 || true
         exit 15
+    fi
+    verify_node_runtime repair-probe || runtime_status=$?
+    if (( runtime_status == 71 && sync_runtime )); then
+        cancellation_checkpoint
+        record_processing "동의한 Termux 패키지 전체 갱신 · Node.js 실행 라이브러리 오류가 다시 확인됐습니다."
+        upgrade_install_packages || exit $?
+        verify_node_runtime || exit $?  # Do not offer another upgrade for a persistent linker failure.
+    elif (( runtime_status != 0 )); then
+        exit "$runtime_status"
     fi
     write_progress 38 "npm 캐시 점검" "다운로드 캐시의 무결성을 확인하고 있습니다."
     if npm cache verify >> "$LOG_FILE" 2>&1; then
@@ -4660,7 +4700,7 @@ case "${1:-doctor}" in
     extensions-list) extensions_list "${2:-0}" ;;
     reset-summary) bash "$EXTENSIONS_HELPER" reset-summary "$ST_HOME" "$LAUNCHER_HOME" ;;
     extension-update|extension-disable|extension-enable|extension-trash|extension-recover) extension_mutate "${1#extension-}" "${2:-}" "${3:-}" ;;
-    repair) repair_st ;;
+    repair) repair_st "${@:2}" ;;
     reset-installation) reset_installation ;;
     update) update_st "${2:-0}" "${3:-0}" ;;
     last-update-record) last_update_record ;;

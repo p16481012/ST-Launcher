@@ -5,6 +5,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TermuxCommandResultTest {
+    @Test fun nodeLibraryRepairRequiresTheManagersExactExitAndProtocol() {
+        val detail = """CANNOT LINK EXECUTABLE "node": library "libicui18n.so.79" not found"""
+        val result = TermuxCommandResult("fixture", "", detail + "\nerror_code=NODE_LINKER_FAILED", 71, -1, "")
+        assertTrue(result.isRepairLinkerFailure)
+        assertTrue(result.readableError().contains(detail))
+        assertFalse(result.copy(stderr = detail).isRepairLinkerFailure)
+        assertFalse(result.copy(exitCode = 62, stderr = detail + "\nerror_code=NODE_RUNTIME_FAILED").isRepairLinkerFailure)
+        assertFalse(result.copy(exitCode = 62).isRepairLinkerFailure)
+        assertFalse(result.copy(errorCode = 1).isRepairLinkerFailure)
+    }
+
     @Test
     fun forcedTerminationHasAnActionableButNonSpeculativeDiagnostic() {
         val result = TermuxCommandResult("test", "", "Process completed (signal 9)", 137, -1, "")

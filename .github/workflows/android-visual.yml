@@ -91,7 +91,7 @@ jobs:
           mkdir -p visual-results
           if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then cp "$RUNNER_TEMP/emulator.log" visual-results/emulator.log; fi
           if adb get-state 2>/dev/null | grep -q device; then
-            names=(home home-install-check setup-step-3 settings-index settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash)
+            names=(home home-install-check setup-step-3 settings-index settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash repair-runtime-consent)
             for screen in home settings backups; do for mode in light dark; do for contrast in normal high; do for accent in amber green wine slate blue violet; do
               names+=("palette-$screen-$mode-$contrast-$accent")
             done; done; done; done

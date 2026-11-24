@@ -85,6 +85,7 @@ import app.tavernbridge.launcher.model.resolveWorkingStartedAtMillis
 import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
 import app.tavernbridge.launcher.model.retryActionAfterFailure
 import app.tavernbridge.launcher.model.readyForTermuxDiagnostic
+import app.tavernbridge.launcher.model.canOfferRuntimeSync
 import app.tavernbridge.launcher.model.ExistingInstallation
 import app.tavernbridge.launcher.model.InstallationImportMode
 import app.tavernbridge.launcher.model.protectBeforeReplacement
@@ -2083,7 +2084,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         label = "설치 점검·복구 중",
         successMessage = "사용자 데이터는 유지하고 실행 패키지를 복구했습니다.",
         retryAction = RetryAction.REPAIR,
+        allowRuntimeSyncOffer = true,
     ) { repository.repair() }
+
+    fun confirmRuntimeLibrarySync(failureAt: Long) {
+        val current = state.value
+        if (!current.canOfferRuntimeSync(failureAt)) return
+        if (commandEntryBlocked()) return
+        // Consume the exact offer synchronously, before a second tap can launch a job.
+        if (!mutableState.compareAndSet(current, current.copy(runtimeSyncFailureAt = null))) return
+        perform("repair", "설치 점검·복구 중", "실행 환경을 다시 확인하고 실행 패키지를 복구했습니다.",
+            retryAction = RetryAction.REPAIR) { repository.repairAfterRuntimeSyncConsent() }
+    }
 
     fun loadLogs() = loadDiagnosticText(DiagnosticPanel.SERVER_LOG, reportErrors = true)
 
@@ -2869,6 +2881,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         retryAction: RetryAction = RetryAction.NONE,
         backupRequest: BackupRequest? = null,
         onFinished: () -> Unit = {},
+        allowRuntimeSyncOffer: Boolean = false,
         block: suspend () -> TermuxCommandResult,
     ) {
         if (commandEntryBlocked(requireManager = operation != "connect-manager")) { onFinished(); return }
@@ -2883,14 +2896,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 it.closeOperationDialogsForResult().copy(isWorking = true, extensionLoading = false, workingLabel = label,
                     workingStartedAtMillis = operationStartedAt, dispatchedAtMillis = operationStartedAt,
                     dispatchedOperation = operation, lastCreatedBackupName = if (operation == "backup") null else it.lastCreatedBackupName,
-                    workProgress = null)
+                    runtimeSyncFailureAt = null, workProgress = null)
             }
             LocalProgressJournal(operation, ::publishProgress).phase(
                 "작업 요청 준비", "$label 요청을 Termux에 전달하고 있습니다.")
             val progressJob = pollOperationProgress(operation, operationStartedAt)
             var committedResult: OperationResultSummary? = null
+            var verifiedLinkerFailure = false
             try {
                 val result = cancellableOperation(operation, operationStartedAt, backupRequest) { block() }
+                verifiedLinkerFailure = allowRuntimeSyncOffer && operation == "repair" && result.isRepairLinkerFailure
                 if (!result.isSuccess && operationCancellationRequested && result.exitCode == 130) {
                     progressJob.cancel()
                     val environment = runCatching { repository.inspect() }.getOrElse { state.value.environment }
@@ -2994,6 +3009,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { null }
                 } else null
+                val failure = operationSummary(
+                    operation = operation, label = label, detail = diagnostic.substringAfter(']', diagnostic).trim(),
+                    succeeded = false, startedAtMillis = operationStartedAt, errorCode = errorCode,
+                    retryAction = retryActionAfterFailure(errorCode, retryAction), backupRequest = backupRequest,
+                )
                 mutableState.update {
                     it.copy(
                         environment = recoveryEnvironment ?: it.environment,
@@ -3004,16 +3024,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         workingLabel = "",
                         workProgress = null,
                         error = diagnostic,
-                        lastOperationResult = operationSummary(
-                            operation = operation,
-                            label = label,
-                            detail = diagnostic.substringAfter(']', diagnostic).trim(),
-                            succeeded = false,
-                            startedAtMillis = operationStartedAt,
-                            errorCode = errorCode,
-                            retryAction = retryActionAfterFailure(errorCode, retryAction),
-                            backupRequest = backupRequest,
-                        ),
+                        lastOperationResult = failure,
+                        runtimeSyncFailureAt = failure.completedAtMillis.takeIf { verifiedLinkerFailure },
                         logs = if (operation == "backup") backupFailureLog(diagnostic, backupProgress?.logText.orEmpty())
                             else "최근 작업 실패\n\n$diagnostic",
                     )
