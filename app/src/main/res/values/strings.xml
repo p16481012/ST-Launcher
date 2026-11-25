@@ -1,4 +1,5 @@
 <resources>
+    <string name="share_card_app_name">ST Launcher</string>
     <string name="app_name">실리태번 런처</string>
     <string name="backup_cleanup_rule">일반 백업 정리 기준</string>
     <string name="backup_cleanup_recommendation">일반 백업 중 최근 %1$d개는 남기고, 더 오래된 백업을 정리 후보로 보여줘요. 직접 선택하고 확인해야 삭제돼요.</string>

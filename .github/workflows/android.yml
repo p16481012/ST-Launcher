@@ -62,6 +62,7 @@ jobs:
           echo "NODE_PATH=$RUNNER_TEMP/st-lan-yaml/node_modules" >> "$GITHUB_ENV"
           ST_TEST_YAML_ROOT="$RUNNER_TEMP/st-lan-yaml" node scripts/test-lan-security.cjs
           node scripts/test-extensions.cjs
+          node scripts/test-share-character.cjs
           node scripts/test-selective-restore.cjs
           bash scripts/test-selective-restore-journal.sh
           node scripts/test-version-state.cjs

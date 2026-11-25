@@ -121,6 +121,10 @@ manager_error_code() {
     local exit_code="$2"
     if [[ "${EXTENSION_RECOVERY_GUARD_FAILED:-0}" == 1 ]]; then echo "EXTENSION_RECOVERY_PENDING"; return; fi
     case "$operation:$exit_code" in
+        import-character:110) echo "CARD_INVALID" ;;
+        import-character:111) echo "CARD_TOO_LARGE" ;;
+        import-character:112) echo "CARD_NAME_CONFLICT" ;;
+        import-character:113) echo "CARD_USER_MISSING" ;;
         restore:20) echo "RESTORE_ZIP_DAMAGED" ;;
         restore:21) echo "RESTORE_ZIP_UNSAFE_PATH" ;;
         restore:22) echo "RESTORE_ZIP_SYMLINK_REJECTED" ;;
@@ -271,6 +275,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
+        import-character) return 0 ;;
         install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
             return 0
             ;;
@@ -907,7 +912,14 @@ begin_operation() {
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
-    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
+    if [[ "$CURRENT_OPERATION" == import-character ]]; then
+        # This explicit share confirmation authorizes only adding a new card, not recovering another operation.
+        inspect_restore_recovery
+        if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+            RESTORE_RECOVERY_GUARD_FAILED=1
+            echo "점검·복구를 먼저 마친 뒤 다시 공유해 주세요." >&2; exit 25
+        fi
+    elif [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
         "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
@@ -2510,6 +2522,17 @@ list_user_folders() {
     while IFS= read -r -d '' folder; do
         printf 'folder\t%s\n' "$(printf '%s' "$(basename "$folder")" | base64 -w 0)"
     done < <(find "$ST_HOME/data/default-user" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+}
+
+import_character() {
+    begin_operation import-character
+    write_progress 0 "캐릭터 가져오기" "대상 사용자와 카드 정보를 다시 확인하고 있어요."
+    enter_cancellation_guard
+    ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/share-character.sh" import "$ST_HOME" "$DOWNLOAD_DIR" "$@" || exit $?
+    CANCELLATION_COMMITTED=1
+    leave_cancellation_guard
+    write_progress 100 "가져오기 완료" "기존 카드를 덮어쓰지 않고 저장했어요." success
 }
 
 list_st_files() {
@@ -4733,6 +4756,9 @@ case "${1:-doctor}" in
     inspect-install) inspect_install "${2:-}" ;;
     import-install) import_install "${2:-}" "${3:-keep}" "${4:-empty}" ;;
     list-user-folders) list_user_folders ;;
+    list-users) bash "$(dirname "$MANAGER_SCRIPT_PATH")/share-character.sh" list-users "$ST_HOME" "$DOWNLOAD_DIR" ;;
+    character-plan) bash "$(dirname "$MANAGER_SCRIPT_PATH")/share-character.sh" plan "$ST_HOME" "$DOWNLOAD_DIR" "${@:2}" ;;
+    import-character) import_character "${@:2}" ;;
     list-st-files) list_st_files "${2:-}" "${3:-0}" ;;
     list-st-trash) st_file_action list-trash "${2:-}" ;;
     read-st-file) read_st_file "${2:-}" ;;
