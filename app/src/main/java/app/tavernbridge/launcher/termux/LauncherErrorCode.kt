@@ -50,6 +50,10 @@ internal object LauncherErrorCode {
         "LAN_SETTINGS_INPUT_INVALID", "LAN_SETTINGS_CREDENTIALS_REQUIRED" -> "허용할 사설 IP·대역과 인증 계정을 다시 확인해 주세요. 새 암호는 저장되지 않으므로 다시 입력해야 합니다."
         "LAN_SETTINGS_PER_USER_AUTH" -> "사용자별 기본 인증을 사용하는 설치입니다. 인증 계정은 SillyTavern의 사용자 설정에서 관리해 주세요."
         "LAN_SETTINGS_CONFIG_INVALID", "LAN_SETTINGS_SAVE_FAILED" -> "config.yaml의 형식·권한과 설치 상태를 확인해 주세요. 현재 설정을 임의로 초기화하지 않았습니다."
+        "SERVER_CONFIG_CHANGED" -> "그 사이 설정 파일이 바뀌었어요. 새 설정을 확인한 뒤 다시 선택해 주세요."
+        "SERVER_CONFIG_INVALID" -> "config.yaml을 읽을 수 없어요. 안전 사본에서 이전 설정을 확인해 주세요."
+        "SERVER_CONFIG_KEY_UNSUPPORTED" -> "이 버전이 지원하지 않는 설정이에요. 다시 불러와 주세요."
+        "SERVER_CONFIG_SAVE_FAILED" -> "설정을 저장하지 못했어요. 설치 폴더와 여유 공간을 확인해 주세요."
         else -> "오류 코드와 작업명을 함께 전달하면 문제 확인이 더 빨라집니다."
     }
 

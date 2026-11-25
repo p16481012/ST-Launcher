@@ -49,6 +49,7 @@ import kotlinx.coroutines.delay
 
 internal enum class SettingsPage(val title: String, val icon: ImageVector) {
     DISPLAY("화면", Icons.Outlined.TextFields), SERVER("서버 연결", Icons.Outlined.Language),
+    SERVER_CONFIG("실리태번 서버 설정", Icons.Outlined.Terminal),
     BACKGROUND("백그라운드 실행", Icons.Outlined.VerifiedUser), BACKUP("백업 알림", Icons.Outlined.FileDownload),
     ABOUT("앱 정보", Icons.Outlined.Info),
 }
@@ -57,7 +58,15 @@ internal enum class SettingsPage(val title: String, val icon: ImageVector) {
 internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewModel) {
     // Save only the destination, never the contents of a security form.
     var editor by rememberSaveable { mutableStateOf<String?>(null) }
+    var draft by rememberSaveable(state.serverConfig?.revision) { mutableStateOf("") }
+    var leaveConfig by remember { mutableStateOf<(() -> Unit)?>(null) }
+    LaunchedEffect(state.environment.managerConnected, state.environment.sillyTavernInstalled) { viewModel.loadServerConfig() }
+    if (leaveConfig != null) V2AlertDialog(onDismissRequest = { leaveConfig = null },
+        title = { Text("바꾼 설정을 버릴까요?") }, text = { Text("아직 저장하지 않은 변경만 버려요.") },
+        dismissButton = { V2DialogAction(onClick = { leaveConfig = null }, tone = V2DialogTone.Quiet) { Text("계속 수정") } },
+        confirmButton = { V2DialogAction(onClick = { draft = ""; leaveConfig?.invoke(); leaveConfig = null }, tone = V2DialogTone.Danger) { Text("버리기") } })
     V2SettingsLayout(state, editor, { editor = null }, onNestedBack = { editor = settingsParent(editor) },
+        beforeLeavingConfig = { leave -> if (draft.isBlank()) leave() else leaveConfig = leave },
         onReturnToOrigin = viewModel::navigateBack, nestedDetail = { mode ->
         when (mode) {
             ABOUT_MANAGEMENT -> V2AppManagementSettings(state, viewModel)
@@ -93,6 +102,8 @@ internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewMod
         when (page) {
             SettingsPage.DISPLAY -> V2DisplaySettings(state, viewModel::selectTheme, viewModel::setDisplayPreferences, roomy)
             SettingsPage.SERVER -> V2ServerSettings(state, viewModel) { editor = it }
+            SettingsPage.SERVER_CONFIG -> V2ServerConfigSettings(state, draft, { draft = it }, viewModel::loadServerConfig,
+                viewModel::openConfigSnapshots, viewModel::saveServerConfig, viewModel::serverConfigUsage)
             SettingsPage.BACKGROUND -> V2BackgroundSettings(state, viewModel)
             SettingsPage.BACKUP -> V2BackupPreferences(state, viewModel)
             SettingsPage.ABOUT -> V2AboutSettings(state, viewModel) { editor = it }
@@ -113,6 +124,7 @@ internal val LauncherUiState.runningSettingsDiagnostic: Boolean
 internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, closeNested: () -> Unit = {},
     nestedDetail: @Composable (String) -> Unit = {}, onReturnToOrigin: () -> Unit = {},
     onNestedBack: () -> Unit = closeNested,
+    beforeLeavingConfig: ((() -> Unit) -> Unit) = { it() },
     detail: @Composable (SettingsPage, Boolean) -> Unit) {
     var shortcut by rememberSaveable { mutableStateOf(state.serverSettingsFromHomeEntry == state.navigation.entryId) }
     var open by rememberSaveable { mutableStateOf(if (shortcut) SettingsPage.SERVER else null) }
@@ -129,8 +141,9 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
         val wide = chooseLauncherNavigation(LocalConfiguration.current.screenWidthDp.toFloat()) == LauncherNavigationMode.RAIL
         val roomy = wide && maxWidth >= 890.dp && fontScale < 1.3f
         val listWidth = if (roomy) 350.dp else (maxWidth * .38f).coerceAtMost(300.dp)
-        val back = { if (nested != null) onNestedBack() else if (shortcut) onReturnToOrigin() else { returned = open; open = null } }
-        V2BackHandler(enabled = shortcut || nested != null || !wide && open != null, onBack = back)
+        val leavePage: ((() -> Unit) -> Unit) = { leave -> if (open == SettingsPage.SERVER_CONFIG) beforeLeavingConfig(leave) else leave() }
+        val back: () -> Unit = { leavePage { if (nested != null) onNestedBack() else if (shortcut) onReturnToOrigin() else { returned = open; open = null } } }
+        V2BackHandler(enabled = shortcut || nested != null || !wide && open != null || open == SettingsPage.SERVER_CONFIG, onBack = back)
         val selected = open ?: SettingsPage.DISPLAY
         val index: @Composable (Modifier) -> Unit = { modifier ->
                 Column(modifier.fillMaxHeight()
@@ -142,6 +155,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                             val summary = when (page) {
                                 SettingsPage.DISPLAY -> "${state.displayPreferences.textSize.label} · ${settingsThemeName(state.theme)}"
                                 SettingsPage.SERVER -> if (state.environment.externalAccessEnabled) "같은 Wi-Fi" else "이 기기만"
+                                SettingsPage.SERVER_CONFIG -> state.serverConfig?.let { "${it.values.size}개 항목" } ?: if (state.serverConfigLoading) "확인 중" else "확인 필요"
                                 SettingsPage.BACKGROUND -> state.backgroundAssessment().label
                                 SettingsPage.BACKUP -> if (state.backupReminder.enabled) state.backupReminder.interval.label else "꺼짐"
                                 SettingsPage.ABOUT -> BuildConfig.VERSION_NAME
@@ -149,9 +163,9 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                             val active = wide && selected == page
                             SettingsRow(page.title, value = summary, icon = page.icon, selected = active, returned = !wide && returned == page,
                                 mono = page == SettingsPage.ABOUT,
-                                valueColor = if (page == SettingsPage.BACKGROUND && state.backgroundAssessment() == BackgroundAssessment.ATTENTION)
+                                valueColor = if ((page == SettingsPage.BACKGROUND && state.backgroundAssessment() == BackgroundAssessment.ATTENTION) || (page == SettingsPage.SERVER_CONFIG && state.serverConfigError))
                                     (if (active) colors.onSecondaryContainer else colors.secondary) else colors.onSurfaceVariant,
-                                onClick = { if (selected != page || !wide || nested != null) {
+                                onClick = { if (selected != page || !wide || nested != null) leavePage {
                                     if (wide && selected != page) holder.removeState("detail-" + page.name)
                                     if (selected != page) shortcut = false
                                     closeNested(); open = page
@@ -178,7 +192,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                 if (page == null) holder.SaveableStateProvider("settings-index") { index(Modifier.fillMaxWidth()) }
                 else holder.SaveableStateProvider(if (child == null) "detail-" + page.name else "child-" + child) {
                 Column(Modifier.fillMaxSize().background(if (wide && page != SettingsPage.DISPLAY) colors.surface else colors.background)
-                    .then(if (child == ABOUT_REPORT) Modifier else Modifier.verticalScroll(rememberScrollState()))
+                    .then(if (child == ABOUT_REPORT || page == SettingsPage.SERVER_CONFIG) Modifier else Modifier.verticalScroll(rememberScrollState()))
                     .padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -233,7 +247,8 @@ internal fun SettingsDivider(indent: Int = 20) {
 @Composable
 internal fun SettingsRow(title: String, value: String = "", caption: String = "", icon: ImageVector? = null,
     mono: Boolean = false, valueColor: Color = MaterialTheme.colorScheme.onSurfaceVariant, selected: Boolean = false,
-    enabled: Boolean = true, checked: Boolean? = null, returned: Boolean = false, onClick: (() -> Unit)? = null) {
+    enabled: Boolean = true, checked: Boolean? = null, returned: Boolean = false, changed: Boolean = false,
+    details: (() -> Unit)? = null, onClick: (() -> Unit)? = null) {
     val colors = MaterialTheme.colorScheme
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
@@ -251,8 +266,17 @@ internal fun SettingsRow(title: String, value: String = "", caption: String = ""
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = if (selected) tokens.onAccentWash else colors.onSurfaceVariant)
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge,
+            if (!changed && details == null) Text(title, style = MaterialTheme.typography.bodyLarge,
                 color = if (enabled) colors.onSurface else tokens.disabledInk)
+            else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, modifier = Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyLarge,
+                    color = if (enabled) colors.onSurface else tokens.disabledInk)
+                if (changed) Text("바뀜", Modifier.background(tokens.accentWash, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp),
+                    style = MaterialTheme.typography.labelSmall, color = tokens.onAccentWash)
+                if (details != null) IconButton(onClick = details, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Outlined.Info, "$title 설명", Modifier.size(17.dp), tint = tokens.ink3)
+                }
+            }
             if (caption.isNotBlank()) SettingsCaption(caption)
             if (stack && value.isNotBlank()) Text(value, color = valueColor, style = MaterialTheme.typography.bodyMedium,
                 fontFamily = if (mono) V2Mono else null)

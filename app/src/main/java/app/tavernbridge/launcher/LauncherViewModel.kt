@@ -1506,9 +1506,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun backup() = createBackup(setOf(BackupCategory.FULL), false, emptySet())
 
-    fun openSafetyInventory() {
+    fun openSafetyInventory() = openSafetyInventory(configFirst = false)
+    fun openConfigSnapshots() = openSafetyInventory(configFirst = true)
+
+    private fun openSafetyInventory(configFirst: Boolean) {
         if (commandEntryBlocked()) return
-        mutableState.update { it.visit(MainSection.BACKUPS, safetyOpen = true) }
+        mutableState.update { it.visit(MainSection.BACKUPS, safetyOpen = true).let { next ->
+            next.copy(safetyInventory = next.safetyInventory.copy(configFirst = configFirst))
+        } }
         loadSafetyInventory()
     }
 
@@ -1586,14 +1591,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return
         }
         if (action == "restore" && state.value.environment.processRunning) {
-            mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = "휴지통 항목을 복원하려면 서버를 먼저 종료해 주세요.")) }
+            mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = "복원하려면 서버를 먼저 종료해 주세요.")) }
             return
         }
-        val label = when (action) { "export" -> "안전 사본 내보내기"; "delete" -> "보관 항목 삭제"; else -> "휴지통 항목 복원" }
+        val config = item.kind == app.tavernbridge.launcher.model.SafetyItemKind.CONFIG
+        val label = when (action) { "export" -> "안전 사본 내보내기"; "delete" -> "보관 항목 삭제"; else -> if (config) "설정 사본 복원" else "휴지통 항목 복원" }
         perform(operation = "safety-$action", label = label, successMessage = when (action) {
             "export" -> "Download에 사본을 내보냈습니다. 내부 원본은 유지됩니다."
             "delete" -> "영구 삭제했어요."
-            else -> "휴지통 항목을 원래 위치로 복원했습니다. 같은 이름의 기존 항목은 덮어쓰지 않습니다."
+            else -> if (config) "설정 사본을 복원했어요. 이전 설정도 안전 사본에 보관했어요."
+                else "휴지통 항목을 원래 위치로 복원했습니다. 같은 이름의 기존 항목은 덮어쓰지 않습니다."
         }) {
             if (action == "delete") interruptedSafetyBatch = null
             val result = repository.changeSafetyItem(action, item)
@@ -2159,6 +2166,36 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             } catch (cancelled: CancellationException) { throw cancelled
             } catch (_: Exception) { showMessage("LAN 주소를 확인하지 못했습니다. Wi-Fi 연결을 확인해 주세요.") }
             finally { mutableState.update { it.copy(lanLoading = false) } }
+        }
+    }
+
+    fun loadServerConfig() {
+        val current = state.value
+        if (current.serverConfigLoading || !current.environment.managerConnected || !current.environment.sillyTavernInstalled) return
+        mutableState.update { it.copy(serverConfigLoading = true, serverConfigError = false) }
+        viewModelScope.launch {
+            try {
+                val config = repository.readServerConfig()
+                mutableState.update { it.copy(serverConfig = config) }
+            } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+            catch (_: Exception) { mutableState.update { it.copy(serverConfig = null, serverConfigError = true) } }
+            finally { mutableState.update { it.copy(serverConfigLoading = false) } }
+        }
+    }
+
+    suspend fun serverConfigUsage(): app.tavernbridge.launcher.model.ChatCopyUsage? = try { repository.serverConfigUsage() }
+        catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+        catch (_: Exception) { null }
+
+    fun saveServerConfig(revision: String, changes: Map<app.tavernbridge.launcher.model.ServerSetting,String>) {
+        val config = state.value.serverConfig ?: return
+        if (commandEntryBlocked() || changes.isEmpty() || changes.any { !it.key.accepts(it.value) || it.key !in config.values }) return
+        if (config.revision != revision) { showMessage("그 사이 설정 파일이 바뀌었어요. 다시 불러와 주세요."); loadServerConfig(); return }
+        val message = "서버 설정을 저장했어요." + if (app.tavernbridge.launcher.model.ServerSetting.THUMB in changes)
+            " 실리태번 화면을 새로고침해 주세요." else ""
+        perform("server-config-write", "서버 설정 저장", message, onFinished = ::loadServerConfig,
+            successMessageForResult = { maintenanceMessage(message, it) }) {
+            maintainServer { repository.writeServerConfig(revision, changes) }
         }
     }
 
@@ -3204,7 +3241,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 // Refresh read-only state without replacing the actual error.
                 val recoveryEnvironment = if (state.value.environment.recoveryPending ||
                     errorCode == "RESTORE_ROLLBACK_REQUIRED" ||
-                    operation in setOf("restore", "restore-selected", "change-version", "import-backup", "import-install", "repair", "backup", "save-server-connection", "save-lan-security", "safety-restore")) {
+                    operation in setOf("restore", "restore-selected", "change-version", "import-backup", "import-install", "repair", "backup", "save-server-connection", "save-lan-security", "safety-restore", "server-config-write")) {
                     progressJob.cancel()
                     try { repository.inspect() }
                     catch (cancelled: CancellationException) { throw cancelled }
@@ -3305,6 +3342,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "restore-selected" -> "선택한 캐릭터·채팅 복원"
         "change-version" -> "이전 버전으로 변경"
         "save-lan-security" -> "외부 접속 설정 저장"
+        "server-config-write" -> "서버 설정 저장"
         "extension-update" -> "확장 업데이트"
         "extension-enable", "extension-disable" -> "확장 사용 설정 변경"
         "extension-trash" -> "확장 휴지통 이동"

@@ -10,7 +10,7 @@ const [action, launcherArgument, installationArgument, downloadArgument, selecte
 const MAX_PAGE = 40 * 1024, MAX_NAMES = 10000, MAX_ROW = 12000;
 const ARCHIVE = /^before-(?:forced-update|branch)-[0-9]{8}-[0-9]{6}\.tar\.gz$/;
 const SNAPSHOT = /^safety-snapshot-[0-9]+\.[A-Za-z0-9]{8}$/;
-const CONFIG = /^config-[0-9]{8}-[0-9]{6}\.yaml$/;
+const CONFIG = /^config-[0-9]{8}-[0-9]{6}(?:-[a-f0-9]{8})?\.yaml$/;
 const COMPLETION = '.st-safety-complete.json';
 const TRASH = /^[0-9]{1,16}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const RECOVERY = /^(?:(?:restore|reset|update|branch|import|install-import)-work-|(?:reset|update)-rollback-)/;
@@ -152,6 +152,7 @@ function entry(relative, includeSize = false) {
         fingerprint.push(identity(metadata.before), digest(metadata.bytes), identity(itemStat));
     } else {
         if (!current.isFile() || current.size > BigInt(Number.MAX_SAFE_INTEGER)) fail('SAFETY_PATH_UNSAFE', '일반 보관 파일만 관리할 수 있습니다.');
+        if (kind === 'config' && current.size <= 1048576n) result.restorable = true;
         if (kind === 'archive' && relative.split('/').length === 3) {
             const contents = names(parent);
             if (contents.some(part => part !== name && part !== COMPLETION)) fail('SAFETY_PATH_UNSAFE', '완료되지 않은 안전 백업 폴더는 유지합니다.');
@@ -401,8 +402,14 @@ async function main() { try {
         if (action === 'export') await exportItem(item);
         else if (action === 'validate-trash') {
             checkRevision(item);
-            if (item.kind !== 'trash' || !item.restorable) fail('SAFETY_ITEM_UNSUPPORTED', '현재 설치로 복원할 수 없는 휴지통 항목입니다.');
-            console.log(`trash_id=${item.trashId}`);
+            if (item.kind === 'config' && item.restorable) {
+                const contents = boundedRead(item.target, 1048576);
+                if (identity(contents.before) !== identity(item.current)) fail('SAFETY_ITEM_CHANGED', '선택한 사본이 바뀌었어요.');
+                console.log('config_name='+item.label+'\nconfig_hash='+digest(contents.bytes));
+            } else {
+                if (item.kind !== 'trash' || !item.restorable) fail('SAFETY_ITEM_UNSUPPORTED', '현재 설치로 복원할 수 없는 휴지통 항목입니다.');
+                console.log(`trash_id=${item.trashId}`);
+            }
         } else deleteItem(item);
     }
 } catch (error) {

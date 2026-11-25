@@ -2,7 +2,7 @@ package app.tavernbridge.launcher.model
 
 enum class SafetyItemKind(val key: String, val label: String) {
     ARCHIVE("archive", "내부 안전 백업"),
-    CONFIG("config", "연결 설정 사본"),
+    CONFIG("config", "설정 사본"),
     TRASH("trash", "휴지통");
 
     companion object {

@@ -9,7 +9,7 @@ import java.security.MessageDigest
 internal val managerAssetNames = listOf(
     "chat-integrity.sh",
     "progress.sh", "archive-progress.sh", "safe-backup.sh", "install-validation.sh", "transaction-recovery.sh", "safety-inventory.sh", "storage-usage.sh", "backup-catalog.sh",
-    "selective-restore.sh", "selective-restore-data.sh", "version-state.sh", "version-manager.sh", "extension-manager.sh", "extensions-helper.sh", "lan-security.sh", "manager.sh",
+    "selective-restore.sh", "selective-restore-data.sh", "version-state.sh", "version-manager.sh", "extension-manager.sh", "extensions-helper.sh", "lan-security.sh", "server-config.sh", "manager.sh",
 )
 
 internal fun encodeManagerScript(script: String): String {
