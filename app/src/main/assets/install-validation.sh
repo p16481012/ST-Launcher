@@ -6,7 +6,7 @@ exec node --input-type=commonjs - "$@" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const [action, rootArgument, npmExecutable = '', prefix = ''] = process.argv.slice(2);
+const [action, rootArgument, npmExecutable = '', prefix = '', commit = ''] = process.argv.slice(2);
 const clean = value => String(value ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024);
 function fail(code, message) { throw Object.assign(new Error(message), { exitCode: code }); }
 function npmSemver() {
@@ -30,21 +30,41 @@ function npmSemver() {
     }
     fail(57, 'Node.js 요구 조건을 해석할 npm의 semver 모듈을 찾지 못했습니다. Termux의 Node.js/npm 설치를 복구해 주세요.');
 }
+function gitManifest() {
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) fail(57, '확인할 대상 커밋이 올바르지 않습니다.');
+    const git = (...args) => require('child_process').execFileSync('git', ['-C', rootArgument, ...args],
+        { encoding: 'utf8', maxBuffer: 1048576, stdio: ['ignore','pipe','ignore'] });
+    // Inspect the pinned blob without checking out the target or following a link.
+    const entry = /^100(?:644|755) blob ([0-9a-f]{40}(?:[0-9a-f]{24})?)\tpackage\.json\0$/.exec(git('ls-tree', '-z', commit, '--', 'package.json'));
+    if (!entry) fail(57, '대상 커밋에 정상적인 package.json 파일이 없습니다.');
+    return JSON.parse(git('cat-file', 'blob', entry[1]));
+}
 function runtime() {
     let manifest;
     try {
-        const file = path.join(rootArgument, 'package.json'), stat = fs.lstatSync(file);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1048576) fail(57, '설치의 package.json 파일이 안전 검사 조건을 충족하지 않습니다.');
-        manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (action === 'git-runtime') manifest = gitManifest();
+        else {
+            const file = path.join(rootArgument, 'package.json'), stat = fs.lstatSync(file);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1048576) fail(57, '설치의 package.json 파일이 안전 검사 조건을 충족하지 않습니다.');
+            manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+        }
     }
-    catch (_) { fail(57, '설치의 package.json을 읽거나 해석하지 못해 Node.js 요구 조건을 확인할 수 없습니다.'); }
+    catch (err) { if (err.exitCode === 57) throw err; fail(57, '설치의 package.json을 읽거나 해석하지 못해 Node.js 요구 조건을 확인할 수 없습니다.'); }
     if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) fail(57, '설치의 package.json 형식이 올바르지 않습니다.');
     if (manifest.engines !== undefined && (!manifest.engines || typeof manifest.engines !== 'object' || Array.isArray(manifest.engines))) {
         fail(57, '설치의 engines 형식이 올바르지 않습니다.');
     }
     const requirement = manifest.engines?.node;
+    const report = compatible => {
+        if (action !== 'git-runtime') return;
+        console.log('target_version=' + (typeof manifest.version === 'string' ? clean(manifest.version) : ''));
+        console.log('node_version=v' + process.versions.node);
+        console.log('node_required=' + (clean(requirement).trim() || '제한 없음'));
+        console.log('node_compatible=' + Number(compatible));
+    };
     if (requirement === undefined) {
-        console.log(`Node.js ${process.versions.node} 확인 · 설치에 별도 Node.js 요구 조건이 없습니다.`);
+        report(true);
+        if (action === 'runtime') console.log(`Node.js ${process.versions.node} 확인 · 설치에 별도 Node.js 요구 조건이 없습니다.`);
         return;
     }
     if (typeof requirement !== 'string' || requirement.length > 4096) fail(57, '설치의 Node.js 요구 조건 형식이 올바르지 않습니다.');
@@ -54,10 +74,12 @@ function runtime() {
     if (range === null) fail(57, '설치의 Node.js 요구 조건을 정확하게 해석할 수 없습니다. 기존 설치와 원본은 변경하지 않았습니다.');
     // npm uses normal semver range semantics (including prerelease exclusion),
     // not just a numeric major-version comparison or an engine-warning exit code.
-    if (!semver.satisfies(process.versions.node, range)) {
-        fail(56, `이 설치는 Node.js ${clean(requirement)} 버전이 필요합니다. 현재 버전은 ${process.versions.node}입니다. 먼저 Termux의 Node.js를 업데이트해 주세요.`);
+    const compatible = semver.satisfies(process.versions.node, range);
+    report(compatible);
+    if (!compatible) {
+        fail(56, `이 설치는 Node.js ${clean(requirement)} 버전이 필요합니다. 현재 버전은 ${process.versions.node}입니다. 요구 조건에 맞는 Node.js를 사용해 주세요.`);
     }
-    console.log(`Node.js 요구 조건 확인 완료 · 현재 ${process.versions.node} · 요구 ${clean(requirement)}`);
+    if (action === 'runtime') console.log(`Node.js 요구 조건 확인 완료 · 현재 ${process.versions.node} · 요구 ${clean(requirement)}`);
 }
 function metadata(stat) {
     return [stat.dev, stat.ino, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
@@ -148,11 +170,11 @@ function snapshot() {
     console.log(digest.digest('hex'));
 }
 try {
-    if (action === 'runtime') runtime();
+    if (action === 'runtime' || action === 'git-runtime') runtime();
     else if (action === 'snapshot') snapshot();
     else fail(64, '지원하지 않는 설치 검사 명령입니다.');
 } catch (error) {
     console.error(clean(error.message));
-    process.exitCode = error.exitCode || (action === 'runtime' ? 57 : 53);
+    process.exitCode = error.exitCode || (action === 'snapshot' ? 53 : 57);
 }
 NODE

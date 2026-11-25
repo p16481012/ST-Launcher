@@ -84,7 +84,11 @@ run_case() (
         grep -Fxq npm-check "$trace" || return 98
         [[ "$name" != clone-fail ]] || { echo 'fatal: fixture connection reset' >&2; return 128; }
         mkdir -p "$ST_HOME"
-        printf '{"name":"offline-fixture","version":"1.0.0"}\n' > "$ST_HOME/package.json"
+        if [[ "$name" == incompatible ]]; then
+            printf '{"name":"offline-fixture","version":"1.0.0","engines":{"node":">=1 <2"}}\n' > "$ST_HOME/package.json"
+        else
+            printf '{"name":"offline-fixture","version":"1.0.0"}\n' > "$ST_HOME/package.json"
+        fi
     }
     if [[ "$name" == preserve-* ]]; then
         upgraded=1
@@ -135,6 +139,9 @@ echo 'PASS: prerequisite failures retain real causes; upgrade cancellation waits
 
 expect_case clone-fail 17
 grep -Fq 'fixture connection reset' "$TEST_ROOT/clone-fail-output" || fail 'clone cause hidden'
+expect_case incompatible 56
+[[ ! -e "$TEST_ROOT/incompatible/install" ]] || fail 'incompatible version was published'
+if grep -Fxq npm-install "$TEST_ROOT/incompatible/trace"; then fail 'npm install ran for incompatible Node'; fi
 expect_case dependency-fail 12
 grep -Fq EAI_AGAIN "$TEST_ROOT/dependency-fail-output" || fail 'npm install cause hidden'
 [[ ! -e "$TEST_ROOT/dependency-fail/install" ]] || fail 'failed new installation not cleaned'

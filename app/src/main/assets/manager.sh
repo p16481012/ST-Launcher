@@ -1396,8 +1396,9 @@ ensure_remote_branch() {
     run_cancellable git -C "$ST_HOME" fetch --progress origin "$refspec"
 }
 
-required_node_major() {
-    printf '%s\n' "$1" | grep -oE '[0-9]+' | head -n 1 || true
+git_target_runtime_report() {
+    [[ -r "$INSTALL_VALIDATION_HELPER" ]] || { echo "Node.js 요구 조건 검사기를 찾을 수 없습니다." >&2; return 57; }
+    run_cancellable bash "$INSTALL_VALIDATION_HELPER" git-runtime "$ST_HOME" "$(command -v npm || true)" "$PREFIX" "$1"
 }
 
 update_changelog() {
@@ -1430,8 +1431,8 @@ update_changelog() {
 }
 
 update_preflight() {
-    local branch dirty_files dirty_count current_commit remote_commit package_json target_version node_required commits_behind
-    local node_major required_major free_bytes modules_bytes required_bytes node_compatible space_ready
+    local branch dirty_files dirty_count current_commit remote_commit node_report node_status=0 commits_behind
+    local free_bytes modules_bytes required_bytes space_ready
     begin_operation "update-preflight"
     write_progress 0 "설치 상태 확인" "업데이트할 Git 설치와 현재 브랜치를 확인하고 있습니다."
     [[ -d "$ST_HOME/.git" ]] || { echo "SillyTavern Git 설치를 찾을 수 없습니다." >&2; exit 8; }
@@ -1455,15 +1456,12 @@ update_preflight() {
     commits_behind="$(git -C "$ST_HOME" rev-list --count "$current_commit..$remote_commit" 2>/dev/null || echo 0)"
     record_processing "커밋 비교 완료 · 받을 커밋 ${commits_behind:-0}개 · $([[ "$current_commit" == "$remote_commit" ]] && echo '현재 최신 상태' || echo '설치와 원격 상태가 다름')"
     write_progress 0 "Node.js 요구 사항 확인" "최신 SillyTavern이 요구하는 Node.js와 설치된 실행 환경을 비교하고 있습니다."
-    package_json="$(git -C "$ST_HOME" show "origin/$branch:package.json" 2>/dev/null || true)"
-    target_version="$(printf '%s' "$package_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version||""))' 2>/dev/null || true)"
-    node_required="$(printf '%s' "$package_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).engines?.node||""))' 2>/dev/null || true)"
-    node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-    required_major="$(required_node_major "$node_required")"
-    required_major="${required_major:-0}"
-    node_compatible=0
-    (( node_major >= required_major && required_major > 0 )) && node_compatible=1
-    record_processing "Node.js 호환성 검사 완료 · $([[ "$node_compatible" == 1 ]] && echo '요구 사항 충족' || echo '실행 환경 확인 필요')"
+    verify_node_runtime || exit $?
+    node_report="$(git_target_runtime_report "$remote_commit")" || node_status=$?
+    # A real mismatch belongs in the existing preflight report. A broken
+    # runtime/manifest/parser is a check failure, not an invented mismatch.
+    (( node_status == 0 || node_status == 56 )) || exit "$node_status"
+    record_processing "Node.js 호환성 검사 완료 · $([[ "$node_status" == 0 ]] && echo '요구 사항 충족' || echo '실행 환경 확인 필요')"
 
     write_progress 0 "남은 저장 공간 확인" "Termux 저장소의 실제 남은 공간을 확인하고 있습니다."
     free_bytes="$(available_bytes_for "$HOME")" || { echo "Termux 여유 공간을 확인하지 못했습니다." >&2; exit 30; }
@@ -1480,12 +1478,9 @@ update_preflight() {
     echo "current_commit=$current_commit"
     echo "remote_commit=$remote_commit"
     echo "current_version=$(version_from_file "$ST_HOME/package.json")"
-    echo "target_version=$target_version"
+    printf '%s\n' "$node_report"
     echo "update_available=$([[ "$current_commit" == "$remote_commit" ]] && echo 0 || echo 1)"
     echo "commits_behind=${commits_behind:-0}"
-    echo "node_version=$(node --version 2>/dev/null || true)"
-    echo "node_required=$node_required"
-    echo "node_compatible=$node_compatible"
     echo "free_bytes=$free_bytes"
     echo "required_bytes=$required_bytes"
     echo "space_ready=$space_ready"
@@ -1629,7 +1624,7 @@ clean_install_stage() {
         [[ -d "$path" && ! -L "$path" && "$(restore_file_identity "$path")" == "$identity" ]] || return 1
         rm -rf -- "$path" || return 1
     fi
-    rm -- "$INSTALL_MARKER"
+    rm -- "$INSTALL_MARKER" || return 1
     INSTALL_STAGE_ACTIVE=0
 }
 
@@ -1689,7 +1684,10 @@ install_st() {
         exit 17
     fi
     local dependency_status=0
-    ST_HOME="$stage/install" DEPENDENCY_HASH_FILE="$stage/dependency-lock.sha256" install_dependencies || dependency_status=$?
+    validate_install_runtime "$stage/install" || dependency_status=$?
+    if (( dependency_status == 0 )); then
+        ST_HOME="$stage/install" DEPENDENCY_HASH_FILE="$stage/dependency-lock.sha256" install_dependencies || dependency_status=$?
+    fi
     if (( dependency_status != 0 )); then
         clean_install_stage || true
         exit "$dependency_status"
@@ -3318,7 +3316,7 @@ validate_install_runtime() {
         return 0
     else
         status=$?
-        [[ "$status" == 56 || "$status" == 57 ]] || status=57
+        [[ "$status" == 56 || "$status" == 57 || "$status" == 130 ]] || status=57
         printf '%s\n' "$output" >> "$LOG_FILE"
         printf '%s\n' "$output" >&2
         return "$status"
@@ -3377,7 +3375,7 @@ installation_server_running() {
 
 ensure_restore_target_stopped() {
     if is_running || installation_server_running "$ST_HOME" ||
-        curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+        curl --disable --noproxy '*' -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
         echo "설치·데이터를 변경하기 전에 실행 중인 SillyTavern 서버를 종료해 주세요. 다른 런처에서 시작한 서버도 확인해 주세요." >&2
         exit 10
     fi
@@ -4194,6 +4192,17 @@ reset_installation() {
     rollback_dir="$work/rollback"
     replacement="$work/replacement-install"
     mkdir "$rollback_dir" "$replacement" || exit 25
+    verify_node_runtime || exit $?
+    write_progress 8 "새 설치 다운로드" "$branch 브랜치를 별도 폴더에 받아 Node.js 호환성을 먼저 확인합니다."
+    local download_status=0
+    run_cancellable git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$replacement" >> "$LOG_FILE" 2>&1 || download_status=$?
+    if (( download_status != 0 )); then
+        (( download_status != 130 )) || exit 130
+        echo "새 SillyTavern을 내려받지 못했습니다. 기존 설치는 변경하지 않았습니다." >&2
+        exit 17
+    fi
+    validate_install_runtime "$replacement" || exit $?
+    ensure_restore_target_stopped || exit $?
     prepare_restore_transaction full "$rollback_dir"
     RESTORE_HAD_INSTALLATION=1
     RESTORE_INSTALLATION_ID="$(restore_file_identity "$replacement")" || exit 25
@@ -4204,7 +4213,7 @@ reset_installation() {
     fi
     write_restore_journal || exit 25
     RESTORE_TRANSACTION_ACTIVE=1
-    write_progress 8 "현재 설치 보호" "재설치에 실패하면 되돌릴 수 있도록 현재 설치를 임시 보관합니다."
+    write_progress 28 "현재 설치 보호" "재설치에 실패하면 되돌릴 수 있도록 현재 설치를 임시 보관합니다."
     enter_cancellation_guard
     mv "$ST_HOME" "$rollback_dir/full-install"
     RESTORE_FULL_ORIGINAL_MOVED=1
@@ -4212,11 +4221,6 @@ reset_installation() {
     rm -f "$DEPENDENCY_HASH_FILE"
     leave_cancellation_guard
 
-    write_progress 28 "새 설치 다운로드" "$branch 브랜치를 초기 상태로 다시 받고 있습니다."
-    if ! run_transaction_command git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
-        echo "새 SillyTavern을 내려받지 못해 기존 설치로 되돌립니다." >&2
-        exit 17
-    fi
     write_progress 48 "새 설치 준비" "초기 상태에 필요한 Node 패키지를 준비합니다."
     if ! install_dependencies; then
         echo "새 설치의 패키지 준비에 실패해 기존 설치로 되돌립니다." >&2
@@ -4280,7 +4284,7 @@ update_st() {
         exit 9
     fi
 
-    local branch old_commit remote_commit package_json node_required required_major node_major
+    local branch old_commit remote_commit node_report node_required
     local free_bytes modules_bytes required_bytes
     branch="$(current_branch)"
     [[ "$branch" == "release" || "$branch" == "staging" ]] || { echo "지원하지 않는 현재 브랜치입니다: $branch" >&2; exit 2; }
@@ -4307,15 +4311,9 @@ update_st() {
         exit 34
     fi
     write_progress 0 "업데이트 요구 사항 검사" "새 버전의 Node.js 요구 사항과 롤백용 여유 공간을 확인하고 있습니다."
-    package_json="$(git -C "$ST_HOME" show "origin/$branch:package.json" 2>/dev/null || true)"
-    node_required="$(printf '%s' "$package_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).engines?.node||""))' 2>/dev/null || true)"
-    required_major="$(required_node_major "$node_required")"
-    required_major="${required_major:-0}"
-    node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-    (( required_major > 0 && node_major >= required_major )) || {
-        echo "Node.js 요구 버전을 충족하지 않습니다. 필요: $node_required, 현재: $(node --version 2>/dev/null || echo 없음)" >&2
-        exit 29
-    }
+    verify_node_runtime || exit $?
+    node_report="$(git_target_runtime_report "$remote_commit")" || exit $?
+    node_required="$(sed -n 's/^node_required=//p' <<< "$node_report")"
     free_bytes="$(available_bytes_for "$HOME")" || { echo "Termux 여유 공간을 확인하지 못했습니다." >&2; exit 30; }
     write_progress 0 "업데이트 공간 계산" "기존 Node 모듈의 실제 용량을 계산하고 있습니다. 전체 용량 검사 명령의 완료를 기다립니다."
     modules_bytes="$(node_modules_bytes)" || { echo "Node 모듈 용량을 확인하지 못했습니다." >&2; exit 30; }
@@ -4448,6 +4446,8 @@ switch_branch() {
             echo "대상 브랜치가 원격과 갈라져 있습니다. 현재 설치는 변경하지 않았습니다." >&2; exit 34;
         }
     fi
+    verify_node_runtime || exit $?
+    git_target_runtime_report "$target_commit" >/dev/null || exit $?
     write_progress 10 "안전 백업" "브랜치 변경 전 현재 설정을 백업하고 있습니다."
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
     SAFETY_PHASE="브랜치 변경 안전 백업" safety_backup "$safety_backup" directory || exit $?

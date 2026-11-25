@@ -10,8 +10,12 @@ export ST_DOWNLOAD_DIR="$TEST_ROOT/downloads" PREFIX="$TEST_ROOT/prefix"
 mkdir -p "$ST_HOME/.git" "$ST_HOME/node_modules" "$ST_DOWNLOAD_DIR" "$PREFIX/etc/apt"
 printf 'deb https://fixture.invalid/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"
 printf '{"version":"1.2.3","engines":{"node":">=18"}}\n' > "$ST_HOME/package.json"
+git -C "$ST_HOME" init -q
+git -C "$ST_HOME" add package.json
+git -C "$ST_HOME" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm target
+fixture_target="$(git -C "$ST_HOME" rev-parse HEAD)"
 source "$ROOT_DIR/app/src/main/assets/manager.sh"
-# No device, network, Git repository or dependency installation is used here.
+# The semver check uses an actual pinned blob; networking and device paths are mocked.
 begin_operation() { CURRENT_OPERATION="$1"; reset_current_log; }
 ensure_remote_branch() { return 0; }
 dependencies_ready() { return 0; }
@@ -23,7 +27,7 @@ git() {
             [[ "$CURRENT_OPERATION" == diagnose || "$CURRENT_OPERATION" == update-preflight ]] || fail 'dirty scan ran before operation began'
             echo ' M fixture-private-filename.txt' ;;
         branch) echo release ;;
-        rev-parse) [[ "$2" == HEAD ]] && echo aaaaa || echo bbbbb ;;
+        rev-parse) [[ "$2" == HEAD ]] && echo aaaaa || echo "$fixture_target" ;;
         rev-list) echo 2 ;;
         show) echo '{"version":"1.2.3","engines":{"node":">=18"}}' ;;
         *) fail "unexpected Git command: $1" ;;
@@ -37,7 +41,6 @@ node() {
         *) fail 'unexpected Node invocation' ;;
     esac
 }
-npm() { echo 10.0.0; }
 curl() { return 0; }
 ss() { echo 'LISTEN 0 511 127.0.0.1:8000 0.0.0.0:*'; }
 pgrep() { echo '123 node server.js'; }

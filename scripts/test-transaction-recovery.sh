@@ -10,7 +10,8 @@ if [[ "${1:-}" != --case && "${1:-}" != --worker ]]; then
     trap cleanup EXIT
     cases=(reset-before-move reset-after-move reset-after-replacement reset-clone-failed reset-commit
         update-prepared update-old-modules update-new-modules update-merged update-packages-failed update-server-failed update-commit
-        branch-offline branch-switched branch-success tracked-staged-rollback untracked-collision
+        branch-offline branch-switched branch-success update-incompatible reset-incompatible branch-incompatible
+        tracked-staged-rollback untracked-collision
         journal-duplicate journal-symlink root-identity modules-identity git-lock rollback-interrupted legacy-orphan
         writer-live writer-orphan writer-descendant writer-pre-exec writer-bad-gate)
     (( $# == 0 )) || cases=("$@")
@@ -94,7 +95,7 @@ if [[ "$1" == --worker ]]; then
     git() {
         if [[ "${1:-}" == clone ]]; then
             [[ "$CASE_NAME" != reset-clone-failed ]] || return 17
-            command git clone -q --branch release "$TEST_ROOT/$CASE_NAME/origin" "$ST_HOME"
+            command git clone -q --branch release "$TEST_ROOT/$CASE_NAME/origin" "${@: -1}"
             return $?
         fi
         command git "$@" || return $?
@@ -123,6 +124,9 @@ git -C "$ST_HOME" add .
 git -C "$ST_HOME" commit -qm old
 OLD_COMMIT="$(git -C "$ST_HOME" rev-parse HEAD)"
 printf 'new-code\n' > "$ST_HOME/server.js"
+if [[ "$CASE_NAME" == *-incompatible ]]; then
+    printf '{"name":"fixture","version":"2.0.0","engines":{"node":">=1 <2"}}\n' > "$ST_HOME/package.json"
+fi
 git -C "$ST_HOME" commit -qam new
 NEW_COMMIT="$(git -C "$ST_HOME" rev-parse HEAD)"
 git -C "$ST_HOME" update-ref refs/remotes/origin/release "$NEW_COMMIT"
@@ -158,7 +162,13 @@ case "$CASE_NAME" in
     reset-*|update-*|branch-*)
         code=0
         bash "$0" --worker "$CASE_NAME" "$TEST_ROOT" > "$TEST_ROOT/$CASE_NAME/worker.log" 2>&1 || code=$?
-        if [[ "$CASE_NAME" == branch-offline ]]; then
+        if [[ "$CASE_NAME" == *-incompatible ]]; then
+            [[ "$code" == 56 ]] || { cat "$TEST_ROOT/$CASE_NAME/worker.log"; fail "expected NODE_VERSION_UNSUPPORTED, exit=$code"; }
+            grep -Fq '>=1 <2' "$TEST_ROOT/$CASE_NAME/worker.log" || fail 'target requirement not shown'
+            grep -Fq "$(node -p 'process.versions.node')" "$TEST_ROOT/$CASE_NAME/worker.log" || fail 'actual Node version not shown'
+            check_original
+            [[ -z "$(find "$BACKUP_DIR" \( -name '*.tar.gz' -o -name '*recovery.env' \) -print -quit)" ]] || fail 'failure started a destructive transaction or large backup'
+        elif [[ "$CASE_NAME" == branch-offline ]]; then
             [[ "$code" == 18 ]] || { cat "$TEST_ROOT/$CASE_NAME/worker.log"; fail "offline exit=$code"; }
             check_original
             [[ -z "$(find "$BACKUP_DIR" -name '*.tar.gz' -print -quit)" ]] || fail 'offline case needlessly compressed safety copy'

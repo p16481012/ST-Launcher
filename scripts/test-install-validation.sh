@@ -45,6 +45,28 @@ expect_exit 57 bash "$HELPER" runtime "$TEST_ROOT/ranges/invalid" "$npm_path" ''
 NODE_OPTIONS="--require=$(native_path "$TEST_ROOT/missing-parser.cjs")" expect_exit 57 bash "$HELPER" runtime "$TEST_ROOT/ranges/exact" "$npm_path" ''
 echo 'PASS: actual npm semver validates exact/caret/tilde/x/OR/AND/hyphen/upper-bound ranges; malformed or unavailable parser fails closed'
 
+# Match the Android preflight protocol against the target blob, not a dirty
+# working copy. Missing engines is valid; unreadable metadata is not.
+target="$TEST_ROOT/target"
+git init -q "$target"
+for item in upper missing invalid; do
+    cp "$TEST_ROOT/ranges/$item/package.json" "$target/package.json"
+    git -C "$target" add package.json
+    git -C "$target" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm "$item"
+    commit="$(git -C "$target" rev-parse HEAD)"
+    cp "$TEST_ROOT/ranges/any/package.json" "$target/package.json"
+    case "$item" in
+        upper) expect_exit 56 bash "$HELPER" git-runtime "$target" "$npm_path" '' "$commit"
+               grep -Fxq node_compatible=0 "$TEST_ROOT/last-output" || fail 'upper bound was not reported' ;;
+        missing) expect_exit 0 bash "$HELPER" git-runtime "$target" "$npm_path" '' "$commit"
+                 for field in node_compatible=1 'node_required=제한 없음' target_version=1.0.0; do
+                     grep -Fxq "$field" "$TEST_ROOT/last-output" || fail "missing preflight field $field"
+                 done ;;
+        invalid) expect_exit 57 bash "$HELPER" git-runtime "$target" "$npm_path" '' "$commit" ;;
+    esac
+done
+echo 'PASS: preflight reports the pinned target; missing engines differs from invalid or incompatible metadata'
+
 # Create an npm-shaped system bundle and confirm that discovery uses its semver,
 # not the host fallback. No npm package is downloaded or installed here.
 node --input-type=commonjs - "$TEST_ROOT" "$npm_path" <<'NODE'
