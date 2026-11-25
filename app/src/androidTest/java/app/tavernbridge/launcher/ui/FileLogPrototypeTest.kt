@@ -63,7 +63,7 @@ class FileLogPrototypeTest {
         } }
         ui.onNodeWithText("휴지통").performClick()
         ui.onNodeWithText("SillyTavern/data/기록.txt").assertExists()
-        captureModalWindowSnapshot("files-trash")
+        ui.captureManagementScreen("files-trash", "복구")
         ui.onNodeWithText("복구").performClick()
         ui.runOnIdle { assertEquals(listOf(id), captured) }
         ui.onNodeWithContentDescription("파일 목록으로 돌아가기").performClick()
