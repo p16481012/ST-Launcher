@@ -149,7 +149,7 @@ class FileLogPrototypeTest {
         assertTrue("Sort label needs visible space inside the outline", field.right - label.right >= 15.dp)
         val action = ui.onNode(hasText("최근 수정순") and hasClickAction())
         val target = action.getUnclippedBoundsInRoot()
-        assertTrue(target.height >= 48.dp && target.width >= 48.dp)
+        assertTrue(target.bottom - target.top >= 48.dp && target.right - target.left >= 48.dp)
         action.performClick()
         ui.onNodeWithText("현재 폴더 정렬").assertIsDisplayed()
         ui.onNodeWithText("이름순").performClick()

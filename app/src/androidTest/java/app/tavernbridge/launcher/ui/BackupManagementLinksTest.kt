@@ -227,7 +227,7 @@ class BackupManagementLinksTest {
         val refresh = ui.onNodeWithContentDescription("백업 목록 새로고침")
         val bounds = refresh.assertIsDisplayed().assertHasClickAction().getUnclippedBoundsInRoot()
         val heading = header.getUnclippedBoundsInRoot()
-        assertTrue(bounds.width >= 48.dp && bounds.height >= 48.dp)
+        assertTrue(bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
         assertTrue("Refresh belongs beside the backup list heading", heading.top >= bounds.top && heading.bottom <= bounds.bottom)
         ui.runOnIdle { assertEquals(1, refreshed) } // Opening performs the initial read.
         refresh.performClick()
