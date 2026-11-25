@@ -125,7 +125,7 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
     val keepCount = prefs.keepBackups.count
     var retention by rememberSaveable { mutableStateOf(false) }
     var secretsConfirm by rememberSaveable { mutableStateOf(false) }
-    SettingsGroup { SettingsRow("백업 알림 받기", caption = "마지막 백업 후 시간이 지나면 앱에서 알려줘요",
+    SettingsGroup { SettingsRow("백업 알림 받기", caption = "백업할 때가 되면 백업 탭에 점이 뜨고 홈의 마지막 백업 날짜가 강조돼요. 휴대폰 알림은 보내지 않아요.",
         checked = reminder.enabled, onClick = { vm.setBackupReminderEnabled(!reminder.enabled) }) }
     if (reminder.enabled) {
         SettingsHeading("알림 주기")

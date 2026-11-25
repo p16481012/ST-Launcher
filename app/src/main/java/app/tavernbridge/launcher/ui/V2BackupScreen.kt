@@ -186,7 +186,8 @@ internal fun V2BackupScreen(
                         Spacer(Modifier.height(20.dp))
                         BackupGroupHeader(if (dual) "백업 목록" else "최근",
                             if (dual) "파일에서 가져오기" else if (state.backupsLoaded && !listFailed) "전체 ${archives.size}개" else "", if (dual) canImport else state.backupsLoaded,
-                            if (dual) pickImport else ({ pane = BackupPane.ALL }))
+                            if (dual) pickImport else ({ pane = BackupPane.ALL }),
+                            onRefresh = if (connected && !busy && !state.backupListLoading) onRefresh else null)
                     }
                     val recent = if (listFailed || firstLoad || state.backupStorageReady == false) emptyList() else if (dual) archives else archives.take(2)
                     if (recent.isEmpty()) item {
@@ -240,11 +241,8 @@ internal fun V2BackupScreen(
                         else if (state.environment.recoveryPending) SettingsCaption("점검·복구를 마친 뒤 백업 ZIP을 가져올 수 있어요.")
                         else if (state.environment.processRunning) Text(if (canImport) "가져오기를 누르면 서버를 끈 뒤 백업 ZIP을 선택해요." else "백업을 가져오려면 서버를 먼저 종료해 주세요.",
                             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                            if (dual) V2LinkAction("전체 관리", { pane = BackupPane.ALL })
-                            if (connected && !busy && !state.backupListLoading) IconButton(onClick = onRefresh) {
-                                Icon(Icons.Outlined.Refresh, "백업 목록 새로고침")
-                            }
+                        if (dual) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            V2LinkAction("전체 관리", { pane = BackupPane.ALL })
                         }
                     }
                     item(key = "backup-storage-actions") {
@@ -256,7 +254,7 @@ internal fun V2BackupScreen(
                             SettingsDivider(52)
                             SettingsRow("Download 폴더 열기", caption = "파일 앱이 열려요.", icon = Icons.Outlined.FolderOpen, onClick = onOpenFolder)
                             SettingsDivider(52)
-                            SettingsRow("백업 알림", caption = "홈에서 알려줘요. 자동 백업은 하지 않아요.",
+                            SettingsRow("백업 알림", caption = "백업할 때가 되면 백업 탭에 점이 떠요. 자동 백업은 하지 않아요.",
                                 icon = Icons.Outlined.Notifications, checked = state.backupReminder.enabled,
                                 onClick = { onReminderChange(!state.backupReminder.enabled) })
                         }
@@ -350,10 +348,19 @@ private fun BackupBlank(text: String) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun BackupGroupHeader(title: String, action: String = "", enabled: Boolean = true, onClick: () -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.SemiBold)
+private fun BackupGroupHeader(title: String, action: String = "", enabled: Boolean = true,
+    onClick: () -> Unit = {}, onRefresh: (() -> Unit)? = null) {
+    // Keep refresh with the list it reads. The optional trailing link can wrap in a narrow tablet pane.
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.heightIn(min = if (action.isNotEmpty() || onRefresh != null) 48.dp else 44.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(title, Modifier.semantics { heading() }, fontWeight = FontWeight.SemiBold)
+            if (onRefresh != null) IconButton(onClick = onRefresh, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Outlined.Refresh, "백업 목록 새로고침")
+            }
+        }
         if (action.isNotEmpty() && enabled) V2LinkAction(action, onClick)
     }
 }

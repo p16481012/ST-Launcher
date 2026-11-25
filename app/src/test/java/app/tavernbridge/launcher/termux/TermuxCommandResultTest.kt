@@ -5,6 +5,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TermuxCommandResultTest {
+    @Test fun onlyAnOptedInForegroundHttpReadyStartMayOpenABrowser() {
+        val ready = TermuxCommandResult("start", "started=1\npid=42\n", "", 0, -1, "")
+        assertTrue(ready.shouldAutoOpenAfterStart(true, true, false))
+        assertFalse(ready.shouldAutoOpenAfterStart(false, true, false))
+        assertFalse(ready.shouldAutoOpenAfterStart(true, false, false))
+        assertFalse(ready.shouldAutoOpenAfterStart(true, true, true))
+        for (other in listOf(ready.copy(exitCode = 5), ready.copy(errorCode = 1),
+            ready.copy(stdout = "already_running=1"), ready.copy(stdout = "started=1\npending=1"),
+            ready.copy(stdout = ""), ready.copy(stdoutOriginalLength = 5000))) {
+            assertFalse(other.shouldAutoOpenAfterStart(true, true, false))
+        }
+    }
+
     @Test fun nodeLibraryRepairRequiresTheManagersExactExitAndProtocol() {
         val detail = """CANNOT LINK EXECUTABLE "node": library "libicui18n.so.79" not found"""
         val result = TermuxCommandResult("fixture", "", detail + "\nerror_code=NODE_LINKER_FAILED", 71, -1, "")

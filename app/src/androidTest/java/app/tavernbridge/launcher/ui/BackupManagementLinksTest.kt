@@ -9,11 +9,13 @@ import kotlinx.coroutines.CompletableDeferred
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -201,13 +203,14 @@ class BackupManagementLinksTest {
                 characterFiles = 12, chatFiles = 34)))
         var openedFolder = 0
         var openedSafety = 0
+        var refreshed = 0
         var reminder: Boolean? = null
         val modes = mutableListOf<EncryptedBackupMode>()
         ui.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-                        V2BackupScreen(state, onCreateBackup = { _, _, _ -> }, onRefresh = {},
+                        V2BackupScreen(state, onCreateBackup = { _, _, _ -> }, onRefresh = { refreshed++ },
                             onReminderChange = { reminder = it }, onTransfer = { _, _ -> },
                             onOpenFolder = { openedFolder++ }, onSafety = { openedSafety++ }, onScan = {},
                             onPreviewCleanup = { _, _ -> }, onSaveAnnotation = { _, _, _ -> },
@@ -219,6 +222,16 @@ class BackupManagementLinksTest {
             }
         }
         val overview = ui.onNodeWithTag("backup-overview-list")
+        val wide = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp >= 840
+        val header = ui.onNode(hasText(if (wide) "백업 목록" else "최근") and hasAnyAncestor(hasTestTag("backup-overview-list")))
+        val refresh = ui.onNodeWithContentDescription("백업 목록 새로고침")
+        val bounds = refresh.assertIsDisplayed().assertHasClickAction().getUnclippedBoundsInRoot()
+        val heading = header.getUnclippedBoundsInRoot()
+        assertTrue(bounds.width >= 48.dp && bounds.height >= 48.dp)
+        assertTrue("Refresh belongs beside the backup list heading", heading.top >= bounds.top && heading.bottom <= bounds.bottom)
+        ui.runOnIdle { assertEquals(1, refreshed) } // Opening performs the initial read.
+        refresh.performClick()
+        ui.runOnIdle { assertEquals(2, refreshed); assertEquals(0, openedSafety) }
         overview.performScrollToNode(hasText("안전 사본·휴지통"))
         ui.onNodeWithText("안전 사본·휴지통").performScrollTo().performClick()
         overview.performScrollToKey("backup-storage-actions")

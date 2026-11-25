@@ -358,6 +358,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
     }
 
+    fun refreshBackupReminderClock(clockReset: Boolean) {
+        val now = System.currentTimeMillis()
+        mutableState.update {
+            if (clockReset || it.backupReminder.displayChangedSince(it.backupReminderNowMillis, now,
+                    it.environment.sillyTavernInstalled)) it.copy(backupReminderNowMillis = now) else it
+        }
+    }
+
     fun setBackupReminderEnabled(enabled: Boolean) {
         val reminder = backupReminderStore.setEnabled(enabled)
         mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
@@ -1118,7 +1126,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         retryAction = RetryAction.START,
     ) {
         startServerWithWakeLock().also { result ->
-            if (result.isSuccess && appInForeground && repository.autoOpenBrowser() && !operationCancellationRequested) {
+            if (result.shouldAutoOpenAfterStart(repository.autoOpenBrowser(), appInForeground, operationCancellationRequested)) {
                 if (runCatching { repository.openBrowser(repository.configuredPort()) }.getOrDefault(false))
                     mutableState.update { it.copy(autoOpenedStartAtMillis = it.dispatchedAtMillis) }
             }

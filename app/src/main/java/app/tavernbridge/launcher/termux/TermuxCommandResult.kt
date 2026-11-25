@@ -14,6 +14,13 @@ data class TermuxCommandResult(
     val isSuccess: Boolean get() = errorCode == Activity.RESULT_OK && exitCode == 0
     val stdoutTruncated: Boolean get() = stdoutOriginalLength > stdout.length
 
+    /** Only the explicit Start action calls this. A running process is not proof of an HTTP-ready start. */
+    internal fun shouldAutoOpenAfterStart(enabled: Boolean, foreground: Boolean, cancelled: Boolean): Boolean {
+        if (!enabled || !foreground || cancelled || !isSuccess || stdoutTruncated) return false
+        val lines = stdout.lineSequence()
+        return lines.any { it == "started=1" } && lines.none { it == "pending=1" || it == "already_running=1" }
+    }
+
     val stableErrorCode: String
         get() = LauncherErrorCode.resolve(stdout, stderr, exitCode, errorCode)
 

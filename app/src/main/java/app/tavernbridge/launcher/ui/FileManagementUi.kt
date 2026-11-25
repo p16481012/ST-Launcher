@@ -330,7 +330,8 @@ internal fun TavernFileManagerDialog(
                 }
                 if (!selectionMode) FileLogSearchField(query, { query = it }, "이 폴더에서 찾기",
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                    V2LinkAction(sort.label, { sortSheet = true })
+                    // 10dp outside the hit target + the link's 6dp label inset = 16dp to the field outline.
+                    V2LinkAction(sort.label, { sortSheet = true }, Modifier.padding(end = 10.dp))
                 }
                 val toolbar: @Composable () -> Unit = {
                 if (canEnter) Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),

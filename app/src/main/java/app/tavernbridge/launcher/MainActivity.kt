@@ -1,16 +1,26 @@
 package app.tavernbridge.launcher
 
 import android.os.Bundle
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import app.tavernbridge.launcher.ui.LauncherApp
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LauncherViewModel by viewModels()
+    // Only while the launcher is visible. A clock tick never scans backups or starts Termux.
+    private val reminderClock = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            viewModel.refreshBackupReminderClock(clockReset = intent.action != Intent.ACTION_TIME_TICK)
+        }
+    }
     private val refreshWhenForeground = Runnable {
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
             viewModel.refreshAfterResume()
@@ -36,6 +46,11 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         viewModel.onAppForegrounded()
+        ContextCompat.registerReceiver(this, reminderClock, IntentFilter(Intent.ACTION_TIME_TICK).apply {
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            addAction(Intent.ACTION_DATE_CHANGED)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun onPostResume() {
@@ -59,6 +74,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        unregisterReceiver(reminderClock)
         viewModel.onAppBackgrounded()
         super.onStop()
     }

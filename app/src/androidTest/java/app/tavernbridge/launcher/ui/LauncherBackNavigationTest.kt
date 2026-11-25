@@ -150,6 +150,10 @@ class LauncherBackNavigationTest {
         entry.performClick()
         compose.onNode(isDialog()).assertDoesNotExist()
         compose.onNodeWithText("홈 화면 바로가기").assertIsDisplayed()
+        listOf("서버 시작 바로가기", "서버 종료 바로가기", "런처 열기 바로가기").forEach {
+            compose.onNodeWithText(it).assertHasClickAction()
+        }
+        compose.onNodeWithText("빠른 설정 타일 사용법", substring = true).assertDoesNotExist()
         captureModalWindowSnapshot("modal-app-management")
         val systemSettings = compose.onNodeWithText("런처 앱 상세 설정 열기").performScrollTo().assertIsDisplayed()
         assertEquals("Management must use the same content width as its parent settings page",

@@ -36,6 +36,9 @@ DEPENDENCY_HASH_FILE="$LAUNCHER_HOME/dependency-lock.sha256"
 INSTALL_MARKER="$RUN_DIR/install-owned"
 INSTALL_STAGE_ACTIVE=0
 PORT="${ST_PORT:-8000}"
+# Only the Android launcher may open a browser after an explicit start. Do not change
+# config.yaml: manual Termux starts keep their settings. Older ST reads --autorun.
+SERVER_BROWSER_ARGS=(--browserLaunchEnabled=false --autorun=false)
 CURRENT_OPERATION="idle"
 LAST_LOGGED_PROGRESS=""
 OPERATION_STARTED_EPOCH=0
@@ -1174,7 +1177,7 @@ launch_server_process() {
     (
         cd "$ST_HOME"
         reset_server_log
-        nohup node server.js --port "$PORT" >> "$SERVER_LOG" 2>&1 &
+        nohup node server.js --port "$PORT" "${SERVER_BROWSER_ARGS[@]}" >> "$SERVER_LOG" 2>&1 &
         write_server_pid "$!"
     )
 }
@@ -1216,7 +1219,7 @@ run_persistent_server_task() {
     reset_server_log
     write_server_pid "$$"
     if request_cancelled; then clear_server_pid; return 130; fi
-    exec node server.js --port "$PORT" >> "$SERVER_LOG" 2>&1
+    exec node server.js --port "$PORT" "${SERVER_BROWSER_ARGS[@]}" >> "$SERVER_LOG" 2>&1
 }
 
 commit_start_request() {

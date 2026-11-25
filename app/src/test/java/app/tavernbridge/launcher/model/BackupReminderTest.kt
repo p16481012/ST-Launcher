@@ -5,6 +5,8 @@ import java.time.ZoneOffset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BackupReminderTest {
@@ -20,6 +22,21 @@ class BackupReminderTest {
     private val now = Instant.parse("2026-11-23T10:00:00Z").toEpochMilli()
     private val day = 86_400_000L
     private val request = BackupRequest("50bd0d3a-9540-4a33-b81d-1aa37e447f00", setOf(BackupCategory.USER_DATA), false, emptySet())
+
+    @Test fun foregroundTickOnlyRefreshesWhenTheVisibleReminderOrBackupDayChanges() {
+        val reminder = BackupReminderState(lastBackupAtMillis = now, interval = BackupInterval.MONTHLY)
+        val due = now + 30L * day
+        assertFalse(reminder.displayChangedSince(due - 120_000L, due - 60_000L, true, ZoneOffset.UTC))
+        assertTrue(reminder.displayChangedSince(due - 60_000L, due, true, ZoneOffset.UTC))
+        assertFalse(reminder.displayChangedSince(due, due + 60_000L, true, ZoneOffset.UTC))
+        assertFalse(reminder.displayChangedSince(due - 60_000L, due, false, ZoneOffset.UTC))
+        val disabled = reminder.copy(enabled = false)
+        assertFalse(disabled.displayChangedSince(due - 60_000L, due, true, ZoneOffset.UTC))
+        // The last-backup label still changes at local midnight, even with reminders disabled.
+        val midnight = Instant.parse("2026-11-23T15:00:00Z").toEpochMilli()
+        assertTrue(disabled.displayChangedSince(midnight - 60_000L, midnight, true, ZoneOffset.ofHours(9)))
+        assertFalse(disabled.displayChangedSince(midnight - 60_000L, midnight, true, ZoneOffset.UTC))
+    }
 
     @Test fun initialHistoryIsUnknownRatherThanNoBackupExists() {
         val notice = BackupReminderState().notice(now, installed = true)

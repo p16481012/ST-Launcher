@@ -8,9 +8,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -128,15 +130,31 @@ class FileLogPrototypeTest {
         ui.onNodeWithText("목록을 불러오는 중…").assertDoesNotExist()
         ui.mainClock.autoAdvance = true
     }
-    private fun files(names: List<String>, onTrash: (List<TavernFileEntry>) -> Unit = {}) {
+    private fun files(names: List<String>, textSize: LauncherTextSize = LauncherTextSize.NORMAL,
+        onTrash: (List<TavernFileEntry>) -> Unit = {}) {
         val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),
             fileBrowserEntries = names.map(::entry))
         ui.setContent {
-            SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true, textSize = textSize)) {
                 TavernFileManagerDialog(state, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {},
                     {}, {}, {}, onTrash, {}, null, {}, embedded = true)
             }
         }
+    }
+
+    @Test fun sortTextHasEndInsetAndStillOpensAtLargestLauncherTextSize() {
+        files(emptyList(), textSize = LauncherTextSize.MAXIMUM)
+        val field = ui.onNode(hasSetTextAction()).getUnclippedBoundsInRoot()
+        val label = ui.onNodeWithText("최근 수정순", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertTrue("Sort label needs visible space inside the outline", field.right - label.right >= 15.dp)
+        val action = ui.onNode(hasText("최근 수정순") and hasClickAction())
+        val target = action.getUnclippedBoundsInRoot()
+        assertTrue(target.height >= 48.dp && target.width >= 48.dp)
+        action.performClick()
+        ui.onNodeWithText("현재 폴더 정렬").assertIsDisplayed()
+        ui.onNodeWithText("이름순").performClick()
+        ui.onNodeWithText("현재 폴더 정렬").assertDoesNotExist()
+        ui.onNode(hasText("이름순") and hasClickAction()).assertIsDisplayed()
     }
 
     @Test fun longPressSelectsAndOnlyMultipleItemsNeedConfirmation() {

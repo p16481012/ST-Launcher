@@ -1,6 +1,7 @@
 package app.tavernbridge.launcher.model
 
 import java.time.LocalDateTime
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.ResolverStyle
@@ -23,6 +24,15 @@ data class BackupReminderState(
         val ageDays = recorded?.let { (nowMillis - it) / DAY_MILLIS }
         if (ageDays != null && ageDays < interval.days) return null
         return BackupReminderNotice(ageDays, recorded ?: 0L)
+    }
+
+    /** A foreground minute tick should not recompose the launcher unless the badge or the displayed day changes. */
+    internal fun displayChangedSince(previous: Long, now: Long, installed: Boolean, zone: ZoneId = ZoneId.systemDefault()): Boolean {
+        if (!installed || previous == now) return false
+        if (notice(previous, true) != notice(now, true)) return true
+        if (lastBackupAtMillis <= 0L) return false
+        if ((previous < lastBackupAtMillis) != (now < lastBackupAtMillis)) return true
+        return Instant.ofEpochMilli(previous).atZone(zone).toLocalDate() != Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
     }
 
     fun snooze(nowMillis: Long): BackupReminderState = if (nowMillis > 0L) {

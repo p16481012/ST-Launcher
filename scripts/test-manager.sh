@@ -34,6 +34,7 @@ mkdir -p "$ST_HOME" "$PREFIX/etc/apt" "$ST_DOWNLOAD_DIR"
 
 # Sourcing exposes safety helpers without dispatching a manager command.
 source "$ROOT_DIR/app/src/main/assets/manager.sh"
+bash "$ROOT_DIR/scripts/test-server-browser-policy.sh"
 
 probe_attempts=0
 curl() {

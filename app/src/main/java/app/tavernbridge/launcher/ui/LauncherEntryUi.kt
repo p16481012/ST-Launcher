@@ -33,7 +33,4 @@ internal fun LauncherEntrySettings() {
             PinShortcutResult.FAILED -> R.string.entry_pin_failed
         })
     } ?: "바로가기를 눌러도 서버는 바로 시작하거나 종료되지 않아요. 런처에서 먼저 확인해요.")
-    var showHelp by rememberSaveable { mutableStateOf(false) }
-    V2LinkAction(if (showHelp) "위젯 · 빠른 설정 타일 사용법 접기" else "위젯 · 빠른 설정 타일 사용법", { showHelp = !showHelp })
-    if (showHelp) SettingsCaption(stringResource(R.string.entry_tile_widget_help))
 }

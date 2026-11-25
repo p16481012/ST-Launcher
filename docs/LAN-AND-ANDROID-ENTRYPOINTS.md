@@ -11,7 +11,7 @@
 - 타일은 잠금 해제를 거쳐 `OPEN`을 전달합니다. Android 14 이상은 `startActivityAndCollapse(PendingIntent)`를 사용합니다. 위젯은 시작·종료·열기 Activity PendingIntent만 가집니다. 주기적 상태 조회·서비스 실행·자동 시작이 없습니다.
 - 고정 바로가기의 `REQUESTED`는 OS에 추가 요청을 보냈다는 뜻이며 사용자가 추가를 완료했다는 뜻이 아닙니다.
 
-UI: `LauncherEntrySettingsCard()`.
+설정 → 앱 정보 → 바로가기·앱 관리에는 홈 화면 바로가기 3개를 표시합니다. 홈 위젯과 빠른 설정 타일은 Android의 위젯 목록과 빠른 설정 편집에서 각각 추가합니다.
 
 ## LAN 주소·허용 목록
 
