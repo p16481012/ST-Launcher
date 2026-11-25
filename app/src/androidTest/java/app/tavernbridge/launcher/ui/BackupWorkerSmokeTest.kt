@@ -1,4 +1,4 @@
-package app.tavernbridge.launcher.ui
+package app.tavernbridge.launcher.automation
 
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -13,6 +13,36 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class BackupWorkerSmokeTest {
+    @Test fun grantedPhoneReminderPostsOnceAndIsRetractedAfterBackup() {
+        val c=InstrumentationRegistry.getInstrumentation().targetContext
+        val s=BackupJobState(c)
+        val manager=requireNotNull(c.getSystemService(android.app.NotificationManager::class.java))
+        s.prefs.edit().putBoolean("phone",true).remove("due_token").commit()
+        BackupJobs.channels(c)
+        assertTrue(BackupJobs.allowed(c,BackupJobs.DUE))
+        fun posted(expected: Boolean): Boolean {
+            val until=android.os.SystemClock.elapsedRealtime()+3000
+            do {
+                val present=manager.activeNotifications.any { it.id==BackupJobs.REMINDER_ID && it.notification.contentIntent!=null }
+                if(present==expected) return true
+                android.os.SystemClock.sleep(40)
+            } while(android.os.SystemClock.elapsedRealtime()<until)
+            return false
+        }
+        val token="weekly-test-key"
+        BackupDueWorker.deliver(c,s,token)
+        assertTrue(posted(true))
+        assertEquals(token,s.prefs.getString("due_token",null))
+        manager.cancel(BackupJobs.REMINDER_ID)
+        assertTrue(posted(false))
+        BackupDueWorker.deliver(c,s,token)
+        assertTrue(posted(false))
+        BackupDueWorker.deliver(c,s,"after-snooze")
+        assertTrue(posted(true))
+        BackupDueWorker.deliver(c,s,null)
+        assertTrue(posted(false))
+        s.prefs.edit().remove("phone").commit()
+    }
     @Test fun constrainedWorkerMakesNoZipWhenTermuxIsNotReady() {
         val c = InstrumentationRegistry.getInstrumentation().targetContext
         val state = BackupJobState(c)

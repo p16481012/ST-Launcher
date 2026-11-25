@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
         viewModel.restoreSetupReturn(savedInstanceState?.getBoolean("pending-setup-trip") == true)
         enableEdgeToEdge()
         dataScheduling()
-        if (intent?.action == dataBackupAction) viewModel.openBackups()
+        consumeBackupNotification(intent)
         app.tavernbridge.launcher.entry.LauncherEntryIntents.consume(intent)?.let(viewModel::requestEntryAction)
         setContent {
             LauncherApp(viewModel)
@@ -42,11 +42,16 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.action == dataBackupAction) viewModel.openBackups()
+        consumeBackupNotification(intent)
         app.tavernbridge.launcher.entry.LauncherEntryIntents.consume(intent)?.let(viewModel::requestEntryAction)
     }
 
-    private val dataBackupAction = app.tavernbridge.launcher.data.BackupJobs.OPEN
+    private fun consumeBackupNotification(source: Intent?) {
+        if (source?.action == app.tavernbridge.launcher.data.BackupJobs.OPEN) {
+            source.action = null
+            viewModel.openBackups()
+        }
+    }
     private fun dataScheduling() = app.tavernbridge.launcher.data.BackupJobs.reconcile(applicationContext)
 
     override fun onStart() {

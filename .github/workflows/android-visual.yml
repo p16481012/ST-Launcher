@@ -85,6 +85,11 @@ jobs:
           for required in installedManagementActionsAreRealDestinationsAndBackReturnsToTheirOrigin homeLogReturnsHomeAndToolsLogReturnsTools briefReadNeverFlashesAndLongReadShowsUntilCompletion tapOnlyHandleFoldsAndMiniBarReopens runningServerAllowsOpeningAndSavingFromLabelAfterAcknowledgement onlyVerifiedStopOpensOriginalConfirmationOnce leavingSelectedArchiveDropsEvenSuccessfulInFlightStop; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done
+      - name: Verify Android backup scheduling and notification delivery
+        run: |
+          adb shell pm grant app.tavernbridge.stlauncher.debug android.permission.POST_NOTIFICATIONS
+          adb shell am instrument -w -r -e class app.tavernbridge.launcher.automation.BackupWorkerSmokeTest app.tavernbridge.stlauncher.debug.test/androidx.test.runner.AndroidJUnitRunner | tee visual-results/backup-work.txt
+          grep -Eq '^OK \([1-9][0-9]* tests?\)' visual-results/backup-work.txt
       - name: Collect screenshots
         if: always()
         run: |
