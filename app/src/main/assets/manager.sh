@@ -175,6 +175,10 @@ manager_error_code() {
         save-lan-security:95) echo "LAN_SETTINGS_PER_USER_AUTH" ;;
         save-lan-security:96) echo "LAN_SETTINGS_CREDENTIALS_REQUIRED" ;;
         save-lan-security:97) echo "LAN_SETTINGS_SAVE_FAILED" ;;
+        server-config-*:120|safety-restore:120) echo "SERVER_CONFIG_INVALID" ;;
+        server-config-*:121|safety-restore:121) echo "SERVER_CONFIG_CHANGED" ;;
+        server-config-*:122) echo "SERVER_CONFIG_KEY_UNSUPPORTED" ;;
+        server-config-*:123|safety-restore:123) echo "SERVER_CONFIG_SAVE_FAILED" ;;
         *:2) echo "UNSUPPORTED_BRANCH" ;;
         *:3) echo "INSTALL_PATH_EXISTS" ;;
         *:4) echo "INSTALLATION_NOT_FOUND" ;;
@@ -907,8 +911,13 @@ begin_operation() {
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
+    # Saving six settings does not authorize recovery of an unrelated installation.
+    if [[ "$CURRENT_OPERATION" == server-config-write ]]; then
+        inspect_restore_recovery
+        if (( ${#RESTORE_PENDING_WORKS[@]} )); then echo "error_code=RESTORE_ROLLBACK_REQUIRED" >&2; exit 25; fi
+    fi
     if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
-        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
+        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != server-config-write && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
         CANCELLATION_GUARD=0
@@ -2001,7 +2010,7 @@ backup_selected() {
         exit 8
     fi
 
-    local -a excludes=("node_modules/*" "*/node_modules/*" ".st-launcher-manifest")
+    local -a excludes=("node_modules/*" "*/node_modules/*" ".st-launcher-manifest" ".config-server-*.tmp" ".config-lan-*.tmp")
     if [[ "$include_secrets" != "1" ]]; then
         excludes+=("data/*/secrets.json")
     fi
@@ -3158,14 +3167,30 @@ safety_delete() {
     write_progress 100 "선택 항목 삭제 완료" "확인한 항목만 삭제했습니다." success
 }
 
+server_config_commit() {
+    cancellation_checkpoint
+    enter_cancellation_guard
+    ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/server-config.sh" "$1" "$ST_HOME" "$LAUNCHER_HOME" "$2" "$3" || return $?
+    CANCELLATION_COMMITTED=1
+    leave_cancellation_guard
+}
+
 safety_restore() {
     begin_safety_mutation safety-restore || return $?
     if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
         echo "휴지통 항목을 복구하려면 먼저 SillyTavern 서버를 종료해 주세요." >&2
         return 10
     fi
-    local result trash_id
+    local result trash_id config_name config_hash
     result="$(bash "$SAFETY_INVENTORY_HELPER" validate-trash "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" "${1:-}" "${2:-}")" || return $?
+    config_name="$(sed -n 's/^config_name=//p' <<<"$result")"
+    if [[ -n "$config_name" ]]; then
+        config_hash="$(sed -n 's/^config_hash=//p' <<<"$result")"
+        server_config_commit restore "$config_name" "$config_hash" || return $?
+        write_progress 100 "설정 사본 복원" "복원 전 설정도 안전 사본에 보관했어요." success
+        return
+    fi
     trash_id="$(printf '%s\n' "$result" | sed -n 's/^trash_id=//p')"
     [[ "$trash_id" =~ ^[0-9]+-[a-f0-9-]{36}$ ]] || return 69
     write_progress 0 "휴지통 항목 복구" "선택 항목을 원래 위치에 복구합니다. 같은 이름의 현재 파일은 덮어쓰지 않습니다."
@@ -4774,6 +4799,12 @@ case "${1:-doctor}" in
     previous-server-logs) previous_server_log "${2:-500}" ;;
     history) history_log "${2:-300}" ;;
     diagnose) diagnose ;;
+    server-config-read|server-config-usage) bash "$(dirname "$MANAGER_SCRIPT_PATH")/server-config.sh" "${1#server-config-}" "$ST_HOME" "$LAUNCHER_HOME" ;;
+    server-config-write)
+        begin_st_file_mutation server-config-write
+        write_progress 10 "서버 설정 저장" "원래 설정을 보관하고 바뀐 항목만 저장해요."
+        server_config_commit write "${2:-}" "${3:-}" || exit $?
+        write_progress 100 "서버 설정 저장" "설정 파일을 저장했어요." success ;;
     save-lan-security) save_lan_security "${2:-}" "${3:-}" ;;
     progress) show_progress ;;
     check-update|update-preflight) update_preflight ;;

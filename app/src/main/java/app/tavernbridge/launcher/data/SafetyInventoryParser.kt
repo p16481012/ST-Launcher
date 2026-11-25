@@ -71,7 +71,7 @@ object SafetyInventoryParser {
             require(trashPattern.matches(fields[7]) && path == "file-trash/${fields[7]}")
             require(original.isNotEmpty() && original.split('/').all(::validPart) && label == original)
         } else {
-            require(fields[7].isEmpty() && original.isEmpty() && !restorable && size >= 0 && !isDirectory)
+            require(fields[7].isEmpty() && original.isEmpty() && (!restorable || kind == SafetyItemKind.CONFIG) && size >= 0 && !isDirectory)
             require(label == path.substringAfterLast('/'))
         }
         return SafetyInventoryItem(kind, fields[2], fields[3], label, size.takeIf { it >= 0 }, modified, fields[7], original, restorable, completionRecorded, isDirectory)
@@ -79,7 +79,7 @@ object SafetyInventoryParser {
 
     private fun validId(kind: SafetyItemKind, path: String): Boolean = when (kind) {
         SafetyItemKind.ARCHIVE -> Regex("backups/(?:$snapshotPattern/)?$archivePattern").matches(path)
-        SafetyItemKind.CONFIG -> Regex("backups/network-settings/config-[0-9]{8}-[0-9]{6}\\.yaml").matches(path)
+        SafetyItemKind.CONFIG -> Regex("backups/network-settings/config-[0-9]{8}-[0-9]{6}(?:-[a-f0-9]{8})?\\.yaml").matches(path)
         SafetyItemKind.TRASH -> path.startsWith("file-trash/") && trashPattern.matches(path.removePrefix("file-trash/"))
     }
 

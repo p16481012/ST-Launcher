@@ -102,6 +102,9 @@ data class BackgroundStatus(
 }
 
 data class LauncherUiState(
+    val serverConfig: ServerConfig? = null,
+    val serverConfigError: Boolean = false,
+    val serverConfigLoading: Boolean = false,
     val section: MainSection = MainSection.HOME,
     val navigation: LauncherNavigation = LauncherNavigation(),
     val setupDeferred: Boolean = false,

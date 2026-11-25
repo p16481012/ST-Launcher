@@ -37,7 +37,7 @@ import java.util.Locale
 
 private val SafetyInventoryItem.title get() = when (kind) {
     SafetyItemKind.ARCHIVE -> "업데이트 전 보호 사본"
-    SafetyItemKind.CONFIG -> "연결 설정 사본"
+    SafetyItemKind.CONFIG -> "설정 사본"
     SafetyItemKind.TRASH -> originalRelativePath.ifBlank { displayName }
 }
 private val SafetyInventoryItem.icon get() = when (kind) {
@@ -48,7 +48,7 @@ private val SafetyInventoryItem.icon get() = when (kind) {
 private val SafetyInventoryItem.unconfirmed get() = kind == SafetyItemKind.ARCHIVE && !completionRecorded
 private val SafetyItemKind.heading get() = when (this) {
     SafetyItemKind.ARCHIVE -> "업데이트 보호 사본"
-    SafetyItemKind.CONFIG -> "연결 설정 사본"
+    SafetyItemKind.CONFIG -> "설정 사본"
     SafetyItemKind.TRASH -> "휴지통"
 }
 private fun storageLabel(bytes: Long?): String = when {
@@ -168,7 +168,7 @@ internal fun SafetyInventoryScreen(
                 Text(state.error, Modifier.padding(vertical = 8.dp), color = colors.danger)
                 if (!state.loading && !busy) V2OutlineAction("다시 확인", onRefresh)
             }
-            for (kind in SafetyItemKind.entries) {
+            for (kind in SafetyItemKind.entries.sortedBy { if (state.configFirst && it == SafetyItemKind.CONFIG) 0 else 1 }) {
                 val rows = groups[kind].orEmpty()
                 val total = state.totalFor(kind)
                 if (rows.isEmpty() && (total ?: 0) == 0) continue
@@ -261,7 +261,8 @@ internal fun SafetyInventoryScreen(
             "delete" -> "영구 삭제할까요?"; "restore" -> "원래 위치로 복원할까요?"; else -> "사본을 내보낼까요?"
         }) }, text = { Text(when (action) {
             "delete" -> "$subject(${totalLabel(rows)})을 지워요. 되돌릴 수 없어요. 지금 설치는 지우지 않아요."
-            "restore" -> "$subject 항목을 원래 위치로 되돌려요. 같은 이름이 있으면 덮어쓰지 않고 중단해요."
+            "restore" -> if (rows.singleOrNull()?.kind == SafetyItemKind.CONFIG) "지금 설정을 새 사본으로 보관한 뒤 선택한 설정으로 바꿔요. 다음에 서버를 켤 때 적용돼요."
+                else "$subject 항목을 원래 위치로 되돌려요. 같은 이름이 있으면 덮어쓰지 않고 중단해요."
             else -> "$subject 항목을 Download에 암호화하지 않고 복사해요. 대화나 비밀정보가 포함될 수 있어요. 원본은 유지해요."
         } + if (!allowed) "\n작업 및 서버 상태를 확인한 뒤 다시 시도해 주세요." else "") }, dismissButton = {
             if (allowed) V2DialogAction(onClick = { pending = null }, tone = V2DialogTone.Quiet) { Text("취소") }
