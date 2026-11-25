@@ -612,6 +612,13 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                 cancellableOperation("refresh", started) {
                 val environment = repository.inspect(::publishProgress)
                 mutableState.update { it.copy(termuxSetup = repository.termuxSetupState()) }
+                if (environment.managerConnected && environment.sillyTavernInstalled) {
+                    try {
+                        app.tavernbridge.launcher.data.BackupJobs.recoverPublished(getApplication(),repository)
+                    } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) {
+                        // Optional receipt refresh must never invalidate a successful environment inspection.
+                    }
+                }
                 if (environment.processRunning && repository.wakeLockEnabled()) {
                     journal.phase("백그라운드 실행 설정 확인", "실행 중인 서버의 Termux Wake lock 설정을 적용합니다.")
                     repository.setTermuxWakeLock(true).requireSuccess()

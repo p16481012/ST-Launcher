@@ -3,7 +3,7 @@ set -euo pipefail
 node - "$@" <<'NODE'
 'use strict';
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const [action, directory, argument] = process.argv.slice(2);
+const [action, directory, argument, keepArgument] = process.argv.slice(2);
 const validName = n => typeof n === 'string' && n.length <= 255 && /^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}(-[0-9]+)?( \([0-9]+\))*\.zip$/.test(n);
 const identity = s => `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}`;
 const revision = s => crypto.createHash('sha256').update(`${identity(s)}:${s.ctimeNs}`).digest('hex');
@@ -21,6 +21,15 @@ try {
     if (!argument || argument.length > 120000) throw Error('삭제 요청이 너무 큽니다.');
     const selected = JSON.parse(Buffer.from(argument, 'base64').toString('utf8'));
     if (!Array.isArray(selected) || !selected.length || selected.length > 200 || new Set(selected.map(x=>x.name)).size !== selected.length) throw Error('백업은 한 번에 200개 이하로 선택해 주세요.');
+    // Automatic retention is only allowed while the replacement archive still exists, unchanged.
+    let keep;
+    if (keepArgument) {
+      if (keepArgument.length > 1024) throw Error('보관할 백업을 확인하지 못했어요.');
+      keep=JSON.parse(Buffer.from(keepArgument,'base64').toString('utf8'));
+      if (!validName(keep.name) || !/^[a-f0-9]{64}$/.test(keep.revision) || selected.some(i=>i.name===keep.name)) throw Error('새 백업은 정리하지 않아요.');
+    }
+    function confirmReplacement() { if (keep && revision(stat(path.join(pinned,keep.name)))!==keep.revision) throw Error('새 백업이 바뀌어 정리를 중단했어요.'); }
+    confirmReplacement();
     for (const item of selected) {
       if (!validName(item.name) || !/^[a-f0-9]{64}$/.test(item.revision)) throw Error('백업 목록을 다시 확인해 주세요.');
       if (revision(stat(path.join(pinned,item.name))) !== item.revision) throw Error('백업이 변경되었습니다. 삭제하지 않았습니다. 목록을 새로고침해 주세요.');
@@ -28,6 +37,7 @@ try {
     let count = 0;
     for (const item of selected) {
       cancelled();
+      confirmReplacement();
       const source=path.join(pinned,item.name), before=stat(source);
       if (revision(before)!==item.revision) throw Error(`백업이 변경되었습니다. 확인된 삭제: ${count}/${selected.length}개.`);
       const name='.st-cleanup-'+crypto.randomUUID(), work=path.join(pinned,name);

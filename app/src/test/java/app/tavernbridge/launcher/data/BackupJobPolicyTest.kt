@@ -27,6 +27,24 @@ class BackupJobPolicyTest {
         assertNull(JobPolicy.reminderKey(r,8*day,false))
         assertNull(JobPolicy.reminderKey(r.copy(enabled=false),8*day,true))
     }
+    @Test fun recoveryUsesOriginalPublicationTimeNotObservationTime() {
+        val receipt="backup_receipt=${a(1).fileName}|$rev\nsize=100\ncompleted_at=90"
+        val now=8*86400000L
+        val event=requireNotNull(JobPolicy.delivered(receipt,now))
+        assertEquals(90000L,event.atMillis)
+        assertFalse(JobPolicy.recentPublication(event.atMillis,now))
+        assertTrue(JobPolicy.recentPublication(event.atMillis,100000L))
+        assertNull(JobPolicy.delivered(receipt.substringBefore("completed_at="),now))
+        assertNull(JobPolicy.delivered(receipt,89999L))
+        assertNull(JobPolicy.delivered(receipt.replace("size=100","size=0"),now))
+    }
+    @Test fun newPublicationUsesCurrentScopeAndNeverReusesPreviousConsentOrId() {
+        val old = JobPolicy.freshRequest(full=true,includeSecrets=true)
+        val next = JobPolicy.freshRequest(full=false,includeSecrets=false)
+        assertNotEquals(old.id,next.id)
+        assertEquals(setOf(BackupCategory.USER_DATA),next.categories)
+        assertFalse(next.includeSecrets)
+    }
     @Test fun serverSkipNoticeDoesNotCountRepeatedAttemptsInOneDay() {
         val first=AutoResult(1,"server","")
         assertFalse(JobPolicy.repeatedSkips(listOf(first.copy(time=6000),first)))

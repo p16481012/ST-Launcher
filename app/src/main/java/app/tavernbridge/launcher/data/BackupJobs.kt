@@ -15,7 +15,6 @@ import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.withLock
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 internal object BackupJobs {
@@ -26,7 +25,7 @@ internal object BackupJobs {
     const val REMINDER_ID = 2131
     private const val AUTO_WORK = "auto-backup"
     fun channels(c: Context) {
-        val nm = c.getSystemService(NotificationManager::class.java)
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
         listOf(Triple(DUE,"백업 시기 알림",NotificationManager.IMPORTANCE_DEFAULT),
             Triple(AUTO,"자동 백업 진행",NotificationManager.IMPORTANCE_LOW),
             Triple(FAILURE,"자동 백업 실패",NotificationManager.IMPORTANCE_DEFAULT)).forEach { (id,label,level) ->
@@ -34,7 +33,7 @@ internal object BackupJobs {
         }
     }
     fun allowed(c: Context, channel: String): Boolean {
-        val nm = c.getSystemService(NotificationManager::class.java)
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return false
         return (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(c,Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) &&
             nm.areNotificationsEnabled() && nm.getNotificationChannel(channel)?.importance != NotificationManager.IMPORTANCE_NONE
     }
@@ -49,8 +48,33 @@ internal object BackupJobs {
     fun notify(c: Context, id: Int, channel: String, title: String, body: String): Boolean {
         channels(c)
         if (!allowed(c,channel)) return false
-        return runCatching { c.getSystemService(NotificationManager::class.java).notify(id,builder(c,channel,title,body).build()) }.isSuccess
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return false
+        return runCatching { nm.notify(id,builder(c,channel,title,body).build()) }.isSuccess
     }
+    data class Checked(val request: BackupRequest, val done: JobPolicy.Delivered?, val status: String)
+
+    /** Foreground and worker may collect the same callback. Only the owner of the
+     * pending UUID writes history; never execute, prune or change user choices here. */
+    suspend fun recoverPublished(c: Context, repo: LauncherRepository, requested: BackupRequest? = null): Checked? =
+        withContext(Dispatchers.IO) { BackupJobState.receiptGate.withLock {
+            val s = BackupJobState(c)
+            val pending = BackupRequestCodec.decode(s.prefs.getString("pending",null))
+            val request = requested ?: pending ?: return@withLock null
+            val result = repo.automaticReceipt(request.id)
+            check(result.isSuccess && !result.stdoutTruncated)
+            val done = JobPolicy.delivered(result.stdout,System.currentTimeMillis())
+            if (done != null && pending?.id == request.id) {
+                // First persist the reminder, then acknowledge the pending UUID.
+                // Repeating the former after a process death is idempotent.
+                BackupReminderStore(c).recordSuccessful(request,done.atMillis)
+                s.record(AutoResult(done.atMillis,"ok",done.receipt.first,size=done.size),done.receipt,true)
+                if (s.lastFailure == null) c.getSystemService(NotificationManager::class.java)?.cancel(2133)
+            }
+            val status = result.stdout.lineSequence().firstOrNull { it.startsWith("auto_status=") || it.startsWith("auto_skip=") }
+                ?.substringAfter('=').orEmpty()
+            Checked(request,done,status)
+        } }
+
     fun reconcile(c: Context, update: Boolean = false) {
         val wm = WorkManager.getInstance(c)
         val store = BackupJobState(c)
@@ -64,7 +88,7 @@ internal object BackupJobs {
                 PeriodicWorkRequestBuilder<BackupDueWorker>(6,TimeUnit.HOURS).build())
         } else {
             wm.cancelUniqueWork("backup-reminder")
-            c.getSystemService(NotificationManager::class.java).cancel(REMINDER_ID)
+            c.getSystemService(NotificationManager::class.java)?.cancel(REMINDER_ID)
             store.prefs.edit().remove("due_token").apply()
         }
     }
@@ -76,12 +100,17 @@ class BackupDueWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c,p) {
         val s = BackupJobState(c)
         val repo = LauncherRepository(c)
         val key = JobPolicy.reminderKey(BackupReminderStore(c).load(),System.currentTimeMillis(),repo.hasKnownInstallation() && repo.baseStatus().termuxInstalled)
+        deliver(c,s,key)
+        Result.success()
+    }
+    companion object {
+    internal fun deliver(c: Context,s: BackupJobState,key: String?) {
         if (key == null || !s.phone) {
-            c.getSystemService(NotificationManager::class.java).cancel(BackupJobs.REMINDER_ID)
+            c.getSystemService(NotificationManager::class.java)?.cancel(BackupJobs.REMINDER_ID)
             s.prefs.edit().remove("due_token").apply()
         } else if (key != s.prefs.getString("due_token",null) && BackupJobs.notify(c,BackupJobs.REMINDER_ID,BackupJobs.DUE,
             "백업할 때가 됐어요","눌러서 마지막 백업을 확인해 주세요.")) s.prefs.edit().putString("due_token",key).apply()
-        Result.success()
+    }
     }
 }
 
@@ -105,23 +134,25 @@ class AutoBackupWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c,p) {
             }
             setForeground(getForegroundInfo())
             val env = repo.inspect()
-            val old = BackupRequestCodec.decode(s.prefs.getString("pending",null))
-            val previous = old?.let { repo.automaticReceipt(it.id).also { r -> check(r.isSuccess) } }
-            val delivered = previous?.stdout?.let(JobPolicy::receipt)
-            if (delivered == null && (env.operationActive || env.recoveryPending)) { record("busy",""); return@withContext Result.success() }
-            if (old != null && delivered == null && previous?.stdout?.lineSequence()?.any { it == "auto_skip=unconfirmed" } == true) {
+            val checked = BackupJobs.recoverPublished(c,repo)
+            val now = System.currentTimeMillis()
+            if (checked?.done != null && JobPolicy.recentPublication(checked.done.atMillis,now) ||
+                checked == null && JobPolicy.recentPublication(s.prefs.getLong("last_publication",0L),now)) return@withContext Result.success()
+            if (env.operationActive || env.recoveryPending) { record("busy",""); return@withContext Result.success() }
+            if (checked?.status == "unconfirmed" || checked != null && checked.done == null && checked.status.isEmpty()) {
                 record("failed","이전 백업의 저장 결과를 확인하지 못했어요. Download 폴더를 확인해 주세요.","AUTO_UNCONFIRMED",true)
                 return@withContext Result.success()
             }
-            if (delivered == null && (env.processRunning || env.serverReachable)) { record("server",""); return@withContext Result.success() }
-            if (delivered == null && (!env.sillyTavernInstalled || !repo.backupStorageReady())) {
+            if (env.processRunning || env.serverReachable) { record("server",""); return@withContext Result.success() }
+            if (checked?.status == "unavailable" || !env.sillyTavernInstalled || !repo.backupStorageReady()) {
                 record("not_ready","백업 저장공간이나 설치 상태 확인 필요"); return@withContext Result.success()
             }
             if (!s.enabled) return@withContext Result.success()
-            val request = old ?: BackupRequest(UUID.randomUUID().toString(),setOf(if (s.full) BackupCategory.FULL else BackupCategory.USER_DATA),
-                ThemePreferences(c).loadDisplay().includeSecretsByDefault, emptySet())
-            if (old == null) check(s.prefs.edit().putString("pending",BackupRequestCodec.encode(request)).commit())
-            val result = if (delivered != null) requireNotNull(previous) else coroutineScope {
+            // "unknown" carries no publication or permission to redispatch an old secret-bearing
+            // request. Always read today's scope and privacy preference for a new publication.
+            val request = JobPolicy.freshRequest(s.full, ThemePreferences(c).loadDisplay().includeSecretsByDefault)
+            BackupJobState.receiptGate.withLock { check(s.prefs.edit().putString("pending",BackupRequestCodec.encode(request)).commit()) }
+            val result = coroutineScope {
                 val poll = launch { while (isActive) {
                     delay(12_000)
                     val p = try { repo.readProgress(true) } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
@@ -139,15 +170,12 @@ class AutoBackupWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c,p) {
                     record("failed",app.tavernbridge.launcher.security.redactSensitiveText(detail),code,clear=result.exitCode > 0)
                 }
                 else -> {
-                    val receipt = JobPolicy.receipt(result.stdout)
-                    if (receipt == null) record("failed","ZIP 저장 결과를 확인하지 못했어요. Download 폴더를 확인해 주세요.","AUTO_UNCONFIRMED",true)
+                    val published = BackupJobs.recoverPublished(c,repo,request)
+                    val done = published?.done
+                    if (done == null) record("failed","ZIP 저장 결과를 확인하지 못했어요. Download 폴더를 확인해 주세요.","AUTO_UNCONFIRMED",
+                        clear=published?.status != "unavailable")
                     else {
-                        val now = System.currentTimeMillis()
-                        val size = result.stdout.lineSequence().firstOrNull { it.startsWith("size=") }?.substringAfter('=')?.toLongOrNull() ?: 0
-                        s.record(AutoResult(now,"ok",receipt.first,size=size),receipt,true)
-                        c.getSystemService(NotificationManager::class.java).cancel(2133)
-                        BackupReminderStore(c).recordSuccessful(request,now)
-                        try { prune(repo,s,c) } catch (e: CancellationException) { throw e } catch (_: Exception) { Log.w("AutoBackup","Skipped retention; backup saved") }
+                        try { prune(repo,s,c,done.receipt) } catch (e: CancellationException) { throw e } catch (_: Exception) { Log.w("AutoBackup","Skipped retention; backup saved") }
                     }
                 }
             }
@@ -156,13 +184,13 @@ class AutoBackupWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c,p) {
         }
         Result.success()
     }
-    private suspend fun prune(repo: LauncherRepository, s: BackupJobState, c: Context) {
+    private suspend fun prune(repo: LauncherRepository, s: BackupJobState, c: Context, newest: Pair<String,String>) {
         val archives = repo.listBackups()
         val notes = BackupMetadataStore(c,"termux:~/storage/downloads")
         BackupJobState.annotationGate.withLock {
-            if (!s.enabled) return
+            if (!s.enabled || archives.none { it.fileName == newest.first && it.revision == newest.second }) return
             val victims = JobPolicy.prune(archives,s.receipts(),notes.loadAll(archives.map { it.fileName }),s.keep)
-            if (victims.isNotEmpty() && victims.size <= 200 && repo.deleteBackupsChecked(victims).isSuccess) {
+            if (victims.isNotEmpty() && victims.size <= 200 && victims.none { it.fileName == newest.first } && repo.deleteBackupsChecked(victims,newest).isSuccess) {
                 val ed = s.prefs.edit()
                 victims.forEach { ed.remove("auto:" + it.fileName) }
                 ed.apply()
