@@ -110,6 +110,11 @@ private fun notificationSettings(c: Context, channel: String) {
     var page by rememberSaveable { mutableStateOf("") }
     var storage by remember { mutableStateOf<Boolean?>(null) }
     var checking by remember { mutableStateOf(false) }
+    var showChecking by remember { mutableStateOf(false) }
+    LaunchedEffect(page,checking) {
+        showChecking = false
+        if (page=="ready" && checking) { kotlinx.coroutines.delay(300); showChecking=true }
+    }
     val resume = resumeCount()
     val battery = remember(resume,page) { c.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations("com.termux") == true }
     val ask = permissionAction(s,BackupJobs.FAILURE)
@@ -146,7 +151,7 @@ private fun notificationSettings(c: Context, channel: String) {
     }
     SettingsCaption("서버가 켜져 있으면 끄지 않고 건너뛰어요. 기기에 따라 며칠 늦어질 수 있어요. 이미 시작된 백업은 충전을 해제해도 마무리될 수 있어요.")
     when(page) {
-        "ready" -> if (!checking || !battery) V2BottomSheet(onClose={page=""}) {
+        "ready" -> if (!checking || !battery || showChecking) V2BottomSheet(onClose={page=""}) {
             Text("자동 백업 준비",style=MaterialTheme.typography.titleLarge)
             SettingsRow("Termux 배터리 제한 없음",value=if(battery) "정상" else "확인 필요")
             SettingsRow("백업 저장공간 연결",value=if(checking) "확인 중" else if(storage==true) "정상" else "확인 필요")
@@ -156,7 +161,8 @@ private fun notificationSettings(c: Context, channel: String) {
                 SettingsCaption("Termux에서 termux-setup-storage를 입력한 뒤 돌아와 주세요.")
                 V2SheetPrimaryButton("Termux 열기",onClick=vm::openTermux)
             }
-            V2DialogAction(tone=V2DialogTone.Quiet,onClick={page=""}) { Text("나중에") }
+            if (battery && checking) V2OutlineAction("닫기",{page=""})
+            else V2DialogAction(tone=V2DialogTone.Quiet,onClick={page=""}) { Text("나중에") }
         }
         "scope" -> V2BottomSheet(onClose={page=""}) {
             Text("기본 백업 범위",style=MaterialTheme.typography.titleLarge)

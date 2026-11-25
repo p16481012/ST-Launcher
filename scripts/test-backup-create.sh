@@ -206,8 +206,13 @@ automatic_fixture() {
     backup_selected user_data 0 '' auto
     local saved="$LAUNCHER_HOME/auto-receipts/$ST_BACKUP_REQUEST_ID/done"
     [[ -s "$saved" ]] && grep -Eq '^backup_receipt=.+\|[a-f0-9]{64}$' "$saved" || fail 'missing automatic receipt'
+    grep -Eq '^completed_at=[0-9]{10,11}$' "$saved" || fail 'missing original completion timestamp'
+    [[ "$(automatic_backup_status "$ST_BACKUP_REQUEST_ID")" == "$(cat "$saved")" ]] || fail 'receipt did not match current ZIP'
     backup_selected user_data 0 '' auto
     [[ "$(find "$DOWNLOAD_DIR" -name '*.zip' | wc -l)" -eq 1 ]] || fail 'redelivery duplicated ZIP'
+    local archive; archive="$(find "$DOWNLOAD_DIR" -name '*.zip' -print -quit)"
+    printf 'changed' >> "$archive"
+    [[ "$(automatic_backup_status "$ST_BACKUP_REQUEST_ID")" == auto_status=missing_or_changed ]] || fail 'modified ZIP was accepted as a newly verified backup'
 }
 run_case 0 automatic automatic_fixture automatic
 run_case 0 happy happy happy

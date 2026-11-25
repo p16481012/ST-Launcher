@@ -451,7 +451,7 @@ class LauncherRepository(private val context: Context) {
         return result to StorageUsageParser.parse(report)
     }
 
-    suspend fun deleteBackupsChecked(backups: List<BackupArchive>): TermuxCommandResult {
+    suspend fun deleteBackupsChecked(backups: List<BackupArchive>, keepArchive: Pair<String,String>? = null): TermuxCommandResult {
         require(backups.size in 1..200 && backups.map { it.fileName }.distinct().size == backups.size)
         val json = org.json.JSONArray()
         backups.forEach {
@@ -461,7 +461,12 @@ class LauncherRepository(private val context: Context) {
             json.put(org.json.JSONObject().put("name", it.fileName).put("revision", it.revision))
         }
         val encoded = Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        return runManager("delete-backups-checked ${shellQuote(encoded)}", 2 * 60_000L)
+        val guard = keepArchive?.let { (name,rev) ->
+            require(app.tavernbridge.launcher.model.BackupRetentionPolicy.validFileName(name) && rev.matches(Regex("[a-f0-9]{64}")) && backups.none { it.fileName == name })
+            val bytes=org.json.JSONObject().put("name",name).put("revision",rev).toString().toByteArray(Charsets.UTF_8)
+            " " + shellQuote(Base64.encodeToString(bytes,Base64.NO_WRAP))
+        }.orEmpty()
+        return runManager("delete-backups-checked ${shellQuote(encoded)}$guard", 2 * 60_000L)
     }
 
     suspend fun listSafetyInventory(cursor: Int = 0): SafetyInventoryPage {

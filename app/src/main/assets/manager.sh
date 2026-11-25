@@ -1968,7 +1968,7 @@ backup_selected() {
         mkdir -p -m 700 -- "$LAUNCHER_HOME/auto-receipts"
         local claim="$LAUNCHER_HOME/auto-receipts/$ST_BACKUP_REQUEST_ID"
         if ! mkdir -m 700 -- "$claim"; then
-            if [[ -f "$claim/done" ]]; then cat "$claim/done"; else echo 'auto_skip=unconfirmed'; fi
+            automatic_backup_status "$ST_BACKUP_REQUEST_ID"
             return 0
         fi
     fi
@@ -2136,9 +2136,31 @@ backup_selected() {
     if [[ "$published_revision" =~ ^[a-f0-9]{64}$ ]]; then printf 'backup_receipt=%s|%s\n' "${output##*/}" "$published_revision"; fi
     echo "size=$size"
     if [[ "${4:-}" == auto && "$published_revision" =~ ^[a-f0-9]{64}$ ]]; then
-        printf 'backup_receipt=%s|%s\nsize=%s\n' "${output##*/}" "$published_revision" "$size" > "$claim/done.tmp" &&
+        printf 'backup_receipt=%s|%s\nsize=%s\ncompleted_at=%s\n' "${output##*/}" "$published_revision" "$size" "$(date +%s)" > "$claim/done.tmp" &&
             mv -- "$claim/done.tmp" "$claim/done" || exit 1
     fi
+}
+
+# Re-read the actual ZIP identity before reporting success. The app may have
+# been killed between publication and callback, or a file may have been moved.
+automatic_backup_status() {
+    local id="${1:-}" root="$LAUNCHER_HOME/auto-receipts" done row name expected actual size completed
+    [[ "$id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || return 64
+    [[ ! -L "$root" && ! -L "$root/$id" ]] || return 64
+    done="$root/$id/done"
+    [[ -d "$root/$id" ]] || { echo 'auto_status=unknown'; return 0; }
+    [[ -f "$done" && ! -L "$done" ]] || { echo 'auto_skip=unconfirmed'; return 0; }
+    [[ "$(stat -c %s -- "$done")" -le 512 ]] || return 64
+    row="$(sed -n 's/^backup_receipt=//p' "$done")"; name="${row%|*}"; expected="${row##*|}"
+    valid_backup_filename "$name" && [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || return 64
+    [[ -d "$DOWNLOAD_DIR" && -r "$DOWNLOAD_DIR" && -x "$DOWNLOAD_DIR" ]] || { echo 'auto_status=unavailable'; return 0; }
+    actual="$(bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" revision "$DOWNLOAD_DIR" "$name" 2>/dev/null || true)"
+    [[ "$actual" == "$expected" ]] || { echo 'auto_status=missing_or_changed'; return 0; }
+    size="$(stat -c %s -- "$DOWNLOAD_DIR/$name")"
+    completed="$(sed -n 's/^completed_at=//p' "$done")"
+    [[ -n "$completed" ]] || completed="$(stat -c %Y -- "$done")" # old receipt: use its timestamp, not today
+    [[ "$size" =~ ^[0-9]+$ && "$completed" =~ ^[0-9]{1,11}$ ]] || return 64
+    printf 'backup_receipt=%s|%s\nsize=%s\ncompleted_at=%s\n' "$name" "$expected" "$size" "$completed"
 }
 
 list_backups() {
@@ -3310,7 +3332,7 @@ delete_backups_checked() {
     inspect_restore_recovery
     (( ${#RESTORE_PENDING_WORKS[@]} == 0 )) || { echo "복구 기록이 있는 동안 백업을 정리하지 않습니다." >&2; exit 25; }
     write_progress 0 "백업 정리" "선택한 파일이 그대로인지 다시 확인한 뒤 삭제합니다."
-    run_cancellable bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" delete "$DOWNLOAD_DIR" "${1:-}"
+    run_cancellable bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" delete "$DOWNLOAD_DIR" "${1:-}" "${2:-}"
     write_progress 100 "정리 완료" "선택한 백업을 삭제했습니다." success
 }
 
@@ -4817,11 +4839,7 @@ case "${1:-doctor}" in
     backup) backup_st ;;
     backup-select) backup_selected "${2:-}" "${3:-0}" "${4:-}" ;;
     backup-auto) backup_selected "${2:-}" "${3:-0}" "${4:-}" auto ;;
-    auto-backup-status)
-        [[ "${2:-}" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || exit 64
-        if [[ -f "$LAUNCHER_HOME/auto-receipts/$2/done" ]]; then cat "$LAUNCHER_HOME/auto-receipts/$2/done"
-        elif [[ -d "$LAUNCHER_HOME/auto-receipts/$2" ]]; then echo 'auto_skip=unconfirmed'
-        else echo 'auto_status=unknown'; fi ;;
+    auto-backup-status) automatic_backup_status "${2:-}" ;;
     list-backups) list_backups "${2:-}" ;;
     import-backup) import_backup "${2:-}" ;;
     inspect-install) inspect_install "${2:-}" ;;
@@ -4852,7 +4870,7 @@ case "${1:-doctor}" in
     safety-restore) safety_restore "${2:-}" "${3:-}" ;;
     delete-backup) delete_backup "${2:-}" ;;
     delete-backups) delete_backups "${2:-}" ;;
-    delete-backups-checked) delete_backups_checked "${2:-}" ;;
+    delete-backups-checked) delete_backups_checked "${2:-}" "${3:-}" ;;
     restore) restore_backup "${2:-}" ;;
     restore-selection-list) restore_selection_list "${2:-}" "${3:-0}" ;;
     restore-selected) restore_selected "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
