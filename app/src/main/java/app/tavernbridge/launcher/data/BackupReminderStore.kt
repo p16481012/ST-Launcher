@@ -58,7 +58,7 @@ internal class BackupReminderStore private constructor(private val context: Cont
             .putLong("snoozed_until", state.snoozedUntilMillis)
             .apply()
         if (state.notice(System.currentTimeMillis(),true) == null) {
-            context.getSystemService(android.app.NotificationManager::class.java).cancel(BackupJobs.REMINDER_ID)
+            context.getSystemService(android.app.NotificationManager::class.java)?.cancel(BackupJobs.REMINDER_ID)
         }
         return state
     }
