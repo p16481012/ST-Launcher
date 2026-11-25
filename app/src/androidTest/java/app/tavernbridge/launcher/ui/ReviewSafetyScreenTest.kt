@@ -1,11 +1,11 @@
 package app.tavernbridge.launcher.ui
 
 import android.graphics.Bitmap
-import android.graphics.Color
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
@@ -33,31 +33,29 @@ class ReviewSafetyScreenTest {
     private val model = mutableStateOf(SafetyInventoryUiState(open = true, items = listOf(a,b,cfg,file,folder), protectedEntries = 1, hasLoaded = true))
     private val events = mutableListOf<String>()
     private val running = mutableStateOf(false)
-    // Switching from a sheet Window to a dialog Window can publish semantics one compositor
-    // frame before the new window is on screen. Save the same frame we inspected, not the next.
+    // PixelCopy the *new* dialog Window surface, not the display (which may still present the sheet).
     private fun captureDrawnDeleteDialog() {
-        val inst = InstrumentationRegistry.getInstrumentation()
-        val dir = File(inst.targetContext.filesDir, "v2-visual")
+        ui.waitForIdle()
+        val inDialog = hasAnyAncestor(isDialog())
+        listOf("영구 삭제할까요?", "취소", "영구 삭제").forEach { label ->
+            ui.onNode(hasText(label) and inDialog).assertIsDisplayed()
+        }
+        val surface = ui.onNodeWithTag("v2-dialog-surface", useUnmergedTree = true)
+        surface.assertIsDisplayed()
+        val bitmap = surface.captureToImage().asAndroidBitmap()
+        val dir = File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "v2-visual")
         check(dir.isDirectory || dir.mkdirs())
-        ui.waitUntil(timeoutMillis = 8_000) {
-            val bitmap = inst.uiAutomation.takeScreenshot() ?: return@waitUntil false
-            try {
-                fun danger(x: Int, y: Int): Boolean {
-                    val pixel = bitmap.getPixel(x, y)
-                    return Color.red(pixel) in 161..233 && Color.green(pixel) in 27..85 && Color.blue(pixel) in 22..82
-                }
-                val w = bitmap.width; val h = bitmap.height
-                val scrim = Color.red(bitmap.getPixel(5, h / 2)) < 208
-                val button = scrim && (h / 3 until h * 4 / 5 - 12 step 8).any { y ->
-                    (w / 2 until w * 19 / 20 - 24 step 8).any { x ->
-                        danger(x,y) && danger(x+20,y) && danger(x,y+10) && danger(x+20,y+10)
-                    }
-                }
-                if (button) File(dir, "review-safety-delete.png").outputStream().use {
-                    check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
-                }
-                button
-            } finally { bitmap.recycle() }
+        try {
+            check(bitmap.width > 0 && bitmap.height > 0)
+            val pixels = IntArray(bitmap.width * bitmap.height)
+            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            val firstVisible = pixels.first { it ushr 24 > 0 }
+            check(pixels.any { it ushr 24 > 0 && it != firstVisible }) { "Empty dialog capture" }
+            File(dir, "review-safety-delete.png").outputStream().use {
+                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally {
+            bitmap.recycle()
         }
     }
     private fun show() = ui.setContent {
