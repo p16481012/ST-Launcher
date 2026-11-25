@@ -911,8 +911,13 @@ begin_operation() {
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
+    # Saving six settings does not authorize recovery of an unrelated installation.
+    if [[ "$CURRENT_OPERATION" == server-config-write ]]; then
+        inspect_restore_recovery
+        if (( ${#RESTORE_PENDING_WORKS[@]} )); then echo "error_code=RESTORE_ROLLBACK_REQUIRED" >&2; exit 25; fi
+    fi
     if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
-        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
+        "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != server-config-write && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
         CANCELLATION_GUARD=0
@@ -3807,7 +3812,7 @@ recover_pending_restore() {
 recover_restore_before_dispatch() {
     guard_extension_recovery || exit $?
     case "$CURRENT_OPERATION" in
-        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|server-config-write) ;;
+        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
         *) return 0 ;;
     esac
     inspect_restore_recovery
