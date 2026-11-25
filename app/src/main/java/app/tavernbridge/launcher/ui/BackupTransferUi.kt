@@ -51,6 +51,8 @@ internal fun BackupTransferHost(transfer: BackupTransferState?, viewModel: Launc
                     else "선택한 위치에 ZIP을 복사합니다. 원본은 그대로 남고, 복사할 만큼의 저장 공간이 필요합니다.")
                 if (transfer.archive.includesSecrets) Text("API 키 등 비밀 설정이 포함된 암호화되지 않은 백업입니다.",
                     color = MaterialTheme.colorScheme.error)
+                else if (transfer.action == BackupTransferAction.SHARE) Text("이전 버전이나 다른 런처에서 만든 ZIP은 secrets.json이 없어도 외부 접속 로그인 정보를 담고 있을 수 있어요.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 Text("접근 권한이 없으면 파일 선택창이 열립니다. 다운로드 폴더에서 위 이름의 ZIP을 선택해 주세요.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

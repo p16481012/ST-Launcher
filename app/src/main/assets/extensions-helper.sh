@@ -409,6 +409,18 @@ function resetSummary() {
     content(path.join(root, 'public'));
     extensions(path.join(root, 'public/scripts/extensions/third-party'));
     for (const [name, count] of Object.entries(sums)) console.log(name + '=' + count);
+    // Count named backup files, not verified archive contents. Resolve Termux's
+    // Download shortcut once; never open a ZIP, follow child links or recurse.
+    if (selection) try {
+        const downloads = fs.realpathSync(selection);
+        let count = 0;
+        const handle = fs.opendirSync(downloads);
+        try { for (let e; (e = handle.readSync()) !== null;) {
+            if (++visited > 150000 || Date.now() > deadline) throw Error('scan limit');
+            if (e.isFile() && !e.isSymbolicLink() && /^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}(-[0-9]+)?( \([0-9]+\))*\.zip$/.test(e.name)) count++;
+        } } finally { handle.closeSync(); }
+        console.log('backup_files=' + count);
+    } catch (_) { /* Missing permission/path or truncated scan: leave only this count unknown. */ }
 }
 function list() {
     const r = recoveryState(), candidates = []; let skipped = 0;

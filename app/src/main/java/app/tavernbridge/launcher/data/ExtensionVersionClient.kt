@@ -38,22 +38,30 @@ internal object ExtensionVersionClient {
 
     private class CheckFailed(val issue: ExtensionCheckIssue) : IOException()
 
-    suspend fun inspect(item: ManagedExtension, open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }): ExtensionUpdateMetadata =
+    suspend fun inspect(item: ManagedExtension, quota: GitHubReadQuota = GitHubReadQuota(),
+        open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }): ExtensionUpdateMetadata =
         withContext(Dispatchers.IO) {
             try {
                 val ref = refUrl(item) ?: return@withContext ExtensionUpdateMetadata(issue = ExtensionCheckIssue.UNAVAILABLE)
-                val remote = readMetadata(open(ref)) { parseRef(it, item.gitBranch) }
+                val remote = readMetadata(ref, quota, open) { parseRef(it, item.gitBranch) }
                 if (remote == item.commit) return@withContext ExtensionUpdateMetadata(0)
-                val ahead = readMetadata(open(checkNotNull(compareUrl(item, remote))), parse = ::parseComparison)
-                val version = try {
-                    readMetadata(open(checkNotNull(manifestUrl(item, remote))), "application/vnd.github.raw+json", ::parseManifestVersion)
-                } catch (_: IOException) { null } // A missing display version does not undo the commit comparison.
-                ExtensionUpdateMetadata(ahead, version)
+                val ahead = readMetadata(checkNotNull(compareUrl(item, remote)), quota, open, parse = ::parseComparison)
+                ExtensionUpdateMetadata(ahead, remoteCommit = remote)
             } catch (e: CheckFailed) { ExtensionUpdateMetadata(issue = e.issue)
             } catch (_: IOException) { ExtensionUpdateMetadata(issue = ExtensionCheckIssue.NETWORK) }
         }
 
-    private fun <T : Any> readMetadata(connection: HttpURLConnection, accept: String = "application/vnd.github+json", parse: (Reader) -> T?): T {
+    suspend fun detailVersion(item: ManagedExtension, quota: GitHubReadQuota,
+        open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }): String? = withContext(Dispatchers.IO) {
+        val url = manifestUrl(item, item.checkedRemoteCommit.orEmpty()) ?: return@withContext null
+        try { readMetadata(url, quota, open, "application/vnd.github.raw+json", ::parseManifestVersion) }
+        catch (_: IOException) { null } // Optional label; this must never invalidate the proven commit comparison.
+    }
+
+    private fun <T : Any> readMetadata(url: URL, quota: GitHubReadQuota, open: (URL) -> HttpURLConnection,
+        accept: String = "application/vnd.github+json", parse: (Reader) -> T?): T {
+        if (!quota.acquire()) throw CheckFailed(ExtensionCheckIssue.RATE_LIMIT)
+        val connection = open(url)
         try {
             connection.instanceFollowRedirects = false
             connection.useCaches = false
@@ -62,6 +70,8 @@ internal object ExtensionVersionClient {
             connection.setRequestProperty("Accept", accept)
             connection.setRequestProperty("Cache-Control", "no-cache")
             val status = connection.responseCode
+            quota.observe(status, connection.getHeaderField("X-RateLimit-Remaining"),
+                connection.getHeaderField("X-RateLimit-Reset"), connection.getHeaderField("Retry-After"))
             if (status != 200) throw CheckFailed(when {
                 status == 429 || status == 403 && (connection.getHeaderField("X-RateLimit-Remaining") == "0" ||
                     connection.getHeaderField("Retry-After") != null) -> ExtensionCheckIssue.RATE_LIMIT

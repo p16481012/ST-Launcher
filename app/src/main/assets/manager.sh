@@ -1811,7 +1811,9 @@ unsigned_decimal() {
 }
 
 available_bytes_for() {
-    unsigned_decimal "$(df -Pk "$1" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ {printf "%.0f", $4 * 1024}')"
+    local report
+    report="$(df -Pk "$1" 2>/dev/null)" || return 1
+    unsigned_decimal "$(awk 'NR==2 && $4 ~ /^[0-9]+$/ {printf "%.0f", $4 * 1024}' <<< "$report")"
 }
 
 node_modules_bytes() {
@@ -2014,9 +2016,28 @@ backup_selected() {
     CURRENT_BACKUP_OUTPUT_DIR="$(LC_ALL=C mktemp -d "$DOWNLOAD_DIR/.SillyTavern-backup.XXXXXXXX" 2> "$error_log")" || backup_failure 59 "Download에 백업 임시 폴더를 만들지 못했습니다." "$error_log"
     archive="$CURRENT_BACKUP_OUTPUT_DIR/archive.zip"
     write_progress 28 "ZIP 생성" "선택한 항목을 휴대폰 Download 폴더에 압축하고 있습니다."
-    measured_archive "ZIP 생성" "압축 도구가 완료한 파일 수를 표시합니다. 큰 파일 하나를 처리할 때는 파일 수가 유지될 수 있습니다." \
-        compress "$ST_HOME" "$archive" "${paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    # Keep the live config in the source-change plan, but NEVER put its original
+    # bytes in the ZIP (including unpublished Download scratch files).
+    local -a zip_paths=()
+    if [[ "$include_secrets" == 0 && ( ",$kinds," == *,config,* || "$kinds" == full ) ]]; then
+        excludes+=("config.yaml" ".config-lan-*.tmp")
+        for item in "${paths[@]}"; do [[ "$item" == config.yaml ]] || zip_paths+=("$item"); done
+        if [[ -e "$ST_HOME/config.yaml" || -L "$ST_HOME/config.yaml" ]]; then
+            measured_archive "설정 보호" "원본을 건드리지 않고 외부 접속 로그인 정보를 제외합니다." \
+                redact-backup-config "$ST_HOME" "$work/config.yaml" >> "$LOG_FILE" 2> "$error_log" || code=$?
+            (( code == 0 )) || backup_failure "$code" "비밀 설정을 제외한 ZIP을 만들지 않았습니다." "$error_log"
+        fi
+    else zip_paths=("${paths[@]}"); fi
+    if (( ${#zip_paths[@]} )); then
+        measured_archive "ZIP 생성" "압축 도구가 완료한 파일 수를 표시합니다. 큰 파일 하나를 처리할 때는 파일 수가 유지될 수 있습니다." \
+            compress "$ST_HOME" "$archive" "${zip_paths[@]}" -x "${excludes[@]}" >> "$LOG_FILE" 2> "$error_log" || code=$?
+    fi
     (( code == 0 )) || backup_failure "$code" "선택한 파일을 ZIP으로 만드는 데 실패했습니다." "$error_log"
+    if [[ -f "$work/config.yaml" ]]; then
+        measured_archive "설정 기록" "로그인 정보를 제외한 설정 사본만 ZIP에 기록합니다." \
+            backup-manifest "$work" "$archive" config.yaml >> "$LOG_FILE" 2> "$error_log" || code=$?
+        (( code == 0 )) || backup_failure "$code" "보호된 설정 사본을 ZIP에 기록하지 못했습니다." "$error_log"
+    fi
     write_progress 0 "백업 메타데이터 기록" "압축 정보와 항목 수를 기록하고 있습니다. ZIP 후처리 명령의 완료를 기다립니다."
     local expanded_bytes content_counts
     expanded_bytes="$(archive_expanded_size "$archive")" || backup_failure 59 "생성한 ZIP의 용량 정보를 읽지 못했습니다."
@@ -2082,16 +2103,15 @@ backup_selected() {
 
 list_backups() {
     if [[ "${1:-}" == overview ]]; then
-        # Count only private safety copies, even when Download is empty.
-        # No archive payload or trashed directory walk; failure does not block listing.
+        # Independent validated counts; no archive payload or trashed data tree walk.
         bash "$SAFETY_INVENTORY_HELPER" count "$LAUNCHER_HOME" "$ST_HOME" "$DOWNLOAD_DIR" 2>/dev/null || true
     fi
     compgen -G "$DOWNLOAD_DIR/SillyTavern-Launcher-*.zip" >/dev/null || return 0
     ensure_archive_tools
     local file manifest format created items custom secrets version branch launcher_version expanded_bytes entry_count integrity
     local required_restore_bytes available_restore_bytes character_files chat_files revision extension_count
-    available_restore_bytes="$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
-    available_restore_bytes="$(unsigned_decimal "${available_restore_bytes:-0}" || echo 0)"
+    # Unknown is not zero. Mutation paths independently recheck before any extraction/swap.
+    available_restore_bytes="$(available_bytes_for "$BACKUP_DIR")" || available_restore_bytes=""
     shopt -s nullglob
     for file in "$DOWNLOAD_DIR"/SillyTavern-Launcher-*.zip; do
         valid_backup_filename "${file##*/}" || continue
@@ -2450,7 +2470,7 @@ extract_restore_archive() {
     write_progress 8 "ZIP 구조 검사" "압축을 풀기 전에 내부 경로·크기·중복 항목을 검사하고 있습니다."
     expanded="$(validate_restore_archive "$archive" "$index")" || exit $?
     expanded="$(unsigned_decimal "$expanded")" || exit 20
-    free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
+    free_bytes="$(available_bytes_for "$BACKUP_DIR")" || { echo "ZIP 해제 전 여유 공간을 확인할 수 없어 중단했습니다." >&2; exit 29; }
     required_bytes=$((expanded + 268435456))
     (( free_bytes >= required_bytes )) || { echo "ZIP을 임시 해제할 저장 공간이 부족합니다. 필요: ${required_bytes}바이트, 여유: ${free_bytes}바이트" >&2; exit 29; }
     echo "restore_expanded_bytes=$expanded"
@@ -2464,14 +2484,15 @@ extract_restore_archive() {
     while kill -0 "$unzip_pid" 2>/dev/null; do
         sleep 2
         elapsed=$((elapsed + 2))
-        free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || free_bytes=0
-        if (( free_bytes < 67108864 )); then
+        free_bytes="$(available_bytes_for "$BACKUP_DIR")" || free_bytes=""
+        if [[ -z "$free_bytes" ]] || (( free_bytes < 67108864 )); then
             if [[ -n "$unzip_start" && "$(process_start_ticks "$unzip_pid")" == "$unzip_start" ]]; then
                 signal_descendants "$unzip_pid" "$unzip_start"
                 kill -TERM "$unzip_pid" 2>/dev/null || true
             fi
             wait "$unzip_pid" 2>/dev/null || true
-            echo "해제 중 실제 여유 공간이 부족해져 중단했습니다. 기존 데이터는 변경하지 않았습니다." >&2
+            if [[ -z "$free_bytes" ]]; then echo "ZIP 해제 중 여유 공간을 확인할 수 없어 중단했습니다. 기존 데이터는 변경하지 않았습니다." >&2
+            else echo "해제 중 실제 여유 공간이 부족해져 중단했습니다. 기존 데이터는 변경하지 않았습니다." >&2; fi
             exit 29
         fi
     done
@@ -3430,7 +3451,7 @@ import_install() {
     record_processing "원본 파일 상태 기록 완료"
     write_progress 0 "설치 가져오기 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
     bytes="$(unsigned_decimal "$(run_cancellable du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
-    free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 54
+    free_bytes="$(available_bytes_for "$BACKUP_DIR")" || { echo "가져오기 전 여유 공간을 확인할 수 없어 중단했습니다." >&2; exit 54; }
     (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 가져올 저장 공간이 부족합니다. 필요: $((bytes * 2 + 268435456))바이트, 여유: ${free_bytes}바이트" >&2; exit 54; }
     record_processing "설치 가져오기 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
     work="$BACKUP_DIR/install-import-work-$$"
@@ -3922,7 +3943,7 @@ restore_extracted_tree() {
     if [[ ",$kinds," != *,full,* && -d "$ST_HOME" ]]; then
         current_bytes="$(run_cancellable du -sk --exclude=node_modules --exclude=.git "$ST_HOME" | awk '{printf "%.0f", $1 * 1024}')"
     fi
-    free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
+    free_bytes="$(available_bytes_for "$BACKUP_DIR")" || { echo "복원 전 여유 공간을 확인할 수 없어 중단했습니다." >&2; exit 29; }
     incoming_bytes="$(unsigned_decimal "$incoming_bytes")" || exit 29
     current_bytes="$(unsigned_decimal "$current_bytes")" || exit 29
     required_bytes=$((incoming_bytes + current_bytes + 268435456))
@@ -4526,19 +4547,21 @@ diagnose() {
     local termux_free downloads_free github_ready repo_ready git_version node_version npm_version
     local installation_ready dependencies_status port_listening server_reachable node_process_count
     write_progress 0 "Termux 저장 공간 확인" "Termux 저장소의 실제 남은 공간을 확인하고 있습니다."
-    termux_free="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
+    termux_free="$(available_bytes_for "$HOME")" || termux_free=""
     echo "termux_free_bytes=$termux_free"
-    record_processing "Termux 저장 공간 확인 완료 · $(awk -v bytes="${termux_free:-0}" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}')"
+    if [[ -n "$termux_free" ]]; then record_processing "Termux 저장 공간 확인 완료 · $(awk -v bytes="$termux_free" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}')"
+    else record_processing "Termux 저장 공간 확인 완료 · 여유 공간 미확인"; fi
 
     write_progress 0 "백업 저장 공간 확인" "휴대폰 Download 연결과 남은 공간을 확인하고 있습니다."
     if [[ -d "$DOWNLOAD_DIR" ]]; then
         echo "downloads_ready=1"
-        downloads_free="$(df -Pk "$DOWNLOAD_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
+        downloads_free="$(available_bytes_for "$DOWNLOAD_DIR")" || downloads_free=""
         echo "downloads_free_bytes=$downloads_free"
-        record_processing "백업 저장 공간 확인 완료 · Download 연결됨 · $(awk -v bytes="${downloads_free:-0}" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}') 남음"
+        if [[ -n "$downloads_free" ]]; then record_processing "백업 저장 공간 확인 완료 · Download 연결됨 · $(awk -v bytes="$downloads_free" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}') 남음"
+        else record_processing "백업 저장 공간 확인 완료 · Download 연결됨 · 여유 공간 미확인"; fi
     else
         echo "downloads_ready=0"
-        echo "downloads_free_bytes=0"
+        echo "downloads_free_bytes="
         record_processing "백업 저장 공간 확인 완료 · Download 연결 필요"
     fi
 
@@ -4704,7 +4727,7 @@ case "${1:-doctor}" in
     version-snapshots) version_snapshots ;;
     change-version) change_version "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
     extensions-list) extensions_list "${2:-0}" ;;
-    reset-summary) bash "$EXTENSIONS_HELPER" reset-summary "$ST_HOME" "$LAUNCHER_HOME" ;;
+    reset-summary) bash "$EXTENSIONS_HELPER" reset-summary "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" ;;
     extension-update|extension-disable|extension-enable|extension-trash|extension-recover) extension_mutate "${1#extension-}" "${2:-}" "${3:-}" ;;
     repair) repair_st "${@:2}" ;;
     reset-installation) reset_installation ;;

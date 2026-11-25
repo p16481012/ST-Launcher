@@ -68,7 +68,7 @@ restore_selected() {
     fi
     bytes="$(unsigned_decimal "$(printf '%s\n' "$summary" | sed -n 's/^selection_bytes=//p')")" || exit 29
     old_bytes="$(unsigned_decimal "$(printf '%s\n' "$summary" | sed -n 's/^selection_protected_bytes=//p')")" || exit 29
-    free="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
+    free="$(available_bytes_for "$BACKUP_DIR")" || { echo "개별 복원 전에 여유 공간을 확인할 수 없어 중단했습니다." >&2; exit 29; }
     required=$((bytes + old_bytes + 268435456))
     (( required > bytes )) || exit 29
     (( free >= required )) || { echo "선택 항목을 복원할 저장 공간이 부족합니다. 필요: ${required}바이트, 여유: ${free}바이트" >&2; exit 29; }

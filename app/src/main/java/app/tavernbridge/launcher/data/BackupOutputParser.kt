@@ -4,8 +4,12 @@ import app.tavernbridge.launcher.model.BackupArchive
 import app.tavernbridge.launcher.model.BackupCategory
 import java.util.Base64
 
+data class BackupCatalogResult(val archives: List<BackupArchive>, val safetyCopies: Int?, val trashItems: Int?)
+
 object BackupOutputParser {
-    fun safetyCopies(output: String): Int? = output.lineSequence().filter { it.startsWith("safety_copies=") }
+    fun safetyCopies(output: String): Int? = countValue(output, "safety_copies=")
+    fun trashItems(output: String): Int? = countValue(output, "trash_items=")
+    private fun countValue(output: String, prefix: String): Int? = output.lineSequence().filter { it.startsWith(prefix) }
         .singleOrNull()?.substringAfter('=')?.toIntOrNull()?.takeIf { it in 0..500_000 }
 
     fun parse(output: String): List<BackupArchive> = output.lineSequence().mapNotNull(::parseLine)
@@ -30,7 +34,7 @@ object BackupOutputParser {
                 entryCount = fields.getOrNull(11)?.toIntOrNull() ?: 0,
                 integrity = fields.getOrNull(12)?.let(::decode).orEmpty(),
                 requiredRestoreBytes = fields.getOrNull(13)?.toLongOrNull() ?: 0,
-                availableRestoreBytes = fields.getOrNull(14)?.toLongOrNull() ?: 0,
+                availableRestoreBytes = fields.getOrNull(14)?.toLongOrNull()?.takeIf { it >= 0 },
                 characterFiles = fields.getOrNull(15)?.toIntOrNull()?.takeIf { it in 0..500_000 },
                 chatFiles = fields.getOrNull(16)?.toIntOrNull()?.takeIf { it in 0..500_000 },
                 revision = fields.getOrNull(17)?.takeIf { it.matches(Regex("[a-f0-9]{64}")) }.orEmpty(),

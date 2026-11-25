@@ -69,6 +69,31 @@ happy() {
     [[ "$(sha256sum "$ST_HOME/data/default-user/chats/selected.txt" | cut -d ' ' -f1)" == "$SOURCE_HASH" ]] || fail 'Original changed'
     grep -Fq 'backup_request_id=12345678-1234-1234-1234-123456789abc' "$PROGRESS_FILE" || fail 'Backup retry ID lost'
 }
+config_export() {
+    local name="$1" kinds="$2" include="$3" archive saved before
+    setup "$name"
+    put "$ST_HOME/config.yaml" $'listen: true\nport: 8877\nbasicAuthMode: true\nbasicAuthUser: { username: fixture-only-login, password: fixture-only-password }\nordinary: keep-custom-value'
+    before="$(sha256sum "$ST_HOME/config.yaml")"
+    backup_selected "$kinds" "$include" ''
+    archive="$(find "$DOWNLOAD_DIR" -name '*.zip' -print -quit)"
+    [[ -s "$archive" && "$(unzip -Z1 "$archive" | grep -xc config.yaml)" == 1 ]] || fail 'Missing or duplicate config.yaml'
+    saved="$(unzip -p "$archive" config.yaml)"
+    if [[ "$include" == 0 ]]; then
+        [[ "$saved" != *fixture-only-* && "$saved" != *basicAuthUser* ]] || fail 'Credentials in public ZIP'
+        [[ "$saved" == *'listen: false'* && "$saved" == *'basicAuthMode: false'* ]] || fail 'Restore would expose server'
+        [[ "$saved" == *'port: 8877'* && "$saved" == *keep-custom-value* ]] || fail 'Non-secret configuration lost'
+        ! unzip -Z1 "$archive" | grep -Fx 'data/default-user/secrets.json' || fail 'Unexpected secrets file'
+    else
+        [[ "$saved" == "$(cat "$ST_HOME/config.yaml")" ]] || fail 'Explicit include did not preserve original config'
+        [[ "$(unzip -p "$archive" data/default-user/secrets.json)" == 'excluded secret' ]] || fail 'Explicit secret missing'
+    fi
+    [[ "$before" == "$(sha256sum "$ST_HOME/config.yaml")" ]] || fail 'Live config changed'
+}
+unsafe_config() {
+    setup "$1"
+    put "$ST_HOME/config.yaml" "$2"
+    backup_selected config 0 ''
+}
 injected() {
     local name="$1" injected_action="$2" injected_code="$3"
     setup "$name"
@@ -172,6 +197,16 @@ NODE
     validate_restore_archive "$archive" "$CASE_ROOT/append-index.json" >/dev/null
 }
 run_case 0 happy happy happy
+run_case 0 config-only config_export config-only config 0
+run_case 0 update-config config_export update-config user_data,extensions,config 0
+run_case 0 full-config config_export full-config full 0
+run_case 0 explicit-credentials config_export explicit-credentials full 1
+run_case 59 malformed-config unsafe_config malformed-config 'basicAuthUser: [broken-secret-marker'
+run_case 59 alias-config unsafe_config alias-config $'basicAuthUser: &login {password: broken-secret-marker}\nother: *login'
+for name in malformed-config alias-config; do
+    assert_failure_cleanup "$name" BACKUP_CREATE_FAILED
+    ! grep -Fq 'broken-secret-marker' "$TEST_ROOT/$name.output" "$TEST_ROOT/$name/launcher/logs/operation.log" || fail 'YAML content leaked into logs'
+done
 run_case 58 no-space preflight no-space space
 run_case 58 scratch-space preflight scratch-space scratch
 run_case 59 unreadable preflight unreadable read

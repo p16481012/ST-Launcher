@@ -210,7 +210,7 @@ internal fun V2BackupScreen(
                             }
                             BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { pane = BackupPane.SPACE })
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { "${it}개" }.orEmpty(),
+                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { copies -> state.fileTrashCount?.let { trash -> "${copies + trash}개" } }.orEmpty(),
                                 enabled = connected && !busy, click = onSafety)
                         }
                         if (state.environment.processRunning) Text(if (canImport) "가져오기를 누르면 서버를 끈 뒤 백업 ZIP을 선택해요." else "백업을 가져오려면 서버를 먼저 종료해 주세요.",
@@ -398,6 +398,7 @@ private fun BackupDetail(
             if (archive.createdAt.isNotBlank()) BackupDetailRow("백업 파일", archive.fileName)
             Text(when {
                 !archive.restoreSpaceReady -> "복원 공간이 부족합니다. ${formatBackupBytes(archive.requiredRestoreBytes)}가 필요해요."
+                archive.availableRestoreBytes == null && archive.requiredRestoreBytes > 0 -> "현재 여유 공간은 미확인이에요. 복원 전에 다시 검사해요."
                 running -> if (stop != null) "복원을 누르면 서버를 끈 뒤 복원 내용을 확인해요." else "복원하려면 서버를 먼저 종료해 주세요."
                 state.environment.sillyTavernInstalled -> "복원하면 백업 이후의 대화가 지워질 수 있어요. 기본으로 복원 전에 지금 상태를 먼저 백업해요."
                 else -> "이 백업으로 설치 데이터를 복원해요."

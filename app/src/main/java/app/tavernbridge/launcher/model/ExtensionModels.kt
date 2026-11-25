@@ -20,6 +20,7 @@ data class ManagedExtension(
     val remoteAhead: Int? = null,
     val remoteVersion: String? = null,
     val checkIssue: ExtensionCheckIssue? = null,
+    val checkedRemoteCommit: String? = null,
 )
 
 enum class ExtensionCheckIssue(val label: String) {
@@ -27,7 +28,7 @@ enum class ExtensionCheckIssue(val label: String) {
     DIVERGED("설치본과 원격 이력 다름"), UNVERIFIED("비교 결과 미확인"),
 }
 
-internal data class ExtensionUpdateMetadata(val ahead: Int? = null, val version: String? = null, val issue: ExtensionCheckIssue? = null)
+internal data class ExtensionUpdateMetadata(val ahead: Int? = null, val remoteCommit: String? = null, val issue: ExtensionCheckIssue? = null)
 
 internal fun ManagedExtension.checkLabel() = when {
     checkIssue != null -> checkIssue.label

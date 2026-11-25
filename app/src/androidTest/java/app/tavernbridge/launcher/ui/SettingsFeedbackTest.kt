@@ -21,13 +21,14 @@ class SettingsFeedbackTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test fun previewEditsRealTextAndResetsToExampleWhenCleared() {
-        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) { AppearanceTextPreview("세이지") } }
-        compose.onNodeWithText("내 문장으로 미리보기").performClick()
+        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) { AppearanceTextPreview() } }
+        compose.onNodeWithText("미리보기 문장 바꾸기").performClick()
         compose.onNode(hasSetTextAction()).performTextReplacement("내 폰에서 읽어 볼 문장")
-        compose.onNodeWithText("입력 마치기").performClick()
+        compose.onNodeWithText("적용").performClick()
         compose.onNodeWithText("내 폰에서 읽어 볼 문장").assertIsDisplayed()
-        compose.onNodeWithText("내 문장으로 미리보기").performClick()
+        compose.onNodeWithText("미리보기 문장 바꾸기").performClick()
         compose.onNode(hasSetTextAction()).performTextClearance()
+        compose.onNodeWithText("적용").performClick()
         compose.onNodeWithText("비 오는 오후", substring = true).assertIsDisplayed()
     }
 

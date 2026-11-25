@@ -26,11 +26,11 @@ object SafetyInventoryParser {
                 val separator = line.indexOf('=')
                 require(separator > 0) { "보관 목록 응답을 읽을 수 없습니다." }
                 val key = line.substring(0, separator)
-                require(key in setOf("safety_inventory", "next_cursor", "inventory_truncated", "mutation_blocked", "protected_entries"))
+                require(key in setOf("safety_inventory", "next_cursor", "inventory_truncated", "mutation_blocked", "protected_entries", "inventory_counts"))
                 require(headers.put(key, line.substring(separator + 1)) == null) { "보관 목록 정보가 중복되었습니다." }
             }
         }
-        require(headers["safety_inventory"] == "1" && headers.size == 5)
+        require(headers["safety_inventory"] == "1")
         val next = requireNotNull(headers["next_cursor"]?.toIntOrNull())
         require(next >= -1)
         val protected = requireNotNull(headers["protected_entries"]?.toIntOrNull())
@@ -41,13 +41,19 @@ object SafetyInventoryParser {
             truncated = boolean(headers.getValue("inventory_truncated")),
             mutationBlocked = boolean(headers.getValue("mutation_blocked")),
             protectedEntries = protected,
+            totals = headers["inventory_counts"]?.let { raw ->
+                val kinds = listOf(SafetyItemKind.ARCHIVE, SafetyItemKind.CONFIG, SafetyItemKind.TRASH)
+                val values = raw.split(',').map { requireNotNull(it.toIntOrNull()?.takeIf { n -> n in 0..500_000 }) }
+                require(values.size == kinds.size)
+                kinds.zip(values).toMap().also { counts -> require(kinds.all { counts.getValue(it) >= items.count { row -> row.kind == it } }) }
+            },
         )
     }
 
     private fun parseItem(line: String): SafetyInventoryItem {
         require(line.length <= 12000)
         val fields = line.split('\t')
-        require(fields.size == 11)
+        require(fields.size in 11..12)
         val kind = requireNotNull(SafetyItemKind.fromKey(fields[1]))
         val path = decode(fields[2], 2048)
         require(validId(kind, path)) { "보관 항목 경로가 올바르지 않습니다." }
@@ -60,14 +66,15 @@ object SafetyInventoryParser {
         val original = decode(fields[8], 4096)
         val restorable = boolean(fields[9])
         val completionRecorded = boolean(fields[10])
+        val isDirectory = fields.getOrNull(11)?.let(::boolean) ?: false
         if (kind == SafetyItemKind.TRASH) {
             require(trashPattern.matches(fields[7]) && path == "file-trash/${fields[7]}")
             require(original.isNotEmpty() && original.split('/').all(::validPart) && label == original)
         } else {
-            require(fields[7].isEmpty() && original.isEmpty() && !restorable && size >= 0)
+            require(fields[7].isEmpty() && original.isEmpty() && !restorable && size >= 0 && !isDirectory)
             require(label == path.substringAfterLast('/'))
         }
-        return SafetyInventoryItem(kind, fields[2], fields[3], label, size.takeIf { it >= 0 }, modified, fields[7], original, restorable, completionRecorded)
+        return SafetyInventoryItem(kind, fields[2], fields[3], label, size.takeIf { it >= 0 }, modified, fields[7], original, restorable, completionRecorded, isDirectory)
     }
 
     private fun validId(kind: SafetyItemKind, path: String): Boolean = when (kind) {

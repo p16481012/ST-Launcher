@@ -189,6 +189,17 @@ class V2VisualTest {
         }
         compose.onNodeWithText("글자 크기").assertIsDisplayed()
         capture("settings-display")
+        compose.onNodeWithText("작게").performClick()
+        compose.runOnIdle { assertEquals(LauncherTextSize.SMALL, shown.textSize) }
+        capture("review-display-small")
+        compose.onNodeWithText("미리보기 문장 바꾸기").performScrollTo().performClick()
+        compose.onNodeWithText("미리보기 문장", substring = false).assertIsDisplayed()
+        compose.waitForIdle()
+        val shot = checkNotNull(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+        try { File(File(context.filesDir, "v2-visual"), "review-display-sheet.png").outputStream().use {
+            check(shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+        } } finally { shot.recycle() }
+        compose.onNodeWithText("기본 문장으로").performClick()
         compose.onNodeWithText("크게").performClick()
         compose.runOnIdle { assertEquals(LauncherTextSize.LARGE, shown.textSize) }
         if (!wide) compose.onNodeWithContentDescription("뒤로").performClick()

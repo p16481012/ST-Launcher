@@ -5,6 +5,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StopContinuationTest {
+    @Test fun abandonedContinuationIsAnnouncedExactlyOnceOnlyAfterVerifiedStop() {
+        val before = AbandonedStopNotice()
+        assertFalse(before.invalidate()); assertTrue(before.verified()); assertFalse(before.invalidate())
+        val after = AbandonedStopNotice()
+        assertFalse(after.verified()); assertTrue(after.invalidate()); assertFalse(after.verified())
+        val failed = AbandonedStopNotice()
+        assertFalse(failed.invalidate()); assertFalse(failed.invalidate())
+    }
+
     private val env = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true,
         managerConnected = true, sillyTavernInstalled = true, processRunning = true, serverReachable = true)
     private val live = LauncherUiState(isWorking = false, environment = env,

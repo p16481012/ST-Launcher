@@ -56,7 +56,7 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
 
         ToolGroup {
             SettingsRow("업데이트 전에 자동 백업", checked = state.autoBackupBeforeUpdate, enabled = !busy,
-                caption = "사용자 데이터·확장 프로그램·config.yaml을 백업해요. 비밀 설정은 제외해요.",
+                caption = "사용자 데이터·확장 프로그램·config.yaml을 백업해요. secrets.json과 외부 접속 로그인 정보는 넣지 않아요.",
                 onClick = { onBackupPreference(!state.autoBackupBeforeUpdate) })
         }
         ToolGroup("안전 검사 결과") {

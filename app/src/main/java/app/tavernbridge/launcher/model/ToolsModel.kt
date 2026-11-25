@@ -7,6 +7,10 @@ enum class ToolPage(val label: String) {
 
 data class ResetImpact(val characters: Int, val chats: Int, val extensions: Int, val backups: Int?)
 
+/** Listing file names is read-only; it neither stops the server nor authorizes a reset. */
+internal fun LauncherUiState.canInspectResetImpact(): Boolean = environment.managerConnected &&
+    environment.sillyTavernInstalled && !isWorking && !environment.operationActive && !environment.recoveryPending
+
 private val logSeverity = Regex("""(?i)(?:\b(?:err(?:or)?|warn(?:ing)?|fatal|exception|failed|panic)\b|\b\w+(?:Exception|Error):|(?:오류|경고|실패)|^\s*at\s+\S)""")
 internal fun isProblemLog(line: String) = logSeverity.containsMatchIn(line)
 private val logTimestamp = Regex("""^\[?(?:\d{4}-\d{2}-\d{2}[T ])?\d\d:\d\d:\d\d(?:[.,]\d{1,6})?(?:Z|[+\-]\d\d:\d\d)?\]?""")

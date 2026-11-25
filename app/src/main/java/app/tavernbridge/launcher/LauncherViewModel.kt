@@ -87,6 +87,7 @@ import app.tavernbridge.launcher.model.shouldRestoreUpdateServer
 import app.tavernbridge.launcher.model.retryActionAfterFailure
 import app.tavernbridge.launcher.model.readyForTermuxDiagnostic
 import app.tavernbridge.launcher.model.canOfferRuntimeSync
+import app.tavernbridge.launcher.model.canInspectResetImpact
 import app.tavernbridge.launcher.model.ExistingInstallation
 import app.tavernbridge.launcher.model.InstallationImportMode
 import app.tavernbridge.launcher.model.protectBeforeReplacement
@@ -106,9 +107,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -135,6 +133,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var selectionListGeneration = 0L
     private var versionListGeneration = 0L
     private var extensionListGeneration = 0L
+    private val extensionQuota = app.tavernbridge.launcher.data.GitHubReadQuota()
     private val mutableState = MutableStateFlow(
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
@@ -292,7 +291,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     suspend fun inspectResetImpact(): app.tavernbridge.launcher.model.ResetImpact? {
         val ui = state.value
-        if (!ui.environment.managerConnected || !ui.environment.sillyTavernInstalled || ui.isWorking) return null
+        if (!ui.canInspectResetImpact()) return null
         return try { repository.inspectResetImpact() }
         catch (cancel: CancellationException) { throw cancel }
         catch (_: Exception) { null }
@@ -361,7 +360,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         selectSection(MainSection.BACKUPS)
     }
 
-    fun reselectTab(tab: MainSection) {
+    fun selectBottomTab(tab: MainSection) {
         if (state.value.toolPage == ToolPage.FILES) leaveFileTools()
         if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
         mutableState.update { it.reselectRoot(tab) }
@@ -1133,10 +1132,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return false
         }
         val verified = CompletableDeferred<Boolean>()
+        val handoff = app.tavernbridge.launcher.model.AbandonedStopNotice()
+        fun abandonedNotice(show: Boolean) {
+            if (show) showMessage("서버를 껐어요. 이어가려던 작업은 시작하지 않았어요. 원래 작업을 다시 선택해 주세요.")
+        }
         dispatchStop(onChecked = { fresh ->
             val now = state.value
             val sameScreen = appInForeground && now.navigation.entryId == entryId
             val canContinue = fresh && sameScreen && now.readyForStopContinuation(false)
+            if (!sameScreen) abandonedNotice(handoff.invalidate())
+            if (fresh && now.readyForStopContinuation(false)) abandonedNotice(handoff.verified())
             if (sameScreen && !canContinue) showMessage(when {
                 !fresh || !now.environment.managerConnected ->
                     "종료 명령은 끝났지만 서버 상태를 확인하지 못했어요. 새로고침한 뒤 다시 선택해 주세요."
@@ -1147,13 +1152,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             verified.complete(canContinue)
         }, onFinished = { verified.complete(false) })
         // Bg/rotation may cancel this waiter, but should not cancel an already consented server stop.
-        return verified.await()
+        return try { verified.await() } catch (cancelled: CancellationException) {
+            abandonedNotice(handoff.invalidate())
+            throw cancelled
+        }
     }
 
     private fun dispatchStop(onChecked: ((Boolean) -> Unit)? = null, onFinished: () -> Unit = {}) = perform(
         operation = "stop",
         label = "SillyTavern 종료 중",
         successMessage = "SillyTavern을 종료했습니다.",
+        successMessageForResult = {
+            if (onChecked != null && !appInForeground)
+                "서버 종료 명령을 마쳤어요. 이어가려던 작업은 다시 선택해 주세요."
+            else "SillyTavern을 종료했습니다."
+        },
         retryAction = RetryAction.STOP,
         onRefreshChecked = onChecked,
         onFinished = onFinished,
@@ -1480,12 +1493,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun openSafetyInventory() {
         if (commandEntryBlocked()) return
-        mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(open = true)) }
+        mutableState.update { it.visit(MainSection.BACKUPS, safetyOpen = true) }
         loadSafetyInventory()
     }
 
     fun closeSafetyInventory() {
-        mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(open = false)) }
+        if (state.value.safetyInventory.open) navigateBack()
     }
 
     fun loadSafetyInventory(more: Boolean = false) {
@@ -1510,8 +1523,46 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /** Selection contains precisely the (id, revision) pairs the user confirmed.
+     * Each removal is revalidated under the manager lock; never retry a partially deleted batch. */
+    fun deleteSafetySelection(request: List<SafetyInventoryItem>) {
+        val snapshot = state.value
+        val picks = request.toList()
+        val visible = snapshot.safetyInventory.items.associateBy { it.id }
+        if (!snapshot.safetyInventory.open || snapshot.safetyInventory.loading || snapshot.safetyInventory.mutationBlocked ||
+            snapshot.environment.recoveryPending || picks.size !in 1..1000 || picks.distinctBy { it.id }.size != picks.size ||
+            picks.any { visible[it.id] != it }) {
+            showMessage("목록이 바뀌었어요. 새로고침한 뒤 다시 선택해 주세요."); return
+        }
+        if (picks.size == 1) { changeSafetyItem("delete", picks.single()); return }
+        perform(operation = "safety-delete", label = "선택한 보관 항목 삭제",
+            successMessage = "${picks.size}개를 영구 삭제했어요.",
+            onFinished = { if (state.value.safetyInventory.open) loadSafetyInventory() }) {
+            var done = 0
+            var last: TermuxCommandResult? = null
+            try {
+                for (pick in picks) {
+                    currentCoroutineContext()[OperationCancellationControl]?.checkpoint()
+                    val result = repository.changeSafetyItem("delete", pick)
+                    result.requireSuccess()
+                    last = result
+                    done++
+                    mutableState.update { ui -> ui.copy(safetyInventory = ui.safetyInventory.copy(
+                        items = ui.safetyInventory.items.filterNot { it.id == pick.id && it.revision == pick.revision }),
+                        safetyCopyCount = null, fileTrashCount = null) }
+                }
+            } catch (e: CancellationException) { throw e }
+              catch (e: Exception) { throw IllegalStateException("${picks.size}개 중 ${done}개 삭제를 확인했어요. 나머지는 목록을 다시 확인해 주세요.\n" + e.userMessage(), e) }
+            checkNotNull(last)
+        }
+    }
+
     fun changeSafetyItem(action: String, item: SafetyInventoryItem) {
-        if (action !in setOf("export", "delete", "restore") || state.value.safetyInventory.loading) return
+        val inventory = state.value.safetyInventory
+        if (!inventory.open || action !in setOf("export", "delete", "restore") || inventory.loading) return
+        if (inventory.items.none { it == item } || (action == "export" && !item.canExport) || (action == "restore" && !item.restorable)) {
+            showMessage("항목이 바뀌었거나 지원하지 않는 작업이에요. 목록을 다시 확인해 주세요."); return
+        }
         if (state.value.safetyInventory.mutationBlocked || state.value.environment.recoveryPending) {
             mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(error = "미완료 작업의 점검·복구를 먼저 진행해 주세요. 보호 자료는 변경하지 않았습니다.")) }
             return
@@ -1523,7 +1574,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val label = when (action) { "export" -> "안전 사본 내보내기"; "delete" -> "보관 항목 삭제"; else -> "휴지통 항목 복원" }
         perform(operation = "safety-$action", label = label, successMessage = when (action) {
             "export" -> "Download에 사본을 내보냈습니다. 내부 원본은 유지됩니다."
-            "delete" -> "선택한 보관 항목만 영구 삭제했습니다. 이 삭제는 되돌릴 수 없습니다."
+            "delete" -> "영구 삭제했어요."
             else -> "휴지통 항목을 원래 위치로 복원했습니다. 같은 이름의 기존 항목은 덮어쓰지 않습니다."
         }) {
             val result = repository.changeSafetyItem(action, item)
@@ -1533,7 +1584,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     // refresh must not relabel a completed export/delete as cancelled.
                     val page = withoutOperationCancellation { repository.listSafetyInventory() }
                     mutableState.update { it.copy(safetyInventory = it.safetyInventory.accept(page, false),
-                        lastTrashedEntryId = repository.lastTrashedEntryId()) }
+                        lastTrashedEntryId = repository.lastTrashedEntryId(), safetyCopyCount = null, fileTrashCount = null) }
                 } catch (cancelled: CancellationException) { throw cancelled
                 } catch (_: Exception) {
                     mutableState.update { it.copy(safetyInventory = it.safetyInventory.copy(items = emptyList(),
@@ -1556,11 +1607,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             try {
                 val storageReady = repository.backupStorageReady()
                 if (!storageReady) {
-                    mutableState.update { it.copy(backupStorageReady = false, backupsLoaded = false,
+                    mutableState.update { it.copy(backupStorageReady = false, backupsLoaded = false, safetyCopyCount = null, fileTrashCount = null,
                         backupListLoading = false, backups = emptyList(), backupFolders = emptyList()) }
                     return@launch
                 }
-                val (backups, safetyCount) = repository.readBackupCatalog(true)
+                val (backups, safetyCount, trashCount) = repository.readBackupCatalog(true)
                 val reminder = backupReminderStore.observeArchives(backups)
                 val folders = repository.listUserBackupFolders()
                 val updateRecord = repository.lastUpdateRecord()
@@ -1575,7 +1626,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         backupListLoading = false,
                         backupStorageReady = storageReady,
                         message = if (it.backupStorageReady == false) "백업 저장공간을 연결했어요." else it.message,
-                        safetyCopyCount = safetyCount,
+                        safetyCopyCount = safetyCount, fileTrashCount = trashCount,
                         lastUpdateRecord = updateRecord,
                     )
                 }
@@ -1786,12 +1837,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         try {
             // This read follows a committed backup/restore. Do not relabel that
             // completed operation as cancelled while merely refreshing its list.
-            val (backups, safetyCount) = withoutOperationCancellation { repository.readBackupCatalog(true) }
+            val (backups, safetyCount, trashCount) = withoutOperationCancellation { repository.readBackupCatalog(true) }
             val reminder = backupReminderStore.observeArchives(backups)
             val annotations = backupMetadataStore.loadAll(backups.map { archive -> archive.fileName })
             val proposal = if (suggestCleanup) app.tavernbridge.launcher.model.BackupRetentionPolicy.afterCreation(
                 backups, annotations, state.value.displayPreferences.keepBackups) else null
-            mutableState.update { it.copy(backups = backups, backupsLoaded = true, safetyCopyCount = safetyCount,
+            mutableState.update { it.copy(backups = backups, backupsLoaded = true, safetyCopyCount = safetyCount, fileTrashCount = trashCount,
                 backupListError = "", backupListErrorCode = "",
                 backupAnnotations = annotations, backupCleanupPreview = proposal ?: it.backupCleanupPreview,
                 backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
@@ -1955,32 +2006,35 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val all = fresh.values.map { item ->
                     val old = previous[item.id]
                     if (old != null && item.sameCheckTarget(old)) item.copy(remoteAhead = old.remoteAhead,
-                        remoteVersion = old.remoteVersion, checkIssue = old.checkIssue) else item
+                        checkedRemoteCommit = old.checkedRemoteCommit, remoteVersion = old.remoteVersion, checkIssue = old.checkIssue) else item
                 }
                 val supported = all.filter { ExtensionVersionClient.refUrl(it) != null }
                 val start = snapshot.nextCheckOffset.takeIf { it in supported.indices } ?: 0
-                val batch = (supported.drop(start) + supported.take(start)).take(40)
+                val batch = supported.drop(start).take(20)
                 val results = mutableMapOf<String, ExtensionUpdateMetadata>()
-                for (group in batch.chunked(4)) {
+                var progressed = 0
+                for (item in batch) {
                     if (generation != extensionListGeneration) return@launch
-                    val checks = coroutineScope { group.map { item -> async {
-                        item.id to ExtensionVersionClient.inspect(item)
-                    } }.awaitAll() }
-                    results.putAll(checks)
-                    if (checks.any { it.second.issue == ExtensionCheckIssue.RATE_LIMIT }) break
+                    val checked = ExtensionVersionClient.inspect(item, extensionQuota)
+                    results[item.id] = checked
+                    // Leave the cursor on the first incomplete item; retry starts there even on small inventories.
+                    if (checked.issue == ExtensionCheckIssue.RATE_LIMIT) break
+                    progressed++
                 }
                 val inventory = page.copy(skipped = skipped, items = all.map { item ->
                     val result = results[item.id]
                     when {
-                        result != null -> item.copy(remoteAhead = result.ahead, remoteVersion = result.version, checkIssue = result.issue)
-                        batch.any { it.id == item.id } -> item.copy(remoteAhead = null, remoteVersion = null, checkIssue = null)
+                        result != null -> item.copy(remoteAhead = result.ahead, checkedRemoteCommit = result.remoteCommit,
+                            remoteVersion = item.remoteVersion.takeIf { result.remoteCommit != null && result.remoteCommit == item.checkedRemoteCommit },
+                            checkIssue = result.issue)
+                        batch.any { it.id == item.id } -> item.copy(remoteAhead = null, remoteVersion = null, checkedRemoteCommit = null, checkIssue = null)
                         else -> item
                     }
-                }, nextCheckOffset = if (supported.size > 40) (start + results.size) % supported.size else 0)
+                }, nextCheckOffset = (start + progressed).takeIf { it < supported.size } ?: 0)
                 mutableState.update { ui -> if (generation != extensionListGeneration) ui else ui.copy(
                     extensionInventory = inventory, extensionError = when {
                         supported.isEmpty() -> "원격 브랜치를 확인할 수 있는 공개 GitHub 확장이 없습니다."
-                        results.values.any { it.issue == ExtensionCheckIssue.RATE_LIMIT } -> "GitHub의 요청 한도에 도달했어요. 잠시 후 다시 확인해 주세요."
+                        results.values.any { it.issue == ExtensionCheckIssue.RATE_LIMIT } -> "GitHub 요청 제한으로 검사를 멈췄어요. 한도가 회복된 뒤 다시 누르면 남은 항목부터 확인해요."
                         results.values.any { it.issue != null } -> "확인하지 못한 항목은 최신으로 표시하지 않아요. 항목을 열면 이유를 볼 수 있어요."
                         else -> ""
                     }) }
@@ -1989,9 +2043,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 mutableState.update { ui -> if (generation != extensionListGeneration) ui else ui.copy(
                     extensionError = "확장 검사 실패: ${e.userMessage()}",
                     extensionInventory = ui.extensionInventory?.let { inv -> inv.copy(items = inv.items.map {
-                        it.copy(remoteAhead = null, remoteVersion = null, checkIssue = null)
+                        it.copy(remoteAhead = null, remoteVersion = null, checkedRemoteCommit = null, checkIssue = null)
                     }) }) }
             } finally { mutableState.update { if (generation == extensionListGeneration) it.copy(extensionLoading = false) else it } }
+        }
+    }
+
+    suspend fun loadExtensionDetailVersion(item: ManagedExtension) {
+        val commit = item.checkedRemoteCommit ?: return
+        if (item.remoteVersion != null || (item.remoteAhead ?: 0) <= 0) return
+        val version = ExtensionVersionClient.detailVersion(item, extensionQuota) ?: return
+        mutableState.update { ui ->
+            val inventory = ui.extensionInventory ?: return@update ui
+            ui.copy(extensionInventory = inventory.copy(items = inventory.items.map {
+                if (it.sameCheckTarget(item) && it.checkedRemoteCommit == commit) it.copy(remoteVersion = version) else it
+            }))
         }
     }
 

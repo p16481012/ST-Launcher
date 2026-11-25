@@ -47,7 +47,7 @@ class UpdateManagementContentTest {
         ui.onNodeWithText("같은 버전에 새 커밋이 있어요").assertIsDisplayed()
         ui.onNodeWithText("4개 모두").performClick()
         ui.onNodeWithText("업데이트 전에 자동 백업").performScrollTo().performClick()
-        ui.onNodeWithText("비밀 설정은 제외해요.", substring = true).assertExists()
+        ui.onNodeWithText("secrets.json과 외부 접속 로그인 정보는 넣지 않아요.", substring = true).assertExists()
         ui.onNodeWithText("a123456").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("b123456").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("v24.22.3 / 필요 >= 20").performScrollTo().assertIsDisplayed()

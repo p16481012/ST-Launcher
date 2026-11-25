@@ -321,6 +321,41 @@ function backupSourceCheck(planFile) {
     }
 }
 
+// Only this disposable, private copy may be added to an export without credentials.
+// Never include YAML/parser errors: they can contain the offending password and line.
+function redactBackupConfig(root, target) {
+    let fd, bytes;
+    try {
+        const YAML = require('module').createRequire(path.resolve(root, 'package.json'))('yaml');
+        fd = fs.openSync(path.join(root, 'config.yaml'), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+        const st = fs.fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1 || st.size > 1048576) throw new Error();
+        bytes = Buffer.alloc(st.size + 1);
+        let size = 0;
+        while (size < bytes.length) {
+            const n = fs.readSync(fd, bytes, size, bytes.length - size, null);
+            if (!n) break;
+            size += n;
+        }
+        if (size !== st.size) throw new Error();
+        const doc = YAML.parseDocument(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)), { uniqueKeys: true });
+        if (doc.errors.length || doc.warnings.length || !YAML.isMap(doc.contents) ||
+            doc.contents.items.some(({key}) => !YAML.isScalar(key) || typeof key.value !== 'string')) throw new Error();
+        // Refuse indirect credentials (including YAML merge keys) instead of copying aliases
+        // elsewhere, or retaining secrets in inline/comments/anchors when re-serializing.
+        YAML.visit(doc, { Alias() { throw new Error(); }, Pair(_, pair) { if (pair.key?.value === '<<') throw new Error(); } });
+        const obj = doc.toJS({ mapAsMap: true, maxAliasCount: 0 });
+        obj.delete('basicAuthUser');
+        obj.set('listen', false);
+        obj.set('basicAuthMode', false);
+        const safe = YAML.stringify(obj);
+        fs.writeFileSync(target, safe, { flag: 'wx', mode: 0o600 });
+    } catch (e) {
+        if (e.code === 'ENOSPC') fail(58, '로그인 정보를 제외한 설정 사본을 만들 임시 공간이 부족합니다.');
+        fail(59, 'config.yaml에서 로그인 정보를 안전하게 제외할 수 없습니다. 설정 없이 사용자 데이터만 백업하거나 YAML 모듈·설정 형식을 확인해 주세요.');
+    } finally { if (fd !== undefined) fs.closeSync(fd); if (bytes) bytes.fill(0); }
+}
+
 async function compress(root, archive, ...selection) {
     if (!root || !archive || !selection.length) fail(64, 'ZIP 생성 인수가 부족합니다.');
     let buffer = '', outputTail = '';
@@ -390,6 +425,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
     else if (action === 'verify') await extract(args[0], null, args[1], true);
     else if (action === 'compress' || action === 'backup-manifest') await compress(...args);
     else if (action === 'backup-plan') backupPlan(...args);
+    else if (action === 'redact-backup-config') redactBackupConfig(...args);
     else if (action === 'backup-source-check') backupSourceCheck(...args);
     else if (action === 'crc-self-test') {
         if (crcFallback(Buffer.from('123456789')) !== 0xcbf43926) fail(20, 'CRC self-test failed');

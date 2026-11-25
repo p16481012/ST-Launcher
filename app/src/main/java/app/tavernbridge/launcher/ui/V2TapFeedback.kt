@@ -26,6 +26,8 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import app.tavernbridge.launcher.model.*
+import app.tavernbridge.launcher.R
+import androidx.compose.ui.res.painterResource
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import kotlinx.coroutines.delay
 
@@ -98,7 +100,15 @@ internal fun Modifier.v2SelectionEdge(active: Boolean, color: Color): Modifier =
 internal fun V2TabGlyph(section: MainSection, vector: ImageVector, color: Color, modifier: Modifier = Modifier) {
     val alert = section in LocalV2TabAttention.current
     Box(modifier.then(if (alert) Modifier.semantics { stateDescription = "확인 필요" } else Modifier)) {
-        Icon(vector, null, Modifier.fillMaxSize(), tint = color)
+        val glyph = when (section) {
+            MainSection.HOME -> R.drawable.rv_nav_home
+            MainSection.BACKUPS -> R.drawable.rv_nav_backups
+            MainSection.LOGS -> R.drawable.rv_nav_tools
+            MainSection.SETTINGS -> R.drawable.rv_nav_settings
+            else -> null
+        }
+        if (glyph == null) Icon(vector, null, Modifier.fillMaxSize(), tint = color)
+        else Icon(painterResource(glyph), null, Modifier.fillMaxSize(), tint = color)
         if (alert) Spacer(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-1).dp).size(6.dp)
             .background(MaterialTheme.colorScheme.secondary, CircleShape))
     }

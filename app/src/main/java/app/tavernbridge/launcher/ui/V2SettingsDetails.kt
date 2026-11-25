@@ -63,10 +63,10 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
     var info by rememberSaveable { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         SettingsHeading("글자 크기")
-        IconButton(onClick = { info = true }) { Icon(Icons.Outlined.Info, "글자 크기 설명", Modifier.size(18.dp)) }
+        IconButton(onClick = { info = true }) { ReviewGlyph(R.drawable.rv_info, 18.dp, description = "글자 크기 설명") }
     }
     val preview: @Composable () -> Unit = {
-        AppearanceTextPreview(prefs.accent.label)
+        AppearanceTextPreview()
     }
     val sizes: @Composable () -> Unit = { SettingsSegments(LauncherTextSize.entries, prefs.textSize, { it.label },
         { onDisplay(prefs.copy(textSize = it)) }) }
@@ -82,14 +82,14 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
         SettingsSegments(listOf(AppTheme.SYSTEM, AppTheme.LIGHT, AppTheme.DARK), state.theme, ::settingsThemeName, onTheme)
     }
     val accents: @Composable () -> Unit = {
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsHeading("강조색")
-            FlowRow(Modifier.fillMaxWidth().selectableGroup()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("강조색", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+            FlowRow(Modifier.weight(1f).selectableGroup(), horizontalArrangement = Arrangement.SpaceAround) {
                 LauncherAccent.entries.forEach { accent ->
                     val chosen = prefs.accent == accent
                     val source = remember { MutableInteractionSource() }
                     val pressed by source.collectIsPressedAsState()
-                    Box(Modifier.size(48.dp)
+                    Box(Modifier.widthIn(min = 38.dp).height(48.dp)
                         .selectable(chosen, interactionSource = source, indication = null, role = Role.RadioButton) { onDisplay(prefs.copy(accent = accent)) }
                         .semantics { contentDescription = accent.label }, contentAlignment = Alignment.Center) {
                         if (pressed) Box(Modifier.size(44.dp).background(colors.onSurface.copy(alpha = .08f), CircleShape))

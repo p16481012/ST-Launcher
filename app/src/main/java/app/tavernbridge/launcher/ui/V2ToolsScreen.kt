@@ -1,6 +1,5 @@
 package app.tavernbridge.launcher.ui
 
-import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,15 +24,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -92,7 +88,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                     val nested = page == ToolPage.UPDATE && allChanges
                     if (page != ToolPage.FILES && (!wide || hasDetailOrigin || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { if (nested) allChanges = false else goBack() }) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
+                        IconButton(onClick = { if (nested) allChanges = false else goBack() }) { ReviewGlyph(app.tavernbridge.launcher.R.drawable.rv_arrow_left, 24.dp, description = "뒤로") }
                         Text(if (nested) "바뀐 내용 전체" else page.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                     }
                     val detailMod = Modifier.fillMaxSize().padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 8.dp)
@@ -131,6 +127,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                                 !state.environment.processRunning && !state.environment.operationActive && !state.environment.recoveryPending, state.extensionError,
                             { viewModel.loadExtensions() }, { viewModel.loadExtensions(true) }, viewModel::recoverExtension,
                             viewModel::changeExtension, goBack, embedded = true, onCheckUpdates = viewModel::checkExtensionVersions,
+                            onCheckDetail = viewModel::loadExtensionDetailVersion,
                             onUpdateAll = viewModel::updateCheckedExtensions, stopState = state)
                         ToolPage.FILES -> ToolFolder(state, viewModel, goBack, twoFileColumns)
                         ToolPage.INDEX -> Unit
@@ -209,64 +206,6 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         onUpdate, onInstall, vm::openPreviousVersions, vm::openBackups, onAllChanges)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable internal fun DiagnosticDetail(state: LauncherUiState, vm: LauncherViewModel, mod: Modifier, onRun: () -> Unit = vm::runDiagnostics) {
-    val report = state.diagnosticReport
-    val clipboard = LocalClipboardManager.current
-    val uriHandler = LocalUriHandler.current
-    var itemId by rememberSaveable { mutableStateOf<String?>(null) }
-    var normalExpanded by rememberSaveable(report?.checkedAt) { mutableStateOf(false) }
-    DetailLayout(mod, footer = {
-        OutlinedButton({ report?.let { clipboard.setText(AnnotatedString(it.copyText())); vm.showMessage("진단 보고서를 복사했습니다.") } },
-            Modifier.weight(1f).heightIn(min = 52.dp), enabled = report != null, shape = RoundedCornerShape(14.dp)) { Text("보고서 복사") }
-        Button(onRun, Modifier.weight(1f).heightIn(min = 52.dp), enabled = !state.isWorking, shape = RoundedCornerShape(14.dp)) { Text(if (report == null) "진단 시작" else "다시 진단") }
-    }) {
-        Lead(report?.checkTitle ?: "환경을 진단해요",
-            report?.let { "${it.statusSummary}\n${it.checkedAt} 진단" } ?: "저장 공간과 Termux, 서버 실행 환경을 확인해요.")
-        if (report != null) {
-            listOf(DiagnosticStatus.ERROR, DiagnosticStatus.WARNING, DiagnosticStatus.OK, DiagnosticStatus.INFO).forEach { status ->
-                val rows = report.rows(status)
-                val collapsible = status == DiagnosticStatus.OK && rows.size > 1
-                if (rows.isNotEmpty()) ToolGroup("${status.label} ${rows.size}개" +
-                    (if (status == DiagnosticStatus.INFO) " · 검사 수에서 제외" else ""),
-                    action = if (collapsible) (if (normalExpanded) "접기" else "펼치기") else null,
-                    onAction = { normalExpanded = !normalExpanded }) {
-                    if (!collapsible || normalExpanded) rows.forEachIndexed { index, item ->
-                        if (index != 0) ToolDivider()
-                        val issue = status == DiagnosticStatus.ERROR || status == DiagnosticStatus.WARNING
-                        ToolRow(item.title, note = item.value,
-                            trailing = if (issue) "자세히" else "",
-                            icon = if (issue) Icons.Outlined.ErrorOutline else null,
-                            danger = status == DiagnosticStatus.ERROR, onClick = { itemId = item.id })
-                    }
-                }
-            }
-        }
-        TermuxProcessHelpCard(Build.VERSION.SDK_INT, vm::openTermuxAppSettings, vm::openBatteryOptimizationSettings) { url ->
-            runCatching { uriHandler.openUri(url) }.onFailure { vm.showMessage("도움말 링크를 열 수 없어요. 브라우저 앱을 확인해 주세요.") }
-        }
-    }
-    report?.items?.firstOrNull { it.id == itemId }?.let { item ->
-        V2BottomSheet(onClose = { itemId = null }, footer = {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                val close = LocalV2SheetDismiss.current ?: { itemId = null }
-                when (item.id) {
-                    "battery" -> V2SheetPrimaryButton("배터리 설정 열기", onClick = vm::openBatteryOptimizationSettings)
-                    "download_storage" -> V2SheetPrimaryButton("연결 명령 복사·Termux 열기") {
-                        clipboard.setText(AnnotatedString(vm.storageSetupCommand)); vm.openTermux()
-                    }
-                    else -> V2SheetPrimaryButton("확인", onClick = close)
-                }
-                if (item.id == "battery" || item.id == "download_storage")
-                    TextButton(onClick = close, modifier = Modifier.fillMaxWidth()) { Text("확인") }
-            }
-        }) {
-            Lead(item.title, item.value)
-            if (item.detail.isNotBlank()) Text(item.detail)
-            if (item.recommendation.isNotBlank()) Text(item.recommendation)
-        }
-    }
-}
 
 @Composable private fun MaintenanceDetail(page: ToolPage, state: LauncherUiState, vm: LauncherViewModel, repair: () -> Unit, reset: (Boolean) -> Unit, mod: Modifier) {
     val resetMode = page == ToolPage.RESET
@@ -277,8 +216,17 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         (env.sillyTavernInstalled || (!resetMode && env.recoveryPending))
     val ready = eligible && !env.processRunning
     val canEnter = ready || (eligible && stop != null)
-    val impact by produceState<ResetImpact?>(null, resetMode, ready, state.lastOperationResult) {
-        value = if (resetMode && ready) vm.inspectResetImpact() else null
+    var impact by remember(state.navigation.entryId, resetMode) { mutableStateOf<ResetImpact?>(null) }
+    var countedAt by remember(state.navigation.entryId, resetMode) { mutableStateOf<Long?>(null) }
+    val canCount = resetMode && state.canInspectResetImpact()
+    val changedAt = state.lastOperationResult?.takeIf { it.operation in setOf(
+        "reset-installation", "restore", "restore-selected", "import-install", "import-backup", "backup", "delete-backup"
+    ) }?.completedAtMillis
+    LaunchedEffect(canCount, changedAt, state.navigation.entryId) {
+        if (canCount && (impact == null || changedAt != null && changedAt != countedAt)) {
+            impact = vm.inspectResetImpact()
+            countedAt = changedAt
+        }
     }
     DetailLayout(mod, footer = {
         Button({ enterStoppedAction(env.processRunning, stop, if (resetMode) "초기화 확인" else "점검·복구 확인") {
@@ -294,7 +242,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                 if (index != 0) ToolDivider(); ToolRow(label, trailing = count?.let { "${it}개" } ?: if (index < 3) "미확인" else "",
                     icon = Icons.Outlined.RemoveCircleOutline, danger = true)
             } }
-            ToolGroup("남는 것") { ToolRow("Download의 백업 파일", trailing = impact?.backups?.let { "${it}개" } ?: if (state.backupsLoaded) "${state.backups.size}개" else "미확인", icon = Icons.Outlined.Check) }
+            ToolGroup("남는 것") { ToolRow("Download의 백업 파일", trailing = impact?.backups?.let { "${it}개" } ?: "미확인", icon = Icons.Outlined.Check) }
             Row(Modifier.fillMaxWidth().toggleable(value = protect, role = Role.Checkbox) { protect = it }
                 .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {

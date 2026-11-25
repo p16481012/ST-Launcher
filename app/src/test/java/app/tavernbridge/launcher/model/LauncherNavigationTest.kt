@@ -4,7 +4,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LauncherNavigationTest {
+    @Test fun safetyIsAnActualDestinationWithItsOriginAndProtectedRecoveryReturn() {
+        val home = LauncherUiState(section = MainSection.HOME)
+        val root = home.reselectRoot(MainSection.BACKUPS)
+        val list = root.visit(MainSection.BACKUPS, safetyOpen = true)
+        assertTrue(list.safetyInventory.open)
+        assertEquals(root.navigation.entryId, list.previousScreen().navigation.entryId)
+        assertFalse(list.previousScreen().safetyInventory.open)
+        val repair = list.visit(MainSection.LOGS, ToolPage.REPAIR)
+        assertFalse(repair.safetyInventory.open)
+        assertTrue(repair.previousScreen().safetyInventory.open)
+        assertEquals(MainSection.HOME, home.visit(MainSection.BACKUPS, safetyOpen = true).previousScreen().section)
+    }
     private val home = LauncherUiState()
+
+    @Test fun repeatedTabChangesOnlyKeepHomeButDirectLinksStillReturnToOrigin() {
+        var state = home
+        repeat(8) {
+            state = state.reselectRoot(MainSection.SETTINGS).visit(MainSection.LOGS, ToolPage.INSTALLATION)
+            assertEquals(MainSection.SETTINGS, state.previousScreen().section)
+            state = state.reselectRoot(MainSection.BACKUPS).reselectRoot(MainSection.LOGS)
+            assertEquals(listOf(MainSection.HOME), state.navigation.previous.map { it.section })
+        }
+        assertEquals(home.navigation.entryId, state.previousScreen().navigation.entryId)
+        assertTrue(state.previousScreen().navigation.previous.isEmpty())
+        assertTrue(state.reselectRoot(MainSection.HOME).navigation.previous.isEmpty())
+        val inventory = state.copy(section = MainSection.BACKUPS, safetyInventory = SafetyInventoryUiState(open = true))
+        assertFalse(inventory.reselectRoot(MainSection.BACKUPS).safetyInventory.open)
+        assertFalse(inventory.reselectRoot(MainSection.HOME).safetyInventory.open)
+    }
 
     @Test fun homeAndToolsUseDifferentSourcesForTheSameLogScreen() {
         val direct = home.visit(MainSection.LOGS, ToolPage.LOGS, DiagnosticPanel.SERVER_LOG)

@@ -46,9 +46,11 @@ try {
         fs.writeFileSync(path.join(backups, 'network-settings/config-20261123-010203.yaml'), 'secret: local');
         fs.writeFileSync(path.join(backups, 'user-file.tar.gz'), 'keep');
         makeTrash('1234-12345678-abcd-abcd-abcd-123456789abc', 'data/한글');
-        const list = rows(run('list'));
+        const firstPage = run('list'), list = rows(firstPage);
+        assert.match(firstPage, /^inventory_counts=2,1,1$/m);
+        assert(list.every(r => r[11] === '0'));
         assert.equal(list.length, 4); assert.equal(list.filter(row => row[1] === 'trash')[0][9], '1');
-        assert.equal(run('count').trim(), 'safety_copies=3', 'do not count trash or unrelated files');
+        assert.equal(run('count').trim(), 'safety_copies=3\ntrash_items=1', 'count validated trash separately from private safety copies');
     });
     check('incomplete snapshot scratch is never selectable', () => {
         fs.mkdirSync(path.join(snapshot, '.st-safety-unfinished'));
@@ -173,7 +175,7 @@ abruptFs.writeSync = function(...args) { const result = abruptWrite.apply(this, 
         const id = '4567-12345678-abcd-abcd-abcd-123456789abc', directory = makeTrash(id, 'data/folder');
         fs.unlinkSync(path.join(directory, 'item')); fs.mkdirSync(path.join(directory, 'item/sub'), { recursive: true });
         fs.writeFileSync(path.join(directory, 'item/sub/hello'), 'hello');
-        const row = find(`file-trash/${id}`); assert.equal(row[5], '5');
+        const row = find(`file-trash/${id}`); assert.equal(row[5], '5'); assert.equal(row[11], '1');
         run('delete', row[2], row[3]); assert(!fs.existsSync(directory));
         assert(fs.existsSync(path.join(trash, '1234-12345678-abcd-abcd-abcd-123456789abc')));
     });

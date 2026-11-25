@@ -24,6 +24,7 @@ data class SafetyInventoryItem(
     val restorable: Boolean = false,
     /** A matching completion record, not a full archive-integrity guarantee. */
     val completionRecorded: Boolean = false,
+    val isDirectory: Boolean = false,
 ) {
     val canExport: Boolean get() = kind != SafetyItemKind.TRASH
 }
@@ -34,4 +35,5 @@ data class SafetyInventoryPage(
     val truncated: Boolean,
     val mutationBlocked: Boolean,
     val protectedEntries: Int,
+    val totals: Map<SafetyItemKind, Int>? = null,
 )

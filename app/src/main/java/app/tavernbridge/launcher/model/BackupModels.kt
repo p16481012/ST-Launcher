@@ -61,7 +61,7 @@ data class BackupArchive(
     val entryCount: Int = 0,
     val integrity: String = "",
     val requiredRestoreBytes: Long = 0,
-    val availableRestoreBytes: Long = 0,
+    val availableRestoreBytes: Long? = null,
     // Metadata counts of matching files, not verified character/chat entities.
     // null is an older backup without these fields; never rescan it automatically.
     val characterFiles: Int? = null,
@@ -70,5 +70,7 @@ data class BackupArchive(
     val extensionCount: Int? = null,
 ) {
     val restoreSpaceReady: Boolean
-        get() = requiredRestoreBytes <= 0 || availableRestoreBytes >= requiredRestoreBytes
+        // This is a preview gate only: unknown space may open the confirmation.
+        // manager.sh must remeasure before extracting/applying the selected archive.
+        get() = availableRestoreBytes == null || requiredRestoreBytes <= 0 || availableRestoreBytes >= requiredRestoreBytes
 }

@@ -8,6 +8,7 @@ data class LauncherVisit(
     val diagnostic: DiagnosticPanel,
     val folderPath: String,
     val splitToolsRoot: Long? = null,
+    val safetyOpen: Boolean = false,
 )
 
 data class LauncherNavigation(
@@ -18,7 +19,7 @@ data class LauncherNavigation(
 )
 
 private fun LauncherUiState.visitSnapshot() = LauncherVisit(navigation.entryId, section, toolPage, diagnosticPanel,
-    if (section == MainSection.LOGS && toolPage == ToolPage.FILES) fileBrowserPath else "", navigation.splitToolsRoot)
+    if (section == MainSection.LOGS && toolPage == ToolPage.FILES) fileBrowserPath else "", navigation.splitToolsRoot, section == MainSection.BACKUPS && safetyInventory.open)
 
 internal fun LauncherUiState.visit(
     destination: MainSection,
@@ -26,9 +27,11 @@ internal fun LauncherUiState.visit(
     diagnostic: DiagnosticPanel = DiagnosticPanel.OVERVIEW,
     reset: Boolean = false,
     replaceToolsPane: Boolean = false,
+    safetyOpen: Boolean = false,
 ): LauncherUiState {
     // Log segments/refreshes are part of one screen, not another entry on Back.
-    val sameScreen = section == destination && (destination != MainSection.LOGS || toolPage == tool)
+    val sameScreen = section == destination && (destination != MainSection.LOGS || toolPage == tool) &&
+        (destination != MainSection.BACKUPS || safetyInventory.open == safetyOpen)
     val next = when {
         reset -> LauncherNavigation(navigation.nextId, navigation.nextId + 1)
         // Selecting a sibling in the tablet's visible master list is not a new Back destination.
@@ -42,12 +45,14 @@ internal fun LauncherUiState.visit(
         else -> LauncherNavigation(navigation.nextId, navigation.nextId + 1,
             (navigation.previous + visitSnapshot()).takeLast(20))
     }
-    return copy(section = destination, toolPage = tool, diagnosticPanel = diagnostic, navigation = next)
+    return copy(section = destination, toolPage = tool, diagnosticPanel = diagnostic, navigation = next,
+        safetyInventory = safetyInventory.copy(open = destination == MainSection.BACKUPS && safetyOpen))
 }
 
 internal fun LauncherUiState.previousScreen(): LauncherUiState {
     val target = navigation.previous.lastOrNull() ?: return this
     return copy(section = target.section, toolPage = target.tool, diagnosticPanel = target.diagnostic,
+        safetyInventory = safetyInventory.copy(open = target.section == MainSection.BACKUPS && target.safetyOpen),
         fileBrowserPath = if (target.tool == ToolPage.FILES) target.folderPath else fileBrowserPath,
         navigation = navigation.copy(entryId = target.id, previous = navigation.previous.dropLast(1), splitToolsRoot = target.splitToolsRoot))
 }
@@ -57,7 +62,13 @@ internal fun LauncherNavigation.masterEntry(section: MainSection): Long {
     return first?.splitToolsRoot ?: first?.id ?: splitToolsRoot ?: entryId
 }
 
-internal fun LauncherUiState.reselectRoot(tab: MainSection) = copy(section = tab,
-    toolPage = ToolPage.INDEX, diagnosticPanel = DiagnosticPanel.OVERVIEW,
-    navigation = LauncherNavigation(navigation.nextId, navigation.nextId + 1,
-        navigation.previous.dropLastWhile { it.section == tab }))
+/** A bottom tab starts a primary route, not another detail visit. Back goes to Home once. */
+internal fun LauncherUiState.reselectRoot(tab: MainSection): LauncherUiState {
+    var next = navigation.nextId
+    val home = if (tab == MainSection.HOME) null else if (section == MainSection.HOME) visitSnapshot()
+        else navigation.previous.lastOrNull { it.section == MainSection.HOME }
+            ?: LauncherVisit(next++, MainSection.HOME, ToolPage.INDEX, DiagnosticPanel.OVERVIEW, "")
+    return copy(section = tab, toolPage = ToolPage.INDEX, diagnosticPanel = DiagnosticPanel.OVERVIEW,
+        safetyInventory = safetyInventory.copy(open = false),
+        navigation = LauncherNavigation(next, next + 1, listOfNotNull(home)))
+}

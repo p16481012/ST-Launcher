@@ -158,6 +158,7 @@ data class LauncherUiState(
     val backupFolders: List<CustomBackupFolder> = emptyList(),
     val backupStorageReady: Boolean? = null,
     val safetyCopyCount: Int? = null,
+    val fileTrashCount: Int? = null,
     val safetyInventory: SafetyInventoryUiState = SafetyInventoryUiState(),
     val extensionManagerOpen: Boolean = false,
     val extensionInventory: ExtensionInventory? = null,

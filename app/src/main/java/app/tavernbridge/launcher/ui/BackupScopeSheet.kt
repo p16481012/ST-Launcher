@@ -102,8 +102,10 @@ internal fun BackupScopeSheet(
                     horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("API 키 등 비밀 설정 포함", style = MaterialTheme.typography.bodyLarge)
-                        Text(if (secrets && canChooseSecrets) "암호화되지 않은 ZIP에 저장돼요. 공유하지 마세요."
-                            else "secrets.json은 제외돼요. ZIP은 암호화되지 않아요.",
+                        Text(if (secrets && canChooseSecrets) "API 키와 선택한 설정 파일의 외부 접속 로그인 정보도 들어갈 수 있어요. ZIP은 암호화되지 않으니 공유하지 마세요."
+                            else if (selected.any { it == BackupCategory.CONFIG || it == BackupCategory.FULL })
+                                "지금은 secrets.json과 외부 접속 로그인 정보를 넣지 않아요. 복원한 설정에서는 외부 접속이 꺼져요. ZIP은 암호화되지 않아요."
+                            else "지금은 secrets.json을 넣지 않아요. ZIP은 암호화되지 않아요.",
                             style = MaterialTheme.typography.bodySmall, color = if (secrets && canChooseSecrets) c.error else c.onSurfaceVariant)
                     }
                     SettingsSwitch(secrets && canChooseSecrets, enabled = canChooseSecrets)

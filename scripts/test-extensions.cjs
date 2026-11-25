@@ -35,6 +35,15 @@ try {
         const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, '');
     }
     assert.deepStrictEqual(ok(run('reset-summary')).trim().split(/\r?\n/), ['characters=2','chats=2','extensions=2']); checks++;
+    const downloads = path.join(base, 'Download'); fs.mkdirSync(downloads);
+    assert.match(ok(run('reset-summary', downloads)), /backup_files=0\b/);
+    for (const name of ['SillyTavern-Launcher-20261125-120000.zip','SillyTavern-Launcher-20261125-120000 (1).zip','other.zip'])
+        fs.writeFileSync(path.join(downloads, name), 'not even a ZIP: count names without reading payloads');
+    fs.mkdirSync(path.join(downloads, 'SillyTavern-Launcher-20261125-120001.zip'));
+    if (process.platform !== 'win32') fs.symlinkSync('other.zip', path.join(downloads, 'SillyTavern-Launcher-20261125-120002.zip'));
+    assert.match(ok(run('reset-summary', downloads)), /backup_files=2\b/);
+    assert(!ok(run('reset-summary', path.join(base,'missing-downloads'))).includes('backup_files='));
+    checks++;
     assert.strictEqual(Buffer.from(row('clean')[11], 'base64').toString(), 'fixture/extensions');
     assert.strictEqual(Buffer.from(row('clean')[12], 'base64').toString(), 'main'); checks++;
     git(clean, 'config', 'branch.main.remote', 'origin'); git(clean, 'config', 'branch.main.merge', 'refs/heads/release/mobile');

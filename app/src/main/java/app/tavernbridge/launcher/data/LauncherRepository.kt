@@ -32,6 +32,7 @@ import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.CustomBackupFolder
 import app.tavernbridge.launcher.model.backupFolderLabel
 import app.tavernbridge.launcher.model.DiagnosticItem
+import app.tavernbridge.launcher.model.storageDiagnosticItem
 import app.tavernbridge.launcher.model.safeForDisplay
 import app.tavernbridge.launcher.model.DiagnosticReport
 import app.tavernbridge.launcher.model.DiagnosticStatus
@@ -314,8 +315,9 @@ class LauncherRepository(private val context: Context) {
         check(result.isSuccess && !result.stdoutTruncated) { "설치 폴더의 항목 수를 확인하지 못했어요." }
         val values = result.stdout.lineSequence().associate { it.substringBefore('=') to it.substringAfter('=') }
         fun count(key: String) = requireNotNull(values[key]?.toIntOrNull()?.takeIf { it >= 0 })
-        val backups = try { if (backupStorageReady()) listBackups().size else null }
-            catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+        // A shallow count of regular launcher-named ZIPs. Never inspect/hash each
+        // archive for this explanatory screen; unavailable storage stays unknown.
+        val backups = values["backup_files"]?.toIntOrNull()?.takeIf { it >= 0 }
         return app.tavernbridge.launcher.model.ResetImpact(count("characters"), count("chats"), count("extensions"), backups)
     }
 
@@ -344,13 +346,13 @@ class LauncherRepository(private val context: Context) {
         )
     }
 
-    suspend fun listBackups(): List<BackupArchive> = readBackupCatalog(false).first
+    suspend fun listBackups(): List<BackupArchive> = readBackupCatalog(false).archives
 
-    suspend fun readBackupCatalog(withSafetyCount: Boolean): Pair<List<BackupArchive>, Int?> {
+    suspend fun readBackupCatalog(withSafetyCount: Boolean): BackupCatalogResult {
         val result = runManager(if (withSafetyCount) "list-backups overview" else "list-backups", timeoutMillis = 2 * 60_000L)
         if (!result.isSuccess) throw IllegalStateException(result.readableError())
         check(!result.stdoutTruncated) { "백업 목록이 통신 중 잘렸습니다. Download 폴더에서 백업을 확인해 주세요." }
-        return BackupOutputParser.parse(result.stdout) to BackupOutputParser.safetyCopies(result.stdout)
+        return BackupCatalogResult(BackupOutputParser.parse(result.stdout), BackupOutputParser.safetyCopies(result.stdout), BackupOutputParser.trashItems(result.stdout))
     }
 
     suspend fun listExtensions(cursor: Int = 0): app.tavernbridge.launcher.model.ExtensionInventory {
@@ -842,9 +844,9 @@ class LauncherRepository(private val context: Context) {
                 recommendation = "서버를 종료한 뒤 홈 또는 관리 화면의 점검·복구를 실행해 주세요. 자동 복구가 거부되면 보호사본을 지우지 말고 진단 내용을 확인해 주세요.",
             )
         }
-        items += storageItem("termux_storage", "Termux 저장 공간", value("termux_free_bytes"))
+        items += storageDiagnosticItem("termux_storage", "Termux 저장 공간", value("termux_free_bytes"))
         items += if (enabled("downloads_ready")) {
-            storageItem("download_storage", "휴대폰 Download 백업 폴더", value("downloads_free_bytes"))
+            storageDiagnosticItem("download_storage", "휴대폰 Download 백업 폴더", value("downloads_free_bytes"))
         } else {
             DiagnosticItem(
                 "download_storage",
@@ -1426,22 +1428,6 @@ class LauncherRepository(private val context: Context) {
     }
 
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
-
-    private fun storageItem(id: String, title: String, rawBytes: String): DiagnosticItem {
-        val bytes = rawBytes.toLongOrNull() ?: 0L
-        val status = when {
-            bytes >= 2L * 1024 * 1024 * 1024 -> DiagnosticStatus.OK
-            bytes >= 512L * 1024 * 1024 -> DiagnosticStatus.WARNING
-            else -> DiagnosticStatus.ERROR
-        }
-        return DiagnosticItem(id, title, formatBytes(bytes), "사용 가능한 여유 공간", status)
-    }
-
-    private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f GB", bytes / 1073741824.0)
-        bytes >= 1024L * 1024 -> String.format(Locale.US, "%.0f MB", bytes / 1048576.0)
-        else -> "$bytes B"
-    }
 
     private fun nowText(): String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.KOREA).format(Date())
 

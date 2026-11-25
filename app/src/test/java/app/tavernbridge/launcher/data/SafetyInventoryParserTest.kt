@@ -18,6 +18,7 @@ class SafetyInventoryParserTest {
         assertEquals(1234L, page.items.single().sizeBytes)
         assertTrue(page.items.single().canExport)
         assertFalse(page.items.single().completionRecorded)
+        assertFalse(page.items.single().isDirectory)
         assertNull(page.nextCursor)
         assertEquals(2, page.protectedEntries)
     }
@@ -29,6 +30,18 @@ class SafetyInventoryParserTest {
         assertTrue(item.restorable)
         assertFalse(item.canExport)
         assertNull(item.sizeBytes)
+    }
+
+    @Test fun appendOnlyDirectoryFlagAndCategoryTotalsHaveStrictBoundaries() {
+        val id = "1234-12345678-abcd-abcd-abcd-123456789abc"
+        val folder = "safety\ttrash\t${b64("file-trash/$id")}\t$revision\t${b64("data/folder")}\t84\t1234\t$id\t${b64("data/folder")}\t1\t1\t1\n"
+        val page = SafetyInventoryParser.parse(header + "inventory_counts=0,1,5\n" + folder)
+        assertEquals(5, page.totals?.get(SafetyItemKind.TRASH))
+        assertTrue(page.items.single().isDirectory)
+        for (bad in listOf("inventory_counts=1,1,0\n" + folder, "inventory_counts=invalid,0,1\n" + folder,
+            row().trimEnd() + "\t1\n", folder.trimEnd().dropLast(1) + "x\n")) {
+            assertTrue(runCatching { SafetyInventoryParser.parse(header + bad) }.isFailure)
+        }
     }
 
     @Test fun rejectsRecoveryOrTraversalPaths() {

@@ -613,8 +613,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     val selectTab: (MainSection) -> Unit = { target ->
         returnAnchors.cancelTap()
         welcomeAfterInstall = false
-        if (target == tab) viewModel.reselectTab(target)
-        else if (target == MainSection.BACKUPS) viewModel.openBackups() else viewModel.selectSection(target)
+        viewModel.selectBottomTab(target)
     }
     val backProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     // Restore the originating Settings subpage, Backup detail, list position, etc.
@@ -660,7 +659,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
             val stableMaster = useRail && section == MainSection.LOGS
             val screenId = if (stableMaster) state.navigation.masterEntry(section) else state.navigation.entryId
-            val route = V2RouteKey(screenId, section, section == MainSection.LOGS && state.toolPage != ToolPage.INDEX && !stableMaster)
+            val route = V2RouteKey(screenId, section, (section == MainSection.LOGS && state.toolPage != ToolPage.INDEX && !stableMaster) || (section == MainSection.BACKUPS && state.safetyInventory.open))
             val reduced = app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion.current
             val offset = with(androidx.compose.ui.platform.LocalDensity.current) { 24.dp.roundToPx() }
             AnimatedContent(targetState = route, label = "화면 전환",
@@ -717,7 +716,12 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onReadHistory = viewModel::refreshHistorySilently,
                         onSnoozeBackupReminder = viewModel::snoozeBackupReminder,
                     )
-                    MainSection.SETUP, MainSection.BACKUPS -> if (!state.environmentChecked && !state.shouldShowSetupGuide) {
+                    MainSection.SETUP, MainSection.BACKUPS -> if (section == MainSection.BACKUPS && state.safetyInventory.open) {
+                        SafetyInventoryScreen(state.safetyInventory.copy(mutationBlocked = state.safetyInventory.mutationBlocked || state.environment.recoveryPending),
+                            state.environment.processRunning, state.isWorking || state.environment.operationActive, viewModel::closeSafetyInventory,
+                            { viewModel.loadSafetyInventory() }, { viewModel.loadSafetyInventory(more = true) }, viewModel::changeSafetyItem,
+                            viewModel::deleteSafetySelection, { viewModel.selectTool(ToolPage.REPAIR) }, viewModel::showMessage)
+                    } else if (!state.environmentChecked && !state.shouldShowSetupGuide) {
                         EnvironmentCheckingScreen(
                             state = state,
                             onOpenTermuxSettings = viewModel::openTermuxAppSettings,
@@ -729,6 +733,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     } else if (state.environment.recoveryPending && state.termuxSetup.verified && state.environment.managerConnected) {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
                             RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
+                            if (section == MainSection.BACKUPS) TextButton(onClick = viewModel::openSafetyInventory) { Text("안전 사본·휴지통 보기") }
                         }
                     } else if (!showWelcome && state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
                         if (section == MainSection.SETUP) {
@@ -808,16 +813,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             }
             }
-            if (state.safetyInventory.open && !state.isWorking) {
-                SafetyInventoryDialog(
-                    state = state.safetyInventory,
-                    serverRunning = state.environment.processRunning,
-                    onClose = viewModel::closeSafetyInventory,
-                    onRefresh = { viewModel.loadSafetyInventory() },
-                    onMore = { viewModel.loadSafetyInventory(more = true) },
-                    onAction = viewModel::changeSafetyItem,
-                )
-            }
             state.backupCleanupPreview?.takeUnless { state.isWorking }?.let { preview ->
                 BackupCleanupDialog(preview, viewModel::closeBackupCleanup, viewModel::deleteCleanupSelection)
             }
@@ -828,6 +823,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 onMore = { viewModel.loadExtensions(true) }, onRecover = viewModel::recoverExtension,
                 onAction = viewModel::changeExtension, onClose = viewModel::closeExtensions,
                 onCheckUpdates = viewModel::checkExtensionVersions, onUpdateAll = viewModel::updateCheckedExtensions,
+                onCheckDetail = viewModel::loadExtensionDetailVersion,
             )
             state.selectiveRestore?.takeUnless { state.isWorking }?.let { selection ->
                 SelectiveRestoreDialog(selection,
@@ -1168,11 +1164,11 @@ private fun backupRestorePreview(backup: BackupArchive, currentVersion: String):
     appendLine("포함 항목: ${backup.categories.joinToString(" · ") { it.label }.ifBlank { "알 수 없음" }}")
     if (backup.expandedBytes > 0) {
         appendLine("해제 예상: ${formatBackupBytes(backup.expandedBytes)} · 파일/폴더 ${backup.entryCount}개")
-        appendLine("필요 공간: ${formatBackupBytes(backup.requiredRestoreBytes)} · 현재 여유 ${formatBackupBytes(backup.availableRestoreBytes)}")
+        appendLine("필요 공간: ${formatBackupBytes(backup.requiredRestoreBytes)} · 현재 여유 ${backup.availableRestoreBytes?.let(::formatBackupBytes) ?: "미확인 (복원 전 재검사)"}")
     } else {
         appendLine("필요 공간은 복원 시작 전에 기기에서 다시 계산합니다.")
     }
-    appendLine("비밀 설정: ${if (backup.includesSecrets) "포함됨" else "포함되지 않음 · 현재 secrets.json 유지"}")
+    appendLine("secrets.json: ${if (backup.includesSecrets) "포함됨" else "제외됨 · 현재 secrets.json 유지"}")
     appendLine("무결성: ${if (backup.integrity == "zip-crc32") "ZIP CRC 검사" else "복원 전 전체 ZIP 검사"}")
     appendLine()
     append("현재 데이터를 백업 내용으로 교체합니다. 백업 이후 생긴 대화는 사라질 수 있습니다. 실패 시 복구용 임시 사본은 성공 후 삭제됩니다.")

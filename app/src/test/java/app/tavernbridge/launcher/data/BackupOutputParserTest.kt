@@ -74,6 +74,24 @@ class BackupOutputParserTest {
         for (bad in listOf("", "safety_copies=-1", "safety_copies=3\nsafety_copies=3", "safety_copies=40000000")) {
             assertEquals(null, BackupOutputParser.safetyCopies(bad))
         }
+        val counts = "safety_copies=3\ntrash_items=0"
+        assertEquals(3, BackupOutputParser.safetyCopies(counts))
+        assertEquals(0, BackupOutputParser.trashItems(counts))
+        for (bad in listOf("safety_copies=0", "trash_items=-1", "trash_items=1\ntrash_items=0"))
+            assertEquals(null, BackupOutputParser.trashItems(bad))
+    }
+
+    @Test fun unknownRestoreSpaceIsNotZeroAndDoesNotHideTheArchive() {
+        val base = line("a.zip", "now", "config", "", false, "", 512) + "\t\t\t256\t3\t\t100000"
+        fun row(free: String) = BackupOutputParser.parse("$base\t$free\t2\t3").single()
+        for (free in listOf("", "unknown", "-1", "1e+12")) {
+            assertEquals(null, row(free).availableRestoreBytes)
+            assertTrue(row(free).restoreSpaceReady)
+            assertEquals(2, row(free).characterFiles)
+        }
+        assertEquals(0L, row("0").availableRestoreBytes)
+        assertEquals(false, row("0").restoreSpaceReady)
+        assertTrue(row("126419751936").restoreSpaceReady)
     }
 
     private fun line(

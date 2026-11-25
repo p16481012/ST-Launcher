@@ -26,6 +26,7 @@ fun ExtensionManagerDialog(
     onCheckUpdates: (() -> Unit)? = null,
     onUpdateAll: ((List<ManagedExtension>) -> Unit)? = null,
     stopState: LauncherUiState? = null,
+    onCheckDetail: (suspend (ManagedExtension) -> Unit)? = null,
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedRevision by rememberSaveable { mutableStateOf<String?>(null) }
@@ -35,6 +36,11 @@ fun ExtensionManagerDialog(
     var bulkRevisions by remember { mutableStateOf<Map<String,String>?>(null) }
     var info by rememberSaveable { mutableStateOf(false) }
     val entries = remember(inventory) { extensionDisplayOrder(inventory?.items.orEmpty()) }
+    val expanded = entries.firstOrNull { it.id == openId }
+    LaunchedEffect(openId, expanded?.checkedRemoteCommit, expanded?.revision) {
+        if (expanded != null && expanded.checkedRemoteCommit != null && expanded.remoteVersion == null)
+            onCheckDetail?.invoke(expanded)
+    }
     val outdated = entries.filter { it.canUpdate && (it.remoteAhead ?: 0) > 0 }
     val canChange = canModify && !busy && !loading && inventory?.recoveryStatus == "none"
     val stop = if (stopState != null) rememberStopToContinue(stopState, openId) else null
@@ -119,7 +125,7 @@ fun ExtensionManagerDialog(
                 V2BottomActions {
                 if (onCheckUpdates != null) OutlinedButton(onClick = onCheckUpdates, enabled = !loading && !busy && entries.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text(if ((inventory?.nextCheckOffset ?: 0) != 0) "새 버전 확인 · 다음 최대 40개" else "새 버전 확인")
+                    Text(if ((inventory?.nextCheckOffset ?: 0) != 0) "새 버전 확인 · 다음 최대 20개" else "새 버전 확인")
                 }
                 if (onUpdateAll != null && outdated.isNotEmpty()) Button(onClick = {
                     val expected = outdated.associate { it.id to it.revision }

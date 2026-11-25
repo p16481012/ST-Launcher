@@ -188,7 +188,7 @@ function discover() {
             } finally { closeDirectory(nested); }
         } else protectedEntries++;
     }
-    const trash = action === 'count' ? null : optionalDirectory(root, 'file-trash');
+    const trash = optionalDirectory(root, 'file-trash');
     if (trash) for (const name of names(trash)) {
         if (TRASH.test(name)) candidates.push(`file-trash/${name}`); else protectedEntries++;
     }
@@ -196,7 +196,8 @@ function discover() {
 }
 function row(item) {
     return ['safety', item.kind, b64(item.relative), item.revision, b64(item.label), item.bytes === null ? -1 : item.bytes,
-        item.modified, item.trashId, b64(item.original), item.restorable ? 1 : 0, item.completionRecorded ? 1 : 0].join('\t') + '\n';
+        item.modified, item.trashId, b64(item.original), item.restorable ? 1 : 0, item.completionRecorded ? 1 : 0,
+        item.kind === 'trash' && item.itemStat.isDirectory() ? 1 : 0].join('\t') + '\n';
 }
 function releaseAfter(count) { while (handles.length > count) closeDirectory(handles[handles.length - 1]); }
 function checkRevision(item) {
@@ -352,30 +353,41 @@ async function main() { try {
     rootPath = fs.realpathSync(launcherArgument); root = openDirectory(rootPath);
     installPath = exists(installationArgument) ? fs.realpathSync(installationArgument) : path.resolve(installationArgument);
     const discovery = discover(), baseline = handles.length;
-    if (action === 'count') {
-        let count = 0;
-        for (const candidate of discovery.candidates) {
-            try { entry(candidate); count++; } catch (_) { /* also excluded by the inventory list */ }
+    const counts = { archive: 0, config: 0, trash: 0 };
+    function countRemainder(from) {
+        for (let i = from; i < discovery.candidates.length && !scanTruncated; i++) {
+            try {
+                const item = entry(discovery.candidates[i]);
+                if (Buffer.byteLength(row(item)) <= MAX_ROW) counts[item.kind]++;
+            } catch (_) { /* also excluded by the inventory list */ }
             finally { releaseAfter(baseline); }
         }
-        if (!scanTruncated) console.log(`safety_copies=${count}`);
+    }
+    if (action === 'count') {
+        countRemainder(0);
+        if (!scanTruncated) console.log(`safety_copies=${counts.archive + counts.config}\ntrash_items=${counts.trash}`);
     } else if (action === 'list') {
         if (!/^(0|[1-9][0-9]{0,7})$/.test(selected || '0')) fail('SAFETY_ITEM_UNSUPPORTED', '목록 페이지가 올바르지 않습니다.');
+        const firstPage = !Number(selected || '0');
         let cursor = Number(selected || '0'), output = '', skipped = 0;
         if (cursor > discovery.candidates.length) fail('SAFETY_ITEM_CHANGED', '보관 목록이 변경되었습니다. 처음부터 다시 열어 주세요.');
         while (cursor < discovery.candidates.length) {
-            let line;
-            try { line = row(entry(discovery.candidates[cursor], true)); }
+            let line, item;
+            try { item = entry(discovery.candidates[cursor], true); line = row(item); }
             catch (_) { skipped++; cursor++; continue; }
             finally { releaseAfter(baseline); }
             if (Buffer.byteLength(line) > MAX_ROW) { skipped++; cursor++; continue; }
             if (Buffer.byteLength(output) + Buffer.byteLength(line) > MAX_PAGE - 512) break;
-            output += line; cursor++;
+            counts[item.kind]++; output += line; cursor++;
         }
+        // Only the first page counts remaining validated metadata; never walk
+        // item contents or repeatedly scan all pages for the category headings.
+        if (firstPage) countRemainder(cursor);
         console.log('safety_inventory=1');
+        if (firstPage && !scanTruncated) console.log(`inventory_counts=${counts.archive},${counts.config},${counts.trash}`);
         console.log(`next_cursor=${cursor < discovery.candidates.length ? cursor : -1}`);
         console.log(`inventory_truncated=${scanTruncated ? 1 : 0}`);
-        console.log(`mutation_blocked=${discovery.blocked ? 1 : 0}`);
+        console.log(`mutation_blocked=${discovery.blocked || scanTruncated ? 1 : 0}`);
         console.log(`protected_entries=${protectedEntries + skipped}`);
         process.stdout.write(output);
     } else {

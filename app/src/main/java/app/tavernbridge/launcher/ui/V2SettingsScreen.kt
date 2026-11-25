@@ -174,7 +174,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (!wide || child != null || shortcut) {
                             val requester = remember { FocusRequester() }
-                            IconButton(onClick = back, modifier = Modifier.focusRequester(requester)) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로") }
+                            IconButton(onClick = back, modifier = Modifier.focusRequester(requester)) { ReviewGlyph(app.tavernbridge.launcher.R.drawable.rv_arrow_left, 24.dp, description = "뒤로") }
                             LaunchedEffect(page, child) { requester.requestFocus() }
                         }
                         Text(when (child) {
@@ -259,12 +259,12 @@ internal fun SettingsSwitch(checked: Boolean, enabled: Boolean = true, pressed: 
     val c = LocalLauncherColors.current
     val duration = if (LocalV2ReducedMotion.current) 0 else 150
     val position by animateDpAsState(if (checked) 18.dp else 0.dp, tween(duration, easing = LinearOutSlowInEasing), label = "switch knob")
-    val track by animateColorAsState(if (checked) c.accent else c.sunken, tween(duration), label = "switch track")
+    val track by animateColorAsState(if (checked) c.accent else c.hairline, tween(duration), label = "switch track")
     Box(Modifier.size(44.dp, 26.dp).graphicsLayer { alpha = if (enabled) 1f else .38f }
         .background(track, CircleShape).border(1.dp, if (checked) track else c.hairline, CircleShape), contentAlignment = Alignment.CenterStart) {
         Box(Modifier.offset(x = position + 3.dp).size(20.dp), contentAlignment = Alignment.Center) {
             if (pressed) Box(Modifier.requiredSize(36.dp).background(c.ink.copy(alpha = .12f), CircleShape))
-            Box(Modifier.size(20.dp).background(if (checked) c.onInk else c.ink3, CircleShape))
+            Box(Modifier.size(20.dp).background(Color.White, CircleShape))
         }
     }
 }
@@ -294,8 +294,9 @@ internal fun <T> SettingsSegments(options: List<T>, selected: T, label: (T) -> S
             tween(if (LocalV2ReducedMotion.current) 0 else 200, easing = LinearOutSlowInEasing), label = "selected segment")
         Box(Modifier.matchParentSize()) {
             Box(Modifier.offset(x = position).width(cell).fillMaxHeight()
-                .background(colors.secondaryContainer, RoundedCornerShape(9.dp))
-                .border(1.dp, colors.secondary, RoundedCornerShape(9.dp)))
+                .background(colors.surface, RoundedCornerShape(9.dp)), contentAlignment = Alignment.BottomCenter) {
+                Spacer(Modifier.padding(bottom = 5.dp).size(20.dp, 3.dp).background(colors.secondary, RoundedCornerShape(2.dp)))
+            }
         }
         Row(Modifier.fillMaxWidth().selectableGroup()) {
         options.forEach { value ->
@@ -307,7 +308,7 @@ internal fun <T> SettingsSegments(options: List<T>, selected: T, label: (T) -> S
                 .heightIn(min = 42.dp).padding(horizontal = 2.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
                 Text(label(value), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium,
                     fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                    color = when { !enabled -> LocalLauncherColors.current.disabledInk; active -> colors.onSecondaryContainer; else -> colors.onSurfaceVariant })
+                    color = when { !enabled -> LocalLauncherColors.current.disabledInk; active -> colors.onSurface; else -> colors.onSurfaceVariant })
             }
         }
         }

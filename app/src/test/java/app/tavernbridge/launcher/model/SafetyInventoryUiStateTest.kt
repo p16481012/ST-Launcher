@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SafetyInventoryUiStateTest {
+    @Test fun neverInventsEmptyOrPartialGroupTotals() {
+        val start = SafetyInventoryUiState(open = true)
+        val more = SafetyInventoryPage(emptyList(), 2, false, false, 0)
+        assertNull(start.totalFor(SafetyItemKind.TRASH))
+        assertNull(start.accept(more, false).totalFor(SafetyItemKind.TRASH))
+        val snapshot = start.accept(more.copy(totals = mapOf(SafetyItemKind.TRASH to 5)), false)
+        assertEquals(5, snapshot.accept(more, true).totalFor(SafetyItemKind.TRASH))
+        assertNull(snapshot.accept(more.copy(truncated = true), true).totalFor(SafetyItemKind.TRASH))
+        assertEquals(0, start.accept(more.copy(nextCursor = null), false).totalFor(SafetyItemKind.TRASH))
+    }
     private val first = SafetyInventoryItem(SafetyItemKind.CONFIG, "id1", "a".repeat(64), "config", 42, 1)
     private val second = first.copy(id = "id2", displayName = "second")
     private fun page(items: List<SafetyInventoryItem>) = SafetyInventoryPage(items, 2, false, false, 0)

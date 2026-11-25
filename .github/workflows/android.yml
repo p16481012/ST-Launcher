@@ -55,6 +55,8 @@ jobs:
       - name: Test LAN configuration and isolated extension changes
         run: |
           npm install --prefix "$RUNNER_TEMP/st-lan-yaml" --ignore-scripts --no-package-lock --no-audit --no-fund yaml@2.9.1
+          # Fixture SillyTavern installs in the backup tests reuse the same YAML dependency.
+          echo "NODE_PATH=$RUNNER_TEMP/st-lan-yaml/node_modules" >> "$GITHUB_ENV"
           ST_TEST_YAML_ROOT="$RUNNER_TEMP/st-lan-yaml" node scripts/test-lan-security.cjs
           node scripts/test-extensions.cjs
           node scripts/test-selective-restore.cjs

@@ -25,6 +25,13 @@ for name in "${names[@]}"; do
 done
 listed="$(list_backups)"
 [[ "$(grep -c '^backup' <<< "$listed")" == 3 ]] || fail 'name rules differ between list and actions'
+# Keep all three backups visible if the read-only preview cannot measure space.
+# A real measured zero is different; neither case authorizes an extraction.
+for space in unknown 0 123456789; do
+    listed="$(df() { [[ "$space" != unknown ]] || return 1; printf 'header\nfs 0 0 %s 0%% /data\n' "$space"; }; list_backups)"
+    expected=""; [[ "$space" == unknown ]] || expected=$((space * 1024))
+    awk -F '\t' -v want="$expected" '$1=="backup"{if (("x" $15)!=("x" want)) exit 1; n++} END {if (n!=3) exit 1}' <<< "$listed" || fail "wrong restore space preview: $space"
+done
 expect_exit 77 delete_backups "$(printf '%s\n' "${names[@]}" | base64 -w 0)"
 for name in '../SillyTavern-Launcher-20261123-120000.zip' 'SillyTavern-Launcher-20261123-120000/evil.zip' 'SillyTavern-Launcher-20261123-120000\evil.zip' $'SillyTavern-Launcher-20261123-120000\n.zip'; do
     expect_exit 64 restore_backup "$name"
