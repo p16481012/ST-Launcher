@@ -5,6 +5,20 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class StorageFailureAdviceTest {
+    @Test fun noCleanupShortcutWhenBackupTabWouldShowSetupRecoveryOrAnotherPane() {
+        val env = EnvironmentStatus(managerConnected = true, sillyTavernInstalled = true)
+        val ready = LauncherUiState(environment = env, isWorking = false, environmentChecked = true,
+            termuxSetup = TermuxSetupState(TermuxSetupStatus.READY))
+        assertEquals(true, ready.canOpenSpaceCleanup(showWelcome = false))
+        assertEquals(false, ready.canOpenSpaceCleanup(showWelcome = true))
+        listOf(ready.copy(environmentChecked = false), ready.copy(termuxSetup = TermuxSetupState()),
+            ready.copy(environment = env.copy(managerConnected = false)), ready.copy(environment = env.copy(sillyTavernInstalled = false)),
+            ready.copy(environment = env.copy(recoveryPending = true)), ready.copy(safetyInventory = ready.safetyInventory.copy(open = true)),
+            ready.copy(isWorking = true), ready.copy(environment = env.copy(operationActive = true))).forEach {
+            assertEquals(false, it.canOpenSpaceCleanup(showWelcome = false))
+        }
+    }
+
     private fun failure(code: String, details: String) = OperationResultSummary("backup", "백업 생성", details,
         false, code, "now", 10, 1)
 

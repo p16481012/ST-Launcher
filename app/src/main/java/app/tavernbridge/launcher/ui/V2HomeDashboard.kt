@@ -93,7 +93,10 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
                             }
                             val list = state.backups.sortedByDescending { it.createdAt }.take(2)
                             if (list.isEmpty()) HomeRow(Icons.Outlined.FileDownload, if (state.backupsLoaded) "백업 없음" else "백업 목록 보기", "", onBackups)
-                            else list.forEach { entry -> HomeRow(Icons.Outlined.FileDownload, entry.createdAt.ifBlank { entry.fileName }, formatBackupBytes(entry.sizeBytes)) { onOpenArchive(entry.fileName) } }
+                            else list.forEach { entry ->
+                                HomeRow(Icons.Outlined.FileDownload, entry.createdAt.ifBlank { entry.fileName },
+                                    formatBackupBytes(entry.sizeBytes), onClick = { onOpenArchive(entry.fileName) })
+                            }
                         }
                         val activities: @Composable () -> Unit = {
                             Text("최근 활동", style = MaterialTheme.typography.titleMedium)

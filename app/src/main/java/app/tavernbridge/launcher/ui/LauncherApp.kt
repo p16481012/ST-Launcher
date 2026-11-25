@@ -106,6 +106,8 @@ import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.canOfferRuntimeSync
 import app.tavernbridge.launcher.model.storageFailureAdvice
+import app.tavernbridge.launcher.model.hasReadyBackupWorkspace
+import app.tavernbridge.launcher.model.canOpenSpaceCleanup
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.ToolPage
 import app.tavernbridge.launcher.model.SillyBranch
@@ -260,11 +262,16 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     var welcomeAfterInstall by rememberSaveable { mutableStateOf(false) }
     var requestedArchive by rememberSaveable { mutableStateOf<String?>(null) }
     var requestBackupSpace by rememberSaveable { mutableStateOf(false) }
+    var spaceRequestedFromBackupPane by rememberSaveable { mutableStateOf(false) }
     var archiveReturnToOrigin by rememberSaveable { mutableStateOf(false) }
     val showWelcome = welcomeAfterInstall && state.environment.sillyTavernInstalled &&
         state.section in setOf(MainSection.HOME, MainSection.SETUP, MainSection.BACKUPS) &&
         state.lastOperationResult?.let { it.succeeded && it.operation in setOf("install", "import-install", "import-backup") } == true
     val section = if (showWelcome) MainSection.SETUP else state.section
+    val canOpenSpaceCleanup = state.canOpenSpaceCleanup(showWelcome)
+    LaunchedEffect(requestBackupSpace, canOpenSpaceCleanup) {
+        if (requestBackupSpace && !canOpenSpaceCleanup) requestBackupSpace = false
+    }
     val setupFullScreen = section in setOf(MainSection.SETUP, MainSection.BACKUPS) &&
         (showWelcome || state.shouldShowSetupGuide || state.environmentChecked && !state.environment.sillyTavernInstalled)
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
@@ -391,8 +398,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 onHistory = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
                 onSync = { time -> failedResult = -1L; viewModel.confirmRuntimeLibrarySync(time) })
         } else if (storage != null) {
-            StorageFailureSheet(summary, storage, state.environment.recoveryPending, onClose = { failedResult = -1L },
-                onStorageCleanup = { failedResult = -1L; requestBackupSpace = true; viewModel.openBackups() },
+            StorageFailureSheet(summary, storage, state.environment.recoveryPending, canOpenSpaceCleanup, onClose = { failedResult = -1L },
+                onStorageCleanup = {
+                    failedResult = -1L
+                    spaceRequestedFromBackupPane = state.section == MainSection.BACKUPS && !state.safetyInventory.open
+                    requestedArchive = null
+                    requestBackupSpace = true
+                    viewModel.openBackups()
+                },
                 onDeviceStorage = { failedResult = -1L; viewModel.openDeviceStorageSettings() },
                 onRetry = { failedResult = -1L; viewModel.retryLastOperation() },
                 onHistory = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
@@ -676,7 +689,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
                             if (section == MainSection.BACKUPS) V2NavigationRow("안전 사본·휴지통 보기", viewModel::openSafetyInventory)
                         }
-                    } else if (!showWelcome && state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
+                    } else if (state.hasReadyBackupWorkspace(showWelcome)) {
                         if (section == MainSection.SETUP) {
                             LaunchedEffect(Unit) { viewModel.settleInstalledSetup() }
                         } else V2BackupScreen(
@@ -689,6 +702,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             storageSetupCommand = viewModel.storageSetupCommand, onTermux = viewModel::openTermux, onCopied = {},
                             requestedArchive = requestedArchive, archiveReturnToOrigin = archiveReturnToOrigin,
                             requestSpace = requestBackupSpace, onSpaceOpened = { requestBackupSpace = false },
+                            spaceShortcutFromBackup = spaceRequestedFromBackupPane,
                             onArchiveOpened = { requestedArchive = null }, onArchiveShortcutBack = viewModel::navigateBack,
                             onRestore = { backup ->
                                 confirmation = Confirmation(

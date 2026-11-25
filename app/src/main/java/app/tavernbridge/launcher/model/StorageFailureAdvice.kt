@@ -11,6 +11,14 @@ internal enum class SpaceLocation(val description: String) {
 
 internal data class StorageFailureAdvice(val location: SpaceLocation, val needed: Long? = null, val free: Long? = null)
 
+/** The same gate drives the backup tab and the low-space shortcut, so the shortcut cannot open setup instead. */
+internal fun LauncherUiState.hasReadyBackupWorkspace(showWelcome: Boolean): Boolean =
+    !showWelcome && environmentChecked && termuxSetup.verified && environment.managerConnected &&
+        environment.sillyTavernInstalled && !environment.recoveryPending
+
+internal fun LauncherUiState.canOpenSpaceCleanup(showWelcome: Boolean): Boolean =
+    hasReadyBackupWorkspace(showWelcome) && !safetyInventory.open && !isWorking && !environment.operationActive
+
 // Only a failing guard can quote usage. A successful preflight is stale if a later write fails.
 private val spaceCodes = mapOf(
     "BACKUP_NO_SPACE" to SpaceLocation.BACKUP_UNKNOWN,

@@ -42,28 +42,28 @@ internal fun StorageManagementScreen(state: LauncherUiState, estimate: Long?, on
     }) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                estimate?.let { Text("일반 백업 정리 기준으로 확보할 수 있는 공간은 ${formatBackupBytes(it)}예요.") }
-                Text("아래로 당겨 다시 계산할 수 있어요. 백업을 자동으로 삭제하지 않아요.", style = MaterialTheme.typography.bodySmall)
-                if (state.storageUsageError.isNotBlank()) Text(state.storageUsageError, color = MaterialTheme.colorScheme.error)
-                state.storageUsage?.let { report ->
-                    Text("확인한 파일 크기: ${storageSize(report.totalBytes)}")
-                    Text("파일의 논리적 크기 합계이며 실제 디스크 점유량과 다를 수 있습니다.", style = MaterialTheme.typography.bodySmall)
-                    report.entries.forEach { row ->
-                        AdaptiveInfoRow(row.category.label, "${storageSize(row.sizeBytes)}${if (row.complete) "" else " 이상 · 일부 미확인"}")
-                    }
-                    if (!report.complete) Text("시간·항목 수·접근 권한 제한으로 일부 항목을 확인하지 못했습니다.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            estimate?.let { Text("일반 백업 정리 기준으로 확보할 수 있는 공간은 ${formatBackupBytes(it)}예요.") }
+            Text("아래로 당겨 다시 계산할 수 있어요. 백업을 자동으로 삭제하지 않아요.", style = MaterialTheme.typography.bodySmall)
+            if (state.storageUsageError.isNotBlank()) Text(state.storageUsageError, color = MaterialTheme.colorScheme.error)
+            state.storageUsage?.let { report ->
+                Text("확인한 파일 크기: ${storageSize(report.totalBytes)}")
+                Text("파일의 논리적 크기 합계이며 실제 디스크 점유량과 다를 수 있습니다.", style = MaterialTheme.typography.bodySmall)
+                report.entries.forEach { row ->
+                    AdaptiveInfoRow(row.category.label, "${storageSize(row.sizeBytes)}${if (row.complete) "" else " 이상 · 일부 미확인"}")
                 }
-                if (!available) SettingsCaption("Termux를 연결하고 진행 중인 작업을 마친 뒤 확인할 수 있어요.")
-                HorizontalDivider()
-                Text("오래된 백업 정리", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(keep, { if (it.length <= 4 && it.all(Char::isDigit)) keep = it }, label = { Text("최근 보관 개수 · 고정 백업 제외") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(days, { if (it.length <= 5 && it.all(Char::isDigit)) days = it }, label = { Text("이 날짜 수보다 오래된 백업") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text("고정한 백업·날짜가 불명확한 백업은 보호합니다. 다음 화면에서 직접 고른 항목만 삭제합니다.", style = MaterialTheme.typography.bodySmall)
-                val keepValue = keep.toIntOrNull(); val daysValue = days.toIntOrNull()
-                if (available && !state.backupCleanupLoading && keepValue != null && keepValue in 1..1000 && daysValue != null && daysValue in 1..36500)
-                    V2NavigationRow("정리 후보 미리보기", { onPreview(keepValue, daysValue) })
-                else if (state.backupCleanupLoading) SettingsCaption("정리 후보를 확인하고 있어요.")
-                else if (available) SettingsCaption("최근 보관 개수는 1~1000, 보관 일수는 1~36500 사이로 입력해 주세요.")
+                if (!report.complete) Text("시간·항목 수·접근 권한 제한으로 일부 항목을 확인하지 못했습니다.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            if (!available) SettingsCaption("Termux를 연결하고 진행 중인 작업을 마친 뒤 확인할 수 있어요.")
+            HorizontalDivider()
+            Text("오래된 백업 정리", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(keep, { if (it.length <= 4 && it.all(Char::isDigit)) keep = it }, label = { Text("최근 보관 개수 · 고정 백업 제외") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(days, { if (it.length <= 5 && it.all(Char::isDigit)) days = it }, label = { Text("이 날짜 수보다 오래된 백업") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("고정한 백업·날짜가 불명확한 백업은 보호합니다. 다음 화면에서 직접 고른 항목만 삭제합니다.", style = MaterialTheme.typography.bodySmall)
+            val keepValue = keep.toIntOrNull(); val daysValue = days.toIntOrNull()
+            if (available && !state.backupCleanupLoading && keepValue != null && keepValue in 1..1000 && daysValue != null && daysValue in 1..36500)
+                V2NavigationRow("정리 후보 미리보기", { onPreview(keepValue, daysValue) })
+            else if (state.backupCleanupLoading) SettingsCaption("정리 후보를 확인하고 있어요.")
+            else if (available) SettingsCaption("최근 보관 개수는 1~1000, 보관 일수는 1~36500 사이로 입력해 주세요.")
         }
     }
 }
@@ -92,31 +92,31 @@ internal fun BackupCleanupScreen(preview: BackupRetentionPreview, onClose: () ->
     var confirm by rememberSaveable(preview) { mutableStateOf(false) }
     ToolPaneHost(embedded = false, onClose = onClose) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.padding(horizontal = 20.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onClose) { ReviewGlyph(R.drawable.rv_arrow_left, description = "뒤로") }
-            Text("백업 정리 미리보기", style = MaterialTheme.typography.titleLarge)
-        }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item {
-                Text("후보 ${preview.candidates.size}개 · 최대 ${storageSize(preview.reclaimableBytes)}\n보호 ${preview.protectedCount}개 · 날짜 미확인 ${preview.unknownDateCount}개")
-                Text("기본 선택은 없습니다. 최대 200개를 직접 선택하세요. 백업만 삭제하며 설치 데이터는 변경하지 않습니다.", style = MaterialTheme.typography.bodySmall)
-            }
-            items(preview.candidates, key = { it.fileName }) { backup ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(backup.fileName in selected, { checked -> selected = if (checked) (selected + backup.fileName).distinct() else selected - backup.fileName },
-                        enabled = backup.fileName in selected || selected.size < 200)
-                    Column(Modifier.weight(1f)) {
-                        Text(backup.createdAt); Text("${storageSize(backup.sizeBytes)} · ${backup.categories.joinToString { it.label }}", style = MaterialTheme.typography.bodySmall)
-                        Text(backup.fileName, style = MaterialTheme.typography.bodySmall)
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onClose) { ReviewGlyph(R.drawable.rv_arrow_left, description = "뒤로") }
+                    Text("백업 정리 미리보기", style = MaterialTheme.typography.titleLarge)
+                }
+                LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item {
+                        Text("후보 ${preview.candidates.size}개 · 최대 ${storageSize(preview.reclaimableBytes)}\n보호 ${preview.protectedCount}개 · 날짜 미확인 ${preview.unknownDateCount}개")
+                        Text("기본 선택은 없습니다. 최대 200개를 직접 선택하세요. 백업만 삭제하며 설치 데이터는 변경하지 않습니다.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    items(preview.candidates, key = { it.fileName }) { backup ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(backup.fileName in selected, { checked -> selected = if (checked) (selected + backup.fileName).distinct() else selected - backup.fileName },
+                                enabled = backup.fileName in selected || selected.size < 200)
+                            Column(Modifier.weight(1f)) {
+                                Text(backup.createdAt); Text("${storageSize(backup.sizeBytes)} · ${backup.categories.joinToString { it.label }}", style = MaterialTheme.typography.bodySmall)
+                                Text(backup.fileName, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                     }
                 }
+                if (selected.isNotEmpty()) V2BottomActions {
+                    V2DangerAction("선택한 ${selected.size}개 삭제", { confirm = true }, Modifier.fillMaxWidth().padding(vertical = 8.dp))
+                }
             }
-        }
-        if (selected.isNotEmpty()) V2BottomActions {
-            V2DangerAction("선택한 ${selected.size}개 삭제", { confirm = true }, Modifier.fillMaxWidth().padding(vertical = 8.dp))
-        }
-        }
         }
     }
     if (confirm) V2AlertDialog(onDismissRequest = { confirm = false }, title = { Text("선택한 백업을 영구 삭제할까요?") },

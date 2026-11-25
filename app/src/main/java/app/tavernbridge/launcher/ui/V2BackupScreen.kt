@@ -73,14 +73,21 @@ internal fun V2BackupScreen(
     archiveReturnToOrigin: Boolean = true,
     requestSpace: Boolean = false,
     onSpaceOpened: () -> Unit = {},
+    spaceShortcutFromBackup: Boolean = false,
 ) {
     LaunchedEffect(state.environment.managerConnected, state.termuxSetup.verified) {
         if (state.environment.managerConnected && state.termuxSetup.verified) onRefresh()
     }
     var pane by rememberSaveable { mutableStateOf(if (requestedArchive == null) BackupPane.OVERVIEW else BackupPane.ARCHIVE) }
-    var spaceFromShortcut by rememberSaveable { mutableStateOf(false) }
+    // Null means the shortcut came from a different navigation entry (e.g. Home or Safety).
+    var spaceReturnPane by rememberSaveable { mutableStateOf<BackupPane?>(BackupPane.OVERVIEW) }
     LaunchedEffect(requestSpace) {
-        if (requestSpace) { spaceFromShortcut = true; pane = BackupPane.SPACE; onSpaceOpened() }
+        if (requestSpace) {
+            if (!spaceShortcutFromBackup) spaceReturnPane = null
+            else if (pane != BackupPane.SPACE) spaceReturnPane = pane
+            pane = BackupPane.SPACE
+            onSpaceOpened()
+        }
     }
     var localScope by rememberSaveable { mutableStateOf(false) }
     val openScope = LocalBackupScopeOpener.current ?: { localScope = true }
@@ -135,8 +142,11 @@ internal fun V2BackupScreen(
     val masterScroll = rememberLazyListState()
     val allScroll = rememberLazyListState()
     val goBack: () -> Unit = {
-        if (pane == BackupPane.SPACE && spaceFromShortcut) {
-            spaceFromShortcut = false; pane = BackupPane.OVERVIEW; onArchiveShortcutBack()
+        if (pane == BackupPane.SPACE) {
+            val previous = spaceReturnPane
+            spaceReturnPane = BackupPane.OVERVIEW
+            pane = previous ?: BackupPane.OVERVIEW
+            if (previous == null) onArchiveShortcutBack()
         } else if (pane == BackupPane.ARCHIVE && openedFromHome) onArchiveShortcutBack()
         else {
             pane = if (pane == BackupPane.ARCHIVE && fromAll) BackupPane.ALL else BackupPane.OVERVIEW
@@ -217,7 +227,9 @@ internal fun V2BackupScreen(
                                 BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", description = "ZIP을 선택할 파일 앱이 열려요.", click = pickImport)
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             }
-                            BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { spaceFromShortcut = false; pane = BackupPane.SPACE })
+                            BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = {
+                                if (pane != BackupPane.SPACE) { spaceReturnPane = BackupPane.OVERVIEW; pane = BackupPane.SPACE }
+                            })
                             if (connected && !busy) {
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                 BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { copies -> state.fileTrashCount?.let { trash -> "${copies + trash}개" } }.orEmpty(),

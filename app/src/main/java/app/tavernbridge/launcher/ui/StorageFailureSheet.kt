@@ -12,11 +12,11 @@ import app.tavernbridge.launcher.model.StorageFailureAdvice
 
 @Composable
 internal fun StorageFailureSheet(summary: OperationResultSummary, advice: StorageFailureAdvice,
-    recoveryPending: Boolean, onClose: () -> Unit, onStorageCleanup: () -> Unit,
+    recoveryPending: Boolean, canOpenCleanup: Boolean, onClose: () -> Unit, onStorageCleanup: () -> Unit,
     onDeviceStorage: () -> Unit, onRetry: () -> Unit, onHistory: () -> Unit) {
     val (actionLabel, action) = when {
-        advice.location == SpaceLocation.DOWNLOAD -> "공간 정리" to onStorageCleanup
-        advice.location == SpaceLocation.PRIVATE_SAFETY && !recoveryPending -> "공간 정리" to onStorageCleanup
+        canOpenCleanup && !recoveryPending && advice.location in setOf(SpaceLocation.DOWNLOAD, SpaceLocation.PRIVATE_SAFETY) ->
+            "공간 정리" to onStorageCleanup
         else -> "휴대폰 저장 공간 열기" to onDeviceStorage
     }
     V2BottomSheet(onClose = onClose, footer = {

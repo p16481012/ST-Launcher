@@ -13,9 +13,9 @@ class StorageFailureSheetTest {
     private val calls = mutableListOf<String>()
     private val failure = OperationResultSummary("backup", "백업 생성", "disk full", false,
         "BACKUP_NO_SPACE", "now", 10, 1, RetryAction.BACKUP)
-    private fun show(advice: StorageFailureAdvice, pending: Boolean = false) {
+    private fun show(advice: StorageFailureAdvice, pending: Boolean = false, canOpenCleanup: Boolean = true) {
         ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
-            StorageFailureSheet(failure, advice, pending, onClose = { calls += "close" },
+            StorageFailureSheet(failure, advice, pending, canOpenCleanup, onClose = { calls += "close" },
                 onStorageCleanup = { calls += "cleanup" },
                 onDeviceStorage = { calls += "settings" }, onRetry = { calls += "retry" }, onHistory = { calls += "history" })
         } }
@@ -38,5 +38,12 @@ class StorageFailureSheetTest {
         ui.onNodeWithText("작업 기록 보기").performClick()
         ui.onNodeWithText("다시 시도").performClick()
         ui.runOnIdle { assertEquals(listOf("settings", "history", "retry"), calls) }
+    }
+
+    @Test fun downloadFailureWhenBackupTabCannotOpenOffersOnlyTheDeviceStorageShortcut() {
+        show(StorageFailureAdvice(SpaceLocation.DOWNLOAD), canOpenCleanup = false)
+        ui.onNodeWithText("공간 정리").assertDoesNotExist()
+        ui.onNodeWithText("휴대폰 저장 공간 열기").performClick()
+        ui.runOnIdle { assertEquals(listOf("settings"), calls) }
     }
 }

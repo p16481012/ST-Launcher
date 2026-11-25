@@ -139,6 +139,32 @@ class BackupManagementLinksTest {
         ui.runOnIdle { assertEquals(1, scans); assertEquals(0, deletions) }
     }
 
+    @Test fun spaceShortcutRestoresTheSameArchiveButExternalShortcutReturnsToItsCaller() {
+        var appBack = 0
+        var scans = 0
+        val requestedArchive = mutableStateOf<String?>(archive.fileName)
+        val requestSpace = mutableStateOf(false)
+        val localOrigin = mutableStateOf(true)
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            V2BackupScreen(ready, { _, _, _ -> }, {}, {}, { _, _ -> }, {}, {}, { scans++ }, { _, _ -> },
+                { _, _, _ -> }, {}, {}, {}, "", {}, {}, {}, {}, requestedArchive.value,
+                onArchiveOpened = { requestedArchive.value = null }, onArchiveShortcutBack = { appBack++ },
+                requestSpace = requestSpace.value, onSpaceOpened = { requestSpace.value = false },
+                spaceShortcutFromBackup = localOrigin.value)
+        } }
+        ui.onNodeWithText("SillyTavern 1.19.1", substring = true).assertExists()
+        ui.runOnIdle { requestSpace.value = true }
+        ui.onNodeWithText("오래된 백업 정리").assertExists()
+        // A second request while already in cleanup must not overwrite its return destination.
+        ui.runOnIdle { requestSpace.value = true }
+        ui.onNodeWithContentDescription("뒤로").performClick()
+        ui.onNodeWithText("SillyTavern 1.19.1", substring = true).assertExists()
+        ui.runOnIdle { assertEquals(0, appBack); assertEquals(1, scans); localOrigin.value = false; requestSpace.value = true }
+        ui.onNodeWithText("오래된 백업 정리").assertExists()
+        ui.onNodeWithContentDescription("뒤로").performClick()
+        ui.runOnIdle { assertEquals(1, appBack); assertEquals(2, scans) }
+    }
+
     @Test fun selectAllAndExitRespectPinnedArchivesWithoutDeleting() {
         val protected = archive.copy(fileName = "SillyTavern-Launcher-20261124-165301.zip", revision = "b".repeat(64))
         var deletes = 0
