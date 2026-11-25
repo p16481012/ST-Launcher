@@ -1,11 +1,6 @@
 package app.tavernbridge.launcher.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -21,14 +16,14 @@ internal fun LauncherEntrySettings() {
     val installer = remember(context) { LauncherShortcutInstaller(context) }
     var result by rememberSaveable { mutableStateOf<PinShortcutResult?>(null) }
     SettingsHeading("홈 화면 바로가기")
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    V2NavigationGroup {
         LauncherEntryAction.entries.forEach { action ->
             val label = stringResource(when (action) {
                 LauncherEntryAction.START -> R.string.entry_start
                 LauncherEntryAction.STOP -> R.string.entry_stop
                 LauncherEntryAction.OPEN -> R.string.entry_open
             })
-            V2OutlineAction(stringResource(R.string.entry_pin_action, label), { result = installer.requestPin(action) }, Modifier.fillMaxWidth())
+            V2NavigationRow(stringResource(R.string.entry_pin_action, label), { result = installer.requestPin(action) })
         }
     }
     SettingsCaption(result?.let {

@@ -278,21 +278,19 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
             listOf(DiagnosticPanel.SERVER_LOG to "현재 실행", DiagnosticPanel.PREVIOUS_SERVER_LOG to "이전 실행").forEach { (choice, label) ->
                 FilterChip(panel == choice, { vm.openDiagnostics(choice) }, { Text(label) }, Modifier.weight(1f).padding(end = 4.dp))
             }
-            IconButton(onClick = { menu = true }) {
-                Icon(Icons.Outlined.MoreVert, "로그 옵션")
-            }
-        }
-        if (menu) V2BottomSheet(onClose = { menu = false }) {
-            Text("로그 옵션", style = MaterialTheme.typography.titleLarge)
-            SettingsGroup {
-                V2NavigationRow("작업 기록", { menu = false; vm.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
-                if (state.environment.processRunning) {
-                    SettingsDivider()
-                    V2NavigationRow("Termux에서 실시간 로그 보기",
-                        { menu = false; vm.openServerLogTerminal() }, description = "Termux 앱이 열려요")
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "로그 옵션") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text("작업 기록") },
+                        onClick = { menu = false; vm.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
+                    if (state.environment.processRunning) DropdownMenuItem(text = { Column {
+                        Text("Termux에서 실시간 로그 보기")
+                        Text("Termux 앱이 열려요", style = MaterialTheme.typography.bodySmall)
+                    } }, onClick = { menu = false; vm.openServerLogTerminal() })
+                    DropdownMenuItem(text = { Text("다시 읽기") }, leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
+                        onClick = { menu = false; vm.openDiagnostics(panel) })
                 }
             }
-            V2OutlineAction("다시 읽기", { menu = false; vm.openDiagnostics(panel) }, Modifier.fillMaxWidth())
         }
         if (panel == DiagnosticPanel.WORK_HISTORY) Text("런처 작업 기록", style = MaterialTheme.typography.titleMedium)
         if (panel == DiagnosticPanel.SERVER_LOG && !state.canReadLiveServerLog())

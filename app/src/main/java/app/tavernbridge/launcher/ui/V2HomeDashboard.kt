@@ -41,7 +41,7 @@ import java.util.Locale
 @Composable
 internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart: () -> Unit, onStop: () -> Unit,
     onRestart: () -> Unit, onBackups: () -> Unit, onUpdate: () -> Unit, onLogs: () -> Unit, onHistory: () -> Unit,
-    onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit, onSnooze: () -> Unit,
+    onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit,
     onOpenArchive: (String) -> Unit, onCancelStart: () -> Unit = {}, onChangePort: () -> Unit = {},
     onBlocked: () -> Unit = {}, onServerSettings: (() -> Unit)? = null) {
     val env = state.environment
@@ -57,7 +57,8 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
         Text("상태", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
         Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Column {
-                HomeRow(Icons.Outlined.FileDownload, "마지막 백업", days ?: "기록 없음", onBackups)
+                HomeRow(Icons.Outlined.FileDownload, "마지막 백업", days ?: "기록 없음", onBackups,
+                    emphasize = state.backupReminder.notice(state.backupReminderNowMillis, env.sillyTavernInstalled) != null)
                 HomeRule()
                 HomeRow(Icons.Outlined.Upgrade, "버전", when (state.updatePreflight?.updateAvailable ?: state.updateAvailable) {
                     true -> "업데이트 있음"; false -> "최신"; null -> env.sillyTavernVersion.ifBlank { "미확인" }
@@ -69,9 +70,6 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
     }
     val notices: @Composable () -> Unit = {
         state.lastOperationResult?.takeIf { !it.succeeded }?.let { OperationResultCard(it, onRetry) }
-        if (!state.isWorking) state.backupReminder.notice(state.backupReminderNowMillis, true)?.let {
-            BackupReminderCard(it, onBackups, onSnooze)
-        }
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 && maxWidth >= 720.dp && LocalDensity.current.fontScale < 1.6f) {
@@ -200,8 +198,8 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
             !actions.canPrimary -> Text(if (actions.stop == HomeStop.STOPPING) "서버가 꺼질 때까지 기다려 주세요." else "다른 작업이 끝나면 시작할 수 있어요.",
                 mainModifier, style = MaterialTheme.typography.bodyMedium)
             primary == HomePrimary.CHAT -> Button(onOpen, mainModifier, shape = shape) { Text("대화 열기") }
-            primary == HomePrimary.LOGS -> V2NavigationRow("로그 보기", onLogs, mainModifier)
-            primary == HomePrimary.PORT -> V2NavigationRow("포트 바꾸기", onChangePort, mainModifier)
+            primary == HomePrimary.LOGS -> Button(onLogs, mainModifier, shape = shape) { Text("로그 보기") }
+            primary == HomePrimary.PORT -> Button(onChangePort, mainModifier, shape = shape) { Text("포트 바꾸기") }
             else -> Button(onStart, mainModifier, shape = shape) { Text("서버 시작") }
         }
         AnimatedVisibility(visible = actions.stop != HomeStop.HIDDEN,
@@ -256,15 +254,16 @@ private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, onC
 private fun HomeRule() = HorizontalDivider(Modifier.padding(start = 52.dp, end = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
 
 @Composable
-private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: () -> Unit) {
+private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: () -> Unit, emphasize: Boolean = false) {
+    val valueColor = if (emphasize) app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.accent else MaterialTheme.colorScheme.onSurfaceVariant
     Row(Modifier.fillMaxWidth().v2RowTap("home-row:$label", role = Role.Button, click = onClick).heightIn(min = 56.dp)
         .padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (icon != null) Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Column(Modifier.weight(1f)) { Text(label, style = MaterialTheme.typography.bodyLarge)
-            if (LocalDensity.current.fontScale >= 1.3f && value.isNotBlank()) Text(value, style = MaterialTheme.typography.bodyMedium) }
+            if (LocalDensity.current.fontScale >= 1.3f && value.isNotBlank()) Text(value, color = valueColor, style = MaterialTheme.typography.bodyMedium) }
         if (value.isNotBlank() && LocalDensity.current.fontScale < 1.3f)
-            Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+            Text(value, color = valueColor, style = MaterialTheme.typography.bodyMedium)
         Icon(if (label == "외부 접속") Icons.Outlined.Info else Icons.Outlined.ChevronRight,
             if (label == "외부 접속") "외부 접속 설명" else null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
     }

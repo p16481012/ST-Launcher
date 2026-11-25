@@ -167,6 +167,8 @@ data class LauncherUiState(
     val lanEndpoints: List<LanEndpoint> = emptyList(),
     val lanLoading: Boolean = false,
     val storageUsage: StorageUsageReport? = null,
+    val storageUsageLoading: Boolean = false,
+    val storageUsageError: String = "",
     val backupAnnotations: Map<String, BackupAnnotation> = emptyMap(),
     val backupCleanupPreview: BackupRetentionPreview? = null,
     val backupCleanupLoading: Boolean = false,

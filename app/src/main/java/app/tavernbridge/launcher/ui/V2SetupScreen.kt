@@ -1,6 +1,5 @@
 package app.tavernbridge.launcher.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.platform.LocalDensity
@@ -17,6 +16,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -82,7 +83,14 @@ internal fun SetupScreen(
     val clipboard = LocalClipboardManager.current
     val copy = { clipboard.setText(AnnotatedString(setupCommand)); copied = true; copySequence++; onCopied() }
     val canInstall = eligible == 5 && !env.processRunning && ready
-    V2BackHandler(enabled = ready && step > 1) { requested = step - 1 }
+    val importPage = showImport && step == 5 && !done
+    V2BackHandler(enabled = importPage || ready && step > 1) {
+        if (importPage) showImport = false else requested = step - 1
+    }
+    if (importPage) {
+        SetupImportPage(canInstall, { showImport = false }, onPickInstallation, onInspectInstallation, onImportBackup)
+        return
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val minimumHeight = maxHeight
@@ -171,13 +179,6 @@ internal fun SetupScreen(
                             }
                         }
                         Text(state.selectedInstallBranch.description, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        V2OutlineAction(if (showImport) "기존 설치 가져오기 접기" else "기존 설치 가져오기", { showImport = !showImport })
-                        if (showImport) {
-                            ExistingInstallationImportCard(enabled = canInstall, onPickFolder = onPickInstallation, onInspectPath = onInspectInstallation)
-                            if (canInstall) V2NavigationRow("전체 설치 ZIP에서 복원", onImportBackup,
-                                description = "ZIP을 선택할 파일 앱이 열려요.")
-                            else SettingsCaption("서버와 진행 중인 작업을 종료한 뒤 가져올 수 있어요.")
-                        }
                     }
                     else -> {
                         setupLabels.forEachIndexed { index, label ->
@@ -208,8 +209,8 @@ internal fun SetupScreen(
                             SetupPrimary("다음", ready) { requested = 2 }
                             if (ready) V2NavigationRow("Termux 열기", onOpenTermux, description = "Termux 앱이 열려요.")
                         } else if (ready) {
-                            V2NavigationRow("F-Droid에서 받기", onDownloadTermux, description = "브라우저에서 Termux 설치 페이지가 열려요.")
-                            V2OutlineAction("이미 설치했어요", onVerifyTermux, Modifier.fillMaxWidth())
+                            SetupPrimary("F-Droid에서 받기", true, onDownloadTermux)
+                            V2QuietAction("이미 설치했어요", onVerifyTermux, Modifier.fillMaxWidth())
                         }
                     }
                     2 -> {
@@ -240,15 +241,18 @@ internal fun SetupScreen(
                             }, style = MaterialTheme.typography.labelMedium, color = ink)
                         }
                         if (ready && !setup.verified) {
-                            V2NavigationRow("Termux 열기", { copy(); onOpenSetupTermux() }, description = "명령을 복사한 뒤 Termux 앱이 열려요.")
-                            V2OutlineAction("명령 다시 복사", copy, Modifier.fillMaxWidth())
+                            SetupPrimary("Termux 열기", true) { copy(); onOpenSetupTermux() }
+                            V2QuietAction("명령 다시 복사", copy, Modifier.fillMaxWidth())
                         }
                     }
                     4 -> SetupPrimary(if (env.managerConnected) "다음" else "연결 확인", ready && state.termuxSetup.verified) {
                         if (env.managerConnected) requested = 5 else onConnect()
                     }
                     else -> if (done) SetupPrimary("시작하기", ready, onLeave)
-                        else if (canInstall) SetupPrimary("${state.selectedInstallBranch.label} 설치", true, onInstall)
+                        else if (canInstall) {
+                            SetupPrimary("설치 시작", true, onInstall)
+                            V2QuietAction("다른 폴더의 설치 가져오기", { showImport = true }, Modifier.fillMaxWidth())
+                        }
                         else if (ready && env.processRunning) SettingsCaption("서버를 종료한 뒤 설치할 수 있어요.")
                 }
                 }
@@ -256,6 +260,29 @@ internal fun SetupScreen(
             }
         }
     }
+}
+
+@Composable
+private fun SetupImportPage(enabled: Boolean, back: () -> Unit, pick: () -> Unit,
+    inspect: (String) -> Unit, fromZip: () -> Unit) {
+    var pathPrompt by rememberSaveable { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = back) { Icon(Icons.Outlined.ArrowBack, "이전으로") }
+                Text("기존 설치 가져오기", style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+            }
+            SettingsCaption("사용하던 폴더를 고르면 가져오기 전에 내용을 확인해요. 원본을 유지할지 이동할지는 검사 후에 선택해요.")
+            if (enabled) V2NavigationGroup {
+                V2NavigationRow("내부 저장소 폴더 선택", pick, description = "Android 파일 앱이 열려요.",
+                    leadingIcon = { Icon(Icons.Outlined.FolderOpen, null) })
+                V2NavigationRow("Termux 폴더 경로 입력", { pathPrompt = true }, leadingIcon = { Icon(Icons.Outlined.Terminal, null) })
+                V2NavigationRow("전체 설치 ZIP에서 복원", fromZip, description = "ZIP을 선택할 파일 앱이 열려요.")
+            } else SettingsCaption("서버와 진행 중인 작업을 종료한 뒤 가져올 수 있어요.")
+        }
+    }
+    if (pathPrompt) ExistingInstallationPathDialog(enabled, onDismiss = { pathPrompt = false }, onInspect = inspect)
 }
 
 @Composable

@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.pullToRefresh
@@ -137,11 +138,13 @@ internal fun SafetyInventoryScreen(
             Spacer(Modifier.width(10.dp))
         }
         val pull = rememberPullToRefreshState()
+        val list = rememberLazyListState()
+        LoadBackupPageAtEnd(list, state.nextCursor, !busy && !state.loading && state.error.isBlank() && state.items.size < 1000, onMore)
         LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("safety-inventory-items").semantics {
             if (!busy && !state.loading && !selecting) customActions = listOf(CustomAccessibilityAction("새로고침") { onRefresh(); true })
         }.pullToRefresh(isRefreshing = state.loading, state = pull,
             enabled = !busy && !state.loading && !selecting, threshold = 64.dp, onRefresh = onRefresh),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
+            state = list, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
             if (!selecting) item(key = "intro") {
                 Spacer(Modifier.height(12.dp))
                 if (locked) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.dangerWash).padding(14.dp),
@@ -176,7 +179,7 @@ internal fun SafetyInventoryScreen(
                         Text(total?.let { "${it}개" } ?: "표시 ${rows.size}개", color = colors.ink3, fontSize = 13.sp)
                     }
                 }
-                if (rows.isEmpty()) item { Text("아래 ‘더 보기’로 항목을 불러오세요.", color = colors.ink2, style = MaterialTheme.typography.bodySmall) }
+                if (rows.isEmpty() && state.nextCursor != null) item { Text("목록 끝에서 다음 항목을 불러와요.", color = colors.ink2, style = MaterialTheme.typography.bodySmall) }
                 itemsIndexed(rows, key = { _, it -> it.id }) { index, row ->
                     val first = if (index == 0) 20.dp else 0.dp
                     val last = if (index == rows.lastIndex) 20.dp else 0.dp
@@ -214,8 +217,10 @@ internal fun SafetyInventoryScreen(
                 Text("보호 중인 자료 ${state.protectedEntries}개는 표시하지 않아요.", Modifier.padding(top = 12.dp), color = colors.ink2, fontSize = 13.sp)
             }
             if (partial && selecting) item { Text("‘모두 선택’은 현재 불러온 항목에만 적용돼요.", color = colors.ink2, fontSize = 13.sp) }
-            if (state.nextCursor != null && !busy && !state.loading) item { V2OutlineAction("더 보기", onMore) }
-            if (state.truncated) item { Text("조사 한도에 도달해 일부 항목만 표시해요.", style = MaterialTheme.typography.bodySmall) }
+            if (state.nextCursor != null) item(key = BackupPageEnd) { Spacer(Modifier.height(1.dp)) }
+            if (state.truncated || (state.items.size >= 1000 && state.nextCursor != null)) item {
+                Text("조사 한도에 도달해 일부 항목만 표시해요.", style = MaterialTheme.typography.bodySmall)
+            }
         }
         if (selecting && !locked && selection.isNotEmpty() && !changed && !state.loading && !busy)
             Button(onClick = { pending = SafetyRequest("delete", selection.toMap(), true) },
@@ -260,14 +265,15 @@ internal fun SafetyInventoryScreen(
             else -> "$subject 항목을 Download에 암호화하지 않고 복사해요. 대화나 비밀정보가 포함될 수 있어요. 원본은 유지해요."
         } + if (!allowed) "\n작업 및 서버 상태를 확인한 뒤 다시 시도해 주세요." else "") }, dismissButton = {
             if (allowed) V2DialogAction(onClick = { pending = null }, tone = V2DialogTone.Quiet) { Text("취소") }
-            else V2OutlineAction("닫기", { pending = null })
         }, confirmButton = { if (allowed) V2DialogAction(tone = if (action == "delete") V2DialogTone.Danger else V2DialogTone.Primary,
                 onClick = {
                     if (pending == request && allowed) {
                         pending = null; resetSelection()
                         if (request.multiple) onDeleteMany(rows) else onAction(action, rows.single())
                     }
-                }) { Text(when (action) { "delete" -> "영구 삭제"; "restore" -> "복원"; else -> "내보내기" }) } })
+                }) { Text(when (action) { "delete" -> "영구 삭제"; "restore" -> "복원"; else -> "내보내기" }) }
+            else V2DialogAction(onClick = { pending = null }) { Text("확인") }
+        })
     }
 }
 

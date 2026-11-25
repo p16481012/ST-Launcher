@@ -3,15 +3,12 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
-import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -23,23 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import app.tavernbridge.launcher.model.BackupReminderNotice
 import app.tavernbridge.launcher.model.UpdatePreflight
-
-@Composable
-internal fun BackupReminderCard(notice: BackupReminderNotice, onOpen: () -> Unit, onSnooze: () -> Unit) {
-    Card(shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("백업을 확인해 주세요", style = MaterialTheme.typography.titleMedium)
-            Text(if (notice.ageDays == null) "최근 사용자 데이터 백업 기록을 확인하지 못했습니다."
-                else "마지막 사용자 데이터 백업 기록은 ${notice.ageDays}일 전입니다.")
-            Text("생성 기록 기준이며, 백업 파일이 지금도 남아 있는지는 백업 목록에서 확인해 주세요.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            V2NavigationRow("백업 확인", onOpen)
-            V2OutlineAction("7일 뒤에 알림", onSnooze)
-        }
-    }
-}
 
 @Composable
 internal fun UpdateChangesPreview(report: UpdatePreflight) {

@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -13,7 +14,10 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -49,20 +53,24 @@ fun LanConnectionCard(
                 Text(stringResource(R.string.lan_network_notice), style = MaterialTheme.typography.bodyMedium)
                 if (endpoints.isEmpty()) Text(stringResource(R.string.lan_no_address))
                 endpoints.take(16).forEach { endpoint ->
-                    Text(endpoint.url, style = MaterialTheme.typography.bodyMedium)
-                    OutlinedButton(
-                        onClick = { onCopy(endpoint.url) },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    ) { Text(stringResource(R.string.lan_copy_address)) }
+                    LanAddressCopyRow(endpoint.url) { onCopy(endpoint.url) }
                     V2NavigationRow(stringResource(R.string.lan_show_qr), { qrEndpoint = endpoint })
                 }
-                V2OutlineAction(stringResource(R.string.lan_refresh_addresses), onRefresh, Modifier.fillMaxWidth())
+                V2OutlineAction(stringResource(R.string.lan_refresh_addresses), onRefresh, Modifier.fillMaxWidth(), footer = true)
             }
             V2NavigationRow(stringResource(R.string.lan_security_settings), onConfigure)
         }
     }
     qrEndpoint?.takeIf { externalEnabled && endpoints.any { current -> current.url == it.url } }?.let { endpoint ->
         LanQrDialog(endpoint, onDismiss = { qrEndpoint = null })
+    }
+}
+
+@Composable
+internal fun LanAddressCopyRow(url: String, onCopy: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(url, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        IconButton(onClick = onCopy) { Icon(Icons.Outlined.ContentCopy, stringResource(R.string.lan_copy_address)) }
     }
 }
 

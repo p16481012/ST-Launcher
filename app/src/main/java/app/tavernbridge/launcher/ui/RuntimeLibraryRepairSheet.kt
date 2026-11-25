@@ -59,7 +59,7 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
 @Composable
 internal fun FailureTechnicalDetails(resultAt: Long, detail: String, errorCode: String) {
     var expanded by remember(resultAt) { mutableStateOf(false) }
-    V2OutlineAction(if (expanded) "기술 정보 접기" else "기술 정보 보기", { expanded = !expanded })
+    V2LinkAction(if (expanded) "기술 정보 접기" else "기술 정보 보기", { expanded = !expanded })
     if (expanded) SelectionContainer {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (detail.isNotBlank()) Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)

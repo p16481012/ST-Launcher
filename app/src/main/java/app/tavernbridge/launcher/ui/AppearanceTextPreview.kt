@@ -41,7 +41,7 @@ internal fun AppearanceTextPreview() {
     }
     if (editing) V2BottomSheet(onClose = { editing = false }, footer = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            V2OutlineAction("기본 문장으로", { apply("") }, Modifier.weight(1f))
+            V2QuietAction("기본 문장으로", { apply("") }, Modifier.weight(1f))
             Box(Modifier.weight(1f)) { V2SheetPrimaryButton("적용") { apply(draft) } }
         }
     }) {

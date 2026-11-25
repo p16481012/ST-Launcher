@@ -48,11 +48,13 @@ internal fun TermuxProcessHelpCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                V2NavigationRow("Termux 앱 정보 열기", onOpenTermuxSettings, description = "Android 설정 앱이 열려요")
-                V2NavigationRow("배터리 설정 열기", onOpenBatterySettings, description = "Android 설정 앱이 열려요")
-                if (TermuxProcessHelp.includesAndroid12ProcessLimit(androidSdk)) {
-                    V2NavigationRow("Android 12 이상 공식 도움말", { onOpenOfficialHelp(TermuxProcessHelp.OFFICIAL_HELP_URL) },
-                        description = "브라우저 앱이 열려요")
+                V2NavigationGroup {
+                    V2NavigationRow("Termux 앱 정보 열기", onOpenTermuxSettings, description = "Android 설정 앱이 열려요")
+                    V2NavigationRow("배터리 설정 열기", onOpenBatterySettings, description = "Android 설정 앱이 열려요")
+                    if (TermuxProcessHelp.includesAndroid12ProcessLimit(androidSdk)) {
+                        V2NavigationRow("Android 12 이상 공식 도움말", { onOpenOfficialHelp(TermuxProcessHelp.OFFICIAL_HELP_URL) },
+                            description = "브라우저 앱이 열려요")
+                    }
                 }
             }
         }

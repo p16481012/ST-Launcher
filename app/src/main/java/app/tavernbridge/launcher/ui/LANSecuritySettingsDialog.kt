@@ -181,7 +181,6 @@ internal fun LanSecuritySettingsPage(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) { Text(if (running) "적용하고 재시작" else "적용") }
                 if (hint != null) Text(hint, style = MaterialTheme.typography.bodySmall)
-                if (!busy && !submitted) V2OutlineAction(stringResource(R.string.lan_cancel), dismiss, Modifier.fillMaxWidth())
             }
     if (summary) V2AlertDialog(onDismissRequest = { summary = false },
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),

@@ -64,6 +64,103 @@ class BackupManagementLinksTest {
         ui.runOnIdle { assertEquals(listOf("b".repeat(64)), opened) }
     }
 
+    private val archive = BackupArchive("SillyTavern-Launcher-20261124-165300.zip", 2048, "2026-11-24 16:53:00",
+        setOf(BackupCategory.USER_DATA), emptySet(), false, "1.19.1", revision = "a".repeat(64))
+    private val ready = LauncherUiState(isWorking = false, environmentChecked = true, section = MainSection.BACKUPS,
+        environment = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true, managerConnected = true, sillyTavernInstalled = true),
+        termuxSetup = TermuxSetupState(TermuxSetupStatus.READY), backupsLoaded = true, backupStorageReady = true, backups = listOf(archive))
+
+    @Test fun phoneOverflowOrTabletQuietActionsTransferOnlyTheChosenArchive() {
+        val transfers = mutableListOf<Pair<String, BackupTransferAction>>()
+        var deletes = 0
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            V2BackupScreen(ready.copy(backupAnnotations = mapOf(archive.fileName to BackupAnnotation(pinned = true))),
+                { _, _, _ -> }, {}, {}, { item, action -> transfers += item.fileName to action }, {}, {}, {}, { _, _ -> },
+                { _, _, _ -> }, {}, {}, {}, "", {}, {}, {}, { deletes++ }, archive.fileName, {}, {})
+        } }
+        val phone = ui.onAllNodesWithContentDescription("백업 파일 동작").fetchSemanticsNodes().isNotEmpty()
+        fun select(label: String) {
+            if (phone) {
+                ui.onNodeWithText(label).assertDoesNotExist()
+                ui.onNodeWithContentDescription("백업 파일 동작").performClick()
+            }
+            ui.onNodeWithText("삭제").assertDoesNotExist()
+            ui.onNodeWithText(label).performClick()
+        }
+        select("공유")
+        select("다른 위치에 저장")
+        ui.runOnIdle {
+            assertEquals(listOf(archive.fileName to BackupTransferAction.SHARE, archive.fileName to BackupTransferAction.EXPORT), transfers)
+            assertEquals(0, deletes)
+        }
+    }
+
+    @Test fun restoreLoadsNextPageOnlyAtTheEndAndDoesNotLoopAfterAnError() {
+        val rows = (1..45).map {
+            SelectiveRestoreItem(SelectiveRestoreKind.CHARACTER, "profile/characters/$it.png", 256, false,
+                "", false, true, "profile", "$it.png")
+        }
+        val firstPage = SelectiveRestorePage("rev", "install", rows, 45, 46)
+        val model = mutableStateOf(SelectiveRestoreUiState("backup.zip", page = firstPage))
+        var loads = 0
+        var retries = 0
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            SelectiveRestoreDialog(model.value, true, onMore = {
+                loads++
+                model.value = model.value.copy(error = "목록 응답 없음")
+            }, onRefresh = { retries++ }, onRestore = { _, _ -> }, onClose = {})
+        } }
+        ui.runOnIdle { assertEquals(0, loads) }
+        ui.onNodeWithTag("restore-candidate-list").performScrollToKey(BackupPageEnd)
+        ui.onNodeWithTag("restore-candidate-list").performScrollToNode(hasText("목록 다시 확인"))
+        ui.onNodeWithText("목록 다시 확인").performClick()
+        ui.runOnIdle { assertEquals(1, loads); assertEquals(1, retries) }
+    }
+
+    @Test fun openingSpaceScansOnceAndCleanupRequiresSelectionAndConfirmation() {
+        var scans = 0
+        val preview = mutableStateOf<BackupRetentionPreview?>(null)
+        var deletions = 0
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            StorageManagementScreen(ready, null, { scans++ }, { keep, days ->
+                assertEquals(3, keep); assertEquals(30, days)
+                preview.value = BackupRetentionPreview(listOf(archive), 0, 0, archive.sizeBytes)
+            })
+            preview.value?.let { BackupCleanupScreen(it, { preview.value = null }, { deletions++ }) }
+        } }
+        ui.onNodeWithText("저장 공간 확인").assertDoesNotExist()
+        ui.onNodeWithText("정리 후보 미리보기").performScrollTo().performClick()
+        ui.onNodeWithText("영구 삭제").assertDoesNotExist()
+        ui.onNodeWithText("선택한 1개 삭제").assertDoesNotExist()
+        ui.onNode(isToggleable()).performClick()
+        ui.onNodeWithText("선택한 1개 삭제").performClick()
+        ui.onNodeWithText("취소").performClick()
+        ui.onNodeWithContentDescription("뒤로").performClick()
+        ui.runOnIdle { assertEquals(1, scans); assertEquals(0, deletions) }
+    }
+
+    @Test fun selectAllAndExitRespectPinnedArchivesWithoutDeleting() {
+        val protected = archive.copy(fileName = "SillyTavern-Launcher-20261124-165301.zip", revision = "b".repeat(64))
+        var deletes = 0
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            V2BackupScreen(ready.copy(backups = listOf(archive, protected), backupAnnotations = mapOf(protected.fileName to BackupAnnotation(pinned = true))),
+                { _, _, _ -> }, {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> }, {}, {}, {}, "", {}, {}, {}, { deletes++ }, null, {}, {})
+        } }
+        val overview = ui.onNodeWithTag("backup-overview-list")
+        val dual = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp >= 840
+        val link = if (dual) "전체 관리" else "전체 2개"
+        overview.performScrollToNode(hasText(link))
+        ui.onNodeWithText(link).performClick()
+        ui.onNodeWithContentDescription("항목 선택").performClick()
+        ui.onNodeWithText("모두 선택").performClick()
+        ui.onNodeWithText("선택 항목 1개 삭제").assertExists()
+        ui.onNodeWithText("선택 해제").performClick()
+        ui.onNodeWithText("선택 항목 1개 삭제").assertDoesNotExist()
+        ui.onNodeWithContentDescription("선택 종료").performClick()
+        ui.onNodeWithContentDescription("항목 선택").assertExists()
+        ui.runOnIdle { assertEquals(0, deletes) }
+    }
+
     @Test fun overviewNamesTheActionsAndOpensTheRightEncryptionMode() {
         val prefs = DisplayPreferences(reducedMotion = true)
         val state = LauncherUiState(isWorking = false, environmentChecked = true, section = MainSection.BACKUPS,

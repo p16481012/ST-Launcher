@@ -27,7 +27,7 @@ internal fun V2DialogAction(
     val palette = LocalLauncherColors.current
     val background = when (tone) {
         V2DialogTone.Primary -> palette.ink
-        V2DialogTone.Quiet -> palette.surface
+        V2DialogTone.Quiet -> androidx.compose.ui.graphics.Color.Transparent
         V2DialogTone.Danger -> palette.danger
     }
     val foreground = when (tone) {
@@ -43,7 +43,6 @@ internal fun V2DialogAction(
             disabledContainerColor = background, disabledContentColor = foreground),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
     ) {
-        ProvideTextStyle(if (tone == V2DialogTone.Quiet) MaterialTheme.typography.titleMedium.copy(
-            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline) else MaterialTheme.typography.titleMedium) { content() }
+        ProvideTextStyle(MaterialTheme.typography.titleMedium) { content() }
     }
 }

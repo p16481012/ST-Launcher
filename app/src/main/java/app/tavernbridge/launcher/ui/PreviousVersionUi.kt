@@ -45,6 +45,7 @@ internal fun PreviousVersionDialog(
                 item { Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(acknowledged, { acknowledged = it }); Text("백업·교체 범위와 주의사항을 확인했습니다.", Modifier.weight(1f))
                 } }
+                if (!acknowledged) item { SettingsCaption("계속하려면 백업·교체 범위와 주의사항을 확인해 주세요.") }
             } else {
                 item { Text("현재 브랜치의 기기에 남아 있는 이전 커밋 최대 30개입니다. 출시 버전 목록이나 원격 태그를 새로 내려받지는 않습니다.", style = MaterialTheme.typography.bodySmall) }
                 if (page != null && page.versions.isEmpty()) item { Text("선택 가능한 이전 커밋이 없습니다.") }
@@ -92,8 +93,8 @@ internal fun PreviousVersionDialog(
         dismissButton = {
             val label = if (confirming) "이전" else "닫기"
             val leave: () -> Unit = { if (confirming) confirming = false else onClose() }
-            if (ready && (!confirming || acknowledged)) V2DialogAction(tone = V2DialogTone.Quiet, onClick = leave) { Text(label) }
-            else V2OutlineAction(label, leave)
+            if (confirming || ready) V2DialogAction(tone = V2DialogTone.Quiet, onClick = leave) { Text(label) }
+            else V2DialogAction(onClick = leave) { Text("확인") }
         },
     )
 }

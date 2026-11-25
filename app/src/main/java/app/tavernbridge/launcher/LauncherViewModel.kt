@@ -1865,10 +1865,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun inspectStorageUsage() = perform("storage-usage", "저장 공간 확인", "저장 공간 검사를 마쳤습니다. 일부 항목은 제한 시간이나 접근 권한 때문에 제외될 수 있습니다.") {
-        val (result, report) = repository.inspectStorageUsage()
-        mutableState.update { it.copy(storageUsage = report) }
-        result
+    fun inspectStorageUsage() {
+        val current = mutableState.value
+        if (!current.environment.managerConnected || current.storageUsageLoading || current.isWorking || current.environment.operationActive) return
+        mutableState.update { it.copy(storageUsageLoading = true, storageUsageError = "") }
+        viewModelScope.launch {
+            try {
+                val (_, report) = repository.inspectStorageUsage()
+                mutableState.update { it.copy(storageUsage = report) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                mutableState.update { it.copy(storageUsageError = failure.userMessage()) }
+            } finally {
+                mutableState.update { it.copy(storageUsageLoading = false) }
+            }
+        }
     }
 
     fun openExtensions() {

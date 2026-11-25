@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.V2Mono
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
@@ -70,11 +71,17 @@ internal fun V2BackupScreen(
     onArchiveOpened: () -> Unit,
     onArchiveShortcutBack: () -> Unit,
     archiveReturnToOrigin: Boolean = true,
+    requestSpace: Boolean = false,
+    onSpaceOpened: () -> Unit = {},
 ) {
     LaunchedEffect(state.environment.managerConnected, state.termuxSetup.verified) {
         if (state.environment.managerConnected && state.termuxSetup.verified) onRefresh()
     }
     var pane by rememberSaveable { mutableStateOf(if (requestedArchive == null) BackupPane.OVERVIEW else BackupPane.ARCHIVE) }
+    var spaceFromShortcut by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(requestSpace) {
+        if (requestSpace) { spaceFromShortcut = true; pane = BackupPane.SPACE; onSpaceOpened() }
+    }
     var localScope by rememberSaveable { mutableStateOf(false) }
     val openScope = LocalBackupScopeOpener.current ?: { localScope = true }
     var fromAll by rememberSaveable { mutableStateOf(false) }
@@ -128,7 +135,9 @@ internal fun V2BackupScreen(
     val masterScroll = rememberLazyListState()
     val allScroll = rememberLazyListState()
     val goBack: () -> Unit = {
-        if (pane == BackupPane.ARCHIVE && openedFromHome) onArchiveShortcutBack()
+        if (pane == BackupPane.SPACE && spaceFromShortcut) {
+            spaceFromShortcut = false; pane = BackupPane.OVERVIEW; onArchiveShortcutBack()
+        } else if (pane == BackupPane.ARCHIVE && openedFromHome) onArchiveShortcutBack()
         else {
             pane = if (pane == BackupPane.ARCHIVE && fromAll) BackupPane.ALL else BackupPane.OVERVIEW
             if (pane == BackupPane.OVERVIEW) { selectedName = null; openedFromHome = false }
@@ -208,7 +217,7 @@ internal fun V2BackupScreen(
                                 BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", description = "ZIP을 선택할 파일 앱이 열려요.", click = pickImport)
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             }
-                            BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { pane = BackupPane.SPACE })
+                            BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { spaceFromShortcut = false; pane = BackupPane.SPACE })
                             if (connected && !busy) {
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                 BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { copies -> state.fileTrashCount?.let { trash -> "${copies + trash}개" } }.orEmpty(),
@@ -265,7 +274,7 @@ internal fun V2BackupScreen(
             if (showDetails) {
                 val detailModifier = Modifier.weight(1f).fillMaxHeight().then(if (dual) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)
                 Column(detailModifier.padding(horizontal = if (dual) 40.dp else 20.dp, vertical = if (dual) 28.dp else 8.dp)) {
-                    if (!dual || (pane == BackupPane.ARCHIVE && openedFromHome) || (pane != BackupPane.OVERVIEW && pane != BackupPane.ARCHIVE)) {
+                    if (pane == BackupPane.MORE || pane == BackupPane.SPACE || (pane == BackupPane.ARCHIVE && archive == null)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = goBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
                             Text(when (pane) {
@@ -278,15 +287,12 @@ internal fun V2BackupScreen(
                         BackupPane.ARCHIVE, BackupPane.OVERVIEW -> if (archive == null) {
                             BackupBlank(if (pane == BackupPane.ARCHIVE) "이 백업이 현재 목록에 없어요. 목록을 새로고침해 주세요." else "확인할 백업을 선택하세요.")
                         } else key(archive.fileName) {
-                            BackupDetail(archive, state, busy, onSelective, onRestore, onTransfer, onSaveAnnotation, onDelete)
+                            BackupDetail(archive, state, busy, dual, !dual || openedFromHome, goBack, onSelective, onRestore, onTransfer, onSaveAnnotation, onDelete)
                         }
-                        BackupPane.ALL -> BackupAll(state, busy, allScroll, { selectArchive(it, true) }, onDelete)
+                        BackupPane.ALL -> BackupAll(state, busy, allScroll, goBack, { selectArchive(it, true) }, onDelete)
+                        BackupPane.SPACE -> StorageManagementScreen(state, estimate, onScan, onPreviewCleanup)
                         else -> Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             when (pane) {
-                                BackupPane.SPACE -> {
-                                    estimate?.let { Text("일반 백업 정리 기준으로 확보할 수 있는 공간은 ${formatBackupBytes(it)}예요. 아래에서 다른 기준으로도 확인할 수 있어요.", style = MaterialTheme.typography.bodyMedium) }
-                                    StorageManagementCard(state, onScan, onPreviewCleanup, initiallyExpanded = true)
-                                }
                                 BackupPane.MORE -> {
                                     if (busy) SettingsCaption("진행 중인 작업을 마친 뒤 암호화 백업을 관리할 수 있어요.")
                                     else SettingsGroup {
@@ -371,7 +377,8 @@ private fun BackupArchiveRow(archive: BackupArchive, first: Boolean, last: Boole
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BackupDetail(
-    archive: BackupArchive, state: LauncherUiState, busy: Boolean, onSelective: (BackupArchive) -> Unit,
+    archive: BackupArchive, state: LauncherUiState, busy: Boolean, dual: Boolean, showBack: Boolean,
+    onBack: () -> Unit, onSelective: (BackupArchive) -> Unit,
     onRestore: (BackupArchive) -> Unit, onTransfer: (BackupArchive, BackupTransferAction) -> Unit,
     onSave: (String, Boolean, String) -> Unit, onDelete: (List<BackupArchive>) -> Unit,
 ) {
@@ -382,10 +389,27 @@ private fun BackupDetail(
     val canRestore = canSelect && archive.restoreSpaceReady
     val openRestore = { enterStoppedAction(running, stop, "선택한 백업 복원 확인") { onRestore(archive) } }
     val selectParts = { enterStoppedAction(running, stop, "복원할 항목 선택") { onSelective(archive) } }
+    val deletable = BackupDeleteSelection.identifiable(archive) && annotation.trusted && !annotation.pinned
+    var showActions by rememberSaveable(archive.fileName, archive.revision) { mutableStateOf(false) }
+    LaunchedEffect(busy, dual) { if (busy || dual) showActions = false }
+    if (showActions && !busy && !dual) V2BottomSheet(onClose = { showActions = false }) {
+        Text("백업 파일 동작", style = MaterialTheme.typography.titleLarge)
+        V2SheetActionRow("공유") { showActions = false; onTransfer(archive, BackupTransferAction.SHARE) }
+        V2SheetActionRow("다른 위치에 저장", leadingIcon = { Icon(Icons.Outlined.SaveAlt, null, Modifier.size(20.dp)) }) {
+            showActions = false; onTransfer(archive, BackupTransferAction.EXPORT)
+        }
+        if (deletable) V2SheetActionRow("삭제", danger = true) { showActions = false; onDelete(listOf(archive)) }
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val singleRow = maxWidth >= 640.dp && LocalDensity.current.fontScale <= 1.3f
         val stack = maxWidth < 300.dp || LocalDensity.current.fontScale >= 1.5f
         Column(Modifier.fillMaxSize()) {
+        if (showBack) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, "뒤로") }
+            Text("백업 상세", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            if (!busy && !dual) IconButton(onClick = { showActions = true }) {
+                ReviewGlyph(R.drawable.rv_more, description = "백업 파일 동작")
+            }
+        }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(archiveHeading(archive, true), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
@@ -417,28 +441,23 @@ private fun BackupDetail(
         }
         V2BottomActions {
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-            val fileActions: @Composable () -> Unit = {
-                IconButton(onClick = { onTransfer(archive, BackupTransferAction.EXPORT) }) {
-                    Icon(Icons.Outlined.SaveAlt, "다른 위치에 저장", Modifier.size(20.dp))
-                }
-                V2OutlineAction("공유", { onTransfer(archive, BackupTransferAction.SHARE) })
-                if (BackupDeleteSelection.identifiable(archive) && annotation.trusted && !annotation.pinned)
-                    V2DangerAction("삭제", { onDelete(listOf(archive)) })
-            }
             if (stack && canSelect) {
                 if (canRestore) V2SheetPrimaryButton("이 백업으로 복원", onClick = openRestore)
-                V2OutlineAction("일부만 복원", selectParts, Modifier.fillMaxWidth())
+                V2OutlineAction("일부만 복원", selectParts, Modifier.fillMaxWidth(), footer = true)
             } else if (canSelect) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 if (canRestore) Button(onClick = openRestore, shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
-                V2OutlineAction("일부만 복원", selectParts)
-                if (singleRow) fileActions()
+                V2OutlineAction("일부만 복원", selectParts, footer = true)
             }
             if (busy) SettingsCaption("진행 중인 작업이 끝난 뒤 백업 파일을 관리할 수 있어요.")
-            else if (!singleRow || !canSelect) FlowRow(Modifier.fillMaxWidth(),
+            else if (dual) FlowRow(Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                fileActions()
+                if (deletable) V2QuietAction("삭제", { onDelete(listOf(archive)) })
+                V2QuietAction("다른 위치에 저장", { onTransfer(archive, BackupTransferAction.EXPORT) }) {
+                    Icon(Icons.Outlined.SaveAlt, null, Modifier.size(20.dp))
+                }
+                V2QuietAction("공유", { onTransfer(archive, BackupTransferAction.SHARE) })
             }
         }
         }
@@ -453,7 +472,7 @@ private fun BackupDetailRow(label: String, value: String) {
 }
 
 @Composable
-private fun BackupAll(state: LauncherUiState, busy: Boolean, scroll: LazyListState, onOpen: (BackupArchive) -> Unit, onDelete: (List<BackupArchive>) -> Unit) {
+private fun BackupAll(state: LauncherUiState, busy: Boolean, scroll: LazyListState, onBack: () -> Unit, onOpen: (BackupArchive) -> Unit, onDelete: (List<BackupArchive>) -> Unit) {
     var selection by rememberSaveable { mutableStateOf(false) }
     var keys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val deletable = remember(state.backups, state.backupAnnotations) {
@@ -462,21 +481,29 @@ private fun BackupAll(state: LauncherUiState, busy: Boolean, scroll: LazyListSta
     val allowed = remember(deletable) { deletable.mapTo(mutableSetOf(), BackupDeleteSelection::key) }
     val selectedKeys = remember(allowed, keys) { keys.toSet().intersect(allowed) }
     val chosen = remember(deletable, selectedKeys) { deletable.filter { BackupDeleteSelection.key(it) in selectedKeys } }
-    BackHandler(selection) { selection = false; keys = emptyList() }
-    LazyColumn(state = scroll) {
-        item {
-            BackupGroupHeader("전체 백업 ${state.backups.size}개")
-            if (!busy && (deletable.isNotEmpty() || selection)) {
-                V2OutlineAction(if (selection) "선택 종료" else "선택 삭제", { selection = !selection; keys = emptyList() })
-                if (selection && deletable.isNotEmpty()) {
-                    V2OutlineAction(if (chosen.isEmpty()) "전체 선택" else "선택 해제", {
-                        keys = if (chosen.isEmpty()) deletable.take(200).map(BackupDeleteSelection::key) else emptyList()
-                    })
-                    if (chosen.isNotEmpty()) V2DangerAction("선택 항목 ${chosen.size}개 삭제", { onDelete(chosen) })
-                    else SettingsCaption("삭제할 백업을 선택해 주세요.")
-                }
+    val leaveSelection = { selection = false; keys = emptyList<String>() }
+    BackHandler(selection, onBack = leaveSelection)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = if (selection) leaveSelection else onBack) {
+            ReviewGlyph(if (selection) R.drawable.rv_close else R.drawable.rv_arrow_left,
+                description = if (selection) "선택 종료" else "뒤로")
+        }
+        Text(if (selection) "${chosen.size}개 선택" else "전체 백업 ${state.backups.size}개",
+            Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        if (!busy && deletable.isNotEmpty()) {
+            if (selection) {
+                val atLimit = chosen.size == minOf(deletable.size, 200)
+                V2TopBarAction(if (atLimit) "선택 해제" else "모두 선택", {
+                    keys = if (atLimit) emptyList() else deletable.take(200).map(BackupDeleteSelection::key)
+                })
+            } else IconButton(onClick = { selection = true }) {
+                ReviewGlyph(R.drawable.rv_select, description = "항목 선택")
             }
         }
+    }
+    Column(Modifier.fillMaxSize()) {
+    LazyColumn(modifier = Modifier.weight(1f), state = scroll) {
+        if (selection && chosen.isEmpty()) item { SettingsCaption("삭제할 백업을 선택해 주세요. 최대 200개까지 선택할 수 있어요.") }
         if (state.backups.isEmpty()) item { BackupBlank("표시할 백업이 없어요.") }
         items(state.backups, key = { it.fileName }) { archive ->
             if (!selection) BackupArchiveRow(archive, archive === state.backups.first(), archive === state.backups.last(), false) { onOpen(archive) }
@@ -488,5 +515,9 @@ private fun BackupAll(state: LauncherUiState, busy: Boolean, scroll: LazyListSta
                 Text(if (id !in allowed) "삭제 보호" else formatBackupBytes(archive.sizeBytes), style = MaterialTheme.typography.labelMedium)
             }
         }
+    }
+    if (selection && !busy && chosen.isNotEmpty()) V2BottomActions {
+        V2DangerAction("선택 항목 ${chosen.size}개 삭제", { onDelete(chosen) }, Modifier.fillMaxWidth().padding(vertical = 8.dp))
+    }
     }
 }

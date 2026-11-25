@@ -78,10 +78,10 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
             when {
                 canSubmit -> V2DialogAction(onClick = { val secret=password.toCharArray();password="";again="";viewModel.submitEncryptedBackupPassword(secret) }) { Text(if(export) "저장 위치 선택" else "복호화·인증") }
                 canRestore -> V2DialogAction(tone = V2DialogTone.Danger, onClick={viewModel.restoreDecryptedBackup(state.environment.sillyTavernInstalled && backupBefore)}) {Text("검사 후 복원")}
+                else -> V2DialogAction(onClick = close) { Text("확인") }
             }
         },
         dismissButton = {
             if (canSubmit || canRestore) V2DialogAction(tone = V2DialogTone.Quiet, onClick = close) { Text("닫기") }
-            else V2OutlineAction("닫기", close)
         })
 }

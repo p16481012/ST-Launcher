@@ -57,10 +57,12 @@ internal enum class SettingsPage(val title: String, val icon: ImageVector) {
 internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewModel) {
     // Save only the destination, never the contents of a security form.
     var editor by rememberSaveable { mutableStateOf<String?>(null) }
-    V2SettingsLayout(state, editor, { editor = null }, onReturnToOrigin = viewModel::navigateBack, nestedDetail = { mode ->
+    V2SettingsLayout(state, editor, { editor = null }, onNestedBack = { editor = settingsParent(editor) },
+        onReturnToOrigin = viewModel::navigateBack, nestedDetail = { mode ->
         when (mode) {
             ABOUT_MANAGEMENT -> V2AppManagementSettings(state, viewModel)
             ABOUT_UPDATE -> UpdateInformationCard(state, viewModel::checkUpdateInformation)
+            ABOUT_LICENSES -> V2LicenseContent(null) { editor = ABOUT_LICENSE_PREFIX + it }
             ABOUT_REPORT -> {
                 if (state.runningSettingsDiagnostic) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -75,12 +77,16 @@ internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewMod
                 DiagnosticDetail(state, viewModel, Modifier.fillMaxSize(), viewModel::makeSettingsReport)
             }
             else -> {
-                val env = state.environment
-                LanSecuritySettingsPage(LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
-                    state.isWorking || env.operationActive, { editor = null }, viewModel::saveLanSecurity,
-                    requestedListen = mode == "toggle-listen" || env.externalAccessEnabled,
-                    requestedBasicAuth = if (mode == "toggle-auth") !env.basicAuthEnabled else env.basicAuthEnabled,
-                    running = env.processRunning, result = state.lastOperationResult)
+                if (mode.startsWith(ABOUT_LICENSE_PREFIX)) {
+                    V2LicenseContent(mode.removePrefix(ABOUT_LICENSE_PREFIX)) {}
+                } else {
+                    val env = state.environment
+                    LanSecuritySettingsPage(LanSecuritySnapshot(env.externalAccessEnabled, env.whitelist, env.basicAuthEnabled, env.perUserBasicAuth),
+                        state.isWorking || env.operationActive, { editor = null }, viewModel::saveLanSecurity,
+                        requestedListen = mode == "toggle-listen" || env.externalAccessEnabled,
+                        requestedBasicAuth = if (mode == "toggle-auth") !env.basicAuthEnabled else env.basicAuthEnabled,
+                        running = env.processRunning, result = state.lastOperationResult)
+                }
             }
         }
     }) { page, roomy ->
@@ -97,12 +103,16 @@ internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewMod
 internal const val ABOUT_MANAGEMENT = "about-management"
 internal const val ABOUT_UPDATE = "about-update"
 internal const val ABOUT_REPORT = "about-report"
+internal const val ABOUT_LICENSES = "about-licenses"
+private const val ABOUT_LICENSE_PREFIX = "about-license/"
+internal fun settingsParent(child: String?) = if (child?.startsWith(ABOUT_LICENSE_PREFIX) == true) ABOUT_LICENSES else null
 internal val LauncherUiState.runningSettingsDiagnostic: Boolean
     get() = isWorking && settingsDiagnosticStartedAtMillis == workingStartedAtMillis
 
 @Composable
 internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, closeNested: () -> Unit = {},
     nestedDetail: @Composable (String) -> Unit = {}, onReturnToOrigin: () -> Unit = {},
+    onNestedBack: () -> Unit = closeNested,
     detail: @Composable (SettingsPage, Boolean) -> Unit) {
     var shortcut by rememberSaveable { mutableStateOf(state.serverSettingsFromHomeEntry == state.navigation.entryId) }
     var open by rememberSaveable { mutableStateOf(if (shortcut) SettingsPage.SERVER else null) }
@@ -119,7 +129,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
         val wide = chooseLauncherNavigation(LocalConfiguration.current.screenWidthDp.toFloat()) == LauncherNavigationMode.RAIL
         val roomy = wide && maxWidth >= 890.dp && fontScale < 1.3f
         val listWidth = if (roomy) 350.dp else (maxWidth * .38f).coerceAtMost(300.dp)
-        val back = { if (nested != null) closeNested() else if (shortcut) onReturnToOrigin() else { returned = open; open = null } }
+        val back = { if (nested != null) onNestedBack() else if (shortcut) onReturnToOrigin() else { returned = open; open = null } }
         V2BackHandler(enabled = shortcut || nested != null || !wide && open != null, onBack = back)
         val selected = open ?: SettingsPage.DISPLAY
         val index: @Composable (Modifier) -> Unit = { modifier ->
@@ -156,7 +166,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
             val route: Pair<SettingsPage?, String?> = (if (wide) selected else open) to nested
             val travel = with(LocalDensity.current) { 24.dp.roundToPx() }
             AnimatedContent(route, modifier = Modifier.weight(1f).fillMaxHeight(), transitionSpec = {
-                val depth: (Pair<SettingsPage?, String?>) -> Int = { if (it.second != null) 2 else if (it.first != null) 1 else 0 }
+                val depth: (Pair<SettingsPage?, String?>) -> Int = { if (settingsParent(it.second) != null) 3 else if (it.second != null) 2 else if (it.first != null) 1 else 0 }
                 val t = if (reduced) 0 else if (depth(targetState) < depth(initialState)) 180 else 220
                 (when {
                     reduced -> EnterTransition.None togetherWith ExitTransition.None
@@ -182,7 +192,8 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                             ABOUT_MANAGEMENT -> "바로가기 · 앱 관리"
                             ABOUT_UPDATE -> "업데이트 정보"
                             ABOUT_REPORT -> "진단 보고서"
-                            else -> "외부 접속·인증 설정"
+                            ABOUT_LICENSES -> "오픈소스 라이선스"
+                            else -> if (child.startsWith(ABOUT_LICENSE_PREFIX)) licenseLabel(child.removePrefix(ABOUT_LICENSE_PREFIX)) else "외부 접속·인증 설정"
                         }, style = if (wide) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
                             modifier = Modifier.padding(vertical = 12.dp).semantics { heading() })
                     }

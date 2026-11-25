@@ -22,8 +22,6 @@ import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,7 +61,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -262,6 +259,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     var confirmation by rememberSaveable(stateSaver = ConfirmationSaver) { mutableStateOf<Confirmation?>(null) }
     var welcomeAfterInstall by rememberSaveable { mutableStateOf(false) }
     var requestedArchive by rememberSaveable { mutableStateOf<String?>(null) }
+    var requestBackupSpace by rememberSaveable { mutableStateOf(false) }
     var archiveReturnToOrigin by rememberSaveable { mutableStateOf(false) }
     val showWelcome = welcomeAfterInstall && state.environment.sillyTavernInstalled &&
         state.section in setOf(MainSection.HOME, MainSection.SETUP, MainSection.BACKUPS) &&
@@ -270,7 +268,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     val setupFullScreen = section in setOf(MainSection.SETUP, MainSection.BACKUPS) &&
         (showWelcome || state.shouldShowSetupGuide || state.environmentChecked && !state.environment.sillyTavernInstalled)
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
-    var selectedBrowserPackage by rememberSaveable { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onCommandPermissionResult(granted) }
@@ -395,8 +392,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 onSync = { time -> failedResult = -1L; viewModel.confirmRuntimeLibrarySync(time) })
         } else if (storage != null) {
             StorageFailureSheet(summary, storage, state.environment.recoveryPending, onClose = { failedResult = -1L },
-                onDownloads = { failedResult = -1L; viewModel.openDownloadsFolder() },
-                onInventory = { failedResult = -1L; viewModel.openSafetyInventory() },
+                onStorageCleanup = { failedResult = -1L; requestBackupSpace = true; viewModel.openBackups() },
                 onDeviceStorage = { failedResult = -1L; viewModel.openDeviceStorageSettings() },
                 onRetry = { failedResult = -1L; viewModel.retryLastOperation() },
                 onHistory = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
@@ -407,8 +403,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         failedResult = -1L
                         if (offerRepair) viewModel.selectTool(ToolPage.REPAIR) else viewModel.openTermux()
                     }, description = if (offerRepair) "" else "Termux 앱이 열려요.")
-                    if (summary.canRetry) V2OutlineAction("다시 시도", { failedResult = -1L; viewModel.retryLastOperation() }, Modifier.fillMaxWidth())
-                    V2NavigationRow("작업 기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
+                    if (summary.canRetry) {
+                        V2SheetPrimaryButton("다시 시도") { failedResult = -1L; viewModel.retryLastOperation() }
+                        V2QuietAction("작업 기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) }, Modifier.fillMaxWidth())
+                    } else V2LinkAction("작업 기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
                 }
             }) {
                 Text("실행 도구를 확인해 주세요", style = MaterialTheme.typography.titleLarge)
@@ -421,8 +419,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (summary.canRetry) V2SheetPrimaryButton("다시 시도") {
                     failedResult = -1L; viewModel.retryLastOperation()
-                } else V2NavigationRow("진단 열기", { failedResult = -1L; viewModel.selectTool(ToolPage.DIAGNOSTICS) })
-                V2NavigationRow("기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
+                } else V2SheetPrimaryButton("진단 열기") { failedResult = -1L; viewModel.selectTool(ToolPage.DIAGNOSTICS) }
+                V2QuietAction("작업 기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) }, Modifier.fillMaxWidth())
             }
         }) {
             Text("${summary.title} 작업을 마치지 못했어요", style = MaterialTheme.typography.titleLarge)
@@ -466,7 +464,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 op == "start" -> {
                     val browser = viewModel.preferredBrowser()
                     if (browser != null) viewModel.openBrowser(browser.packageName)
-                    else { selectedBrowserPackage = null; browserPickerOpen = true }
+                    else browserPickerOpen = true
                 }
                 op == "save-lan-security" -> viewModel.openLanAddressFromNotice()
                 archive != null -> {
@@ -541,63 +539,13 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
 
     if (browserPickerOpen) {
-        // PackageManager crosses into the OS and resolves app labels. Query once per open dialog.
-        val browsers = remember(viewModel, state.environment.port) { viewModel.browserOptions() }
-        val selected = selectedBrowserPackage ?: browsers.firstOrNull()?.packageName
-        V2AlertDialog(
-            onDismissRequest = {
-                browserPickerOpen = false
-                selectedBrowserPackage = null
-            },
-            title = { Text("열 앱 선택") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        if (browsers.isEmpty()) {
-                            "이 주소를 열 수 있는 앱을 찾지 못했습니다."
-                        } else {
-                            "브라우저 또는 연결된 앱을 선택하세요. Android 기본 열기를 선택하면 기존 연결 설정에 따라 앱이 자동으로 열릴 수 있습니다."
-                        },
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    browsers.forEach { browser ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .selectable(selected == browser.packageName, role = Role.RadioButton, onClick = { selectedBrowserPackage = browser.packageName })
-                                .heightIn(min = 48.dp)
-                                .padding(vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = selected == browser.packageName,
-                                onClick = null,
-                            )
-                            Text(browser.label)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                if (selected != null) V2DialogAction(
-                    onClick = {
-                        selected?.let { viewModel.openBrowser(it, rememberChoice = true) }
-                        browserPickerOpen = false
-                        selectedBrowserPackage = null
-                    },
-                ) { Text("항상") }
-            },
-            dismissButton = {
-                val cancel = { browserPickerOpen = false; selectedBrowserPackage = null }
-                if (selected == null) V2OutlineAction("닫기", cancel) else {
-                    V2DialogAction(tone = V2DialogTone.Quiet, onClick = cancel) { Text("취소") }
-                    V2OutlineAction("한 번만", {
-                        viewModel.openBrowser(selected, rememberChoice = false)
-                        cancel()
-                    })
-                }
-            },
-        )
+        val browsers by androidx.compose.runtime.produceState<List<app.tavernbridge.launcher.model.BrowserOption>?>(
+            null, viewModel, state.environment.port
+        ) { value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { viewModel.browserOptions() } }
+        BrowserPickerSheet(browsers, onClose = { browserPickerOpen = false }) { pkg, remember ->
+            browserPickerOpen = false
+            viewModel.openBrowser(pkg, rememberChoice = remember)
+        }
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -684,7 +632,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             if (preferred != null) {
                                 viewModel.openBrowser(preferred.packageName)
                             } else {
-                                selectedBrowserPackage = null // Dialog selects the first available handler.
                                 browserPickerOpen = true
                             }
                         },
@@ -709,7 +656,6 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onLogs = { viewModel.openDiagnostics(DiagnosticPanel.SERVER_LOG) },
                         onHistory = { viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
                         onReadHistory = viewModel::refreshHistorySilently,
-                        onSnoozeBackupReminder = viewModel::snoozeBackupReminder,
                     )
                     MainSection.SETUP, MainSection.BACKUPS -> if (section == MainSection.BACKUPS && state.safetyInventory.open) {
                         SafetyInventoryScreen(state.safetyInventory.copy(mutationBlocked = state.safetyInventory.mutationBlocked || state.environment.recoveryPending),
@@ -742,6 +688,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                             onSelective = viewModel::openSelectiveRestore, onImport = pickBackup,
                             storageSetupCommand = viewModel.storageSetupCommand, onTermux = viewModel::openTermux, onCopied = {},
                             requestedArchive = requestedArchive, archiveReturnToOrigin = archiveReturnToOrigin,
+                            requestSpace = requestBackupSpace, onSpaceOpened = { requestBackupSpace = false },
                             onArchiveOpened = { requestedArchive = null }, onArchiveShortcutBack = viewModel::navigateBack,
                             onRestore = { backup ->
                                 confirmation = Confirmation(
@@ -809,7 +756,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             }
             state.backupCleanupPreview?.takeUnless { state.isWorking }?.let { preview ->
-                BackupCleanupDialog(preview, viewModel::closeBackupCleanup, viewModel::deleteCleanupSelection)
+                BackupCleanupScreen(preview, viewModel::closeBackupCleanup, viewModel::deleteCleanupSelection)
             }
             if (state.extensionManagerOpen && !state.isWorking) ExtensionManagerDialog(
                 inventory = state.extensionInventory, loading = state.extensionLoading, busy = state.isWorking,
@@ -904,12 +851,11 @@ private fun HomeScreen(
     onLogs: () -> Unit,
     onHistory: () -> Unit,
     onReadHistory: () -> Unit,
-    onSnoozeBackupReminder: () -> Unit,
 ) {
     val env = state.environment
     if (state.environmentChecked && env.sillyTavernInstalled && !env.recoveryPending) {
         V2HomeDashboard(state, onOpen, onStart, onStop, onRestart, onOpenBackups,
-            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder, onOpenArchive,
+            onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onOpenArchive,
             onCancelStart, onChangePort, onBlocked, onServerSettings)
     } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -1029,20 +975,18 @@ internal fun EnvironmentCheckingCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            if (wakeBlocked) {
-                V2NavigationRow("Termux 배터리 설정 열기", onOpenTermuxSettings, description = "Android 설정 앱이 열려요.")
+            val permissionNeeded = state.termuxSetup.status == TermuxSetupStatus.PERMISSION_REQUIRED
+            val commandNeeded = state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED
+            if (wakeBlocked || permissionNeeded || commandNeeded) V2NavigationGroup {
+                if (wakeBlocked) V2NavigationRow("Termux 배터리 설정 열기", onOpenTermuxSettings, description = "Android 설정 앱이 열려요.")
+                if (permissionNeeded) V2NavigationRow("런처 실행 권한 설정", onOpenPermissionSettings, description = "Android 설정 앱이 열려요.")
+                if (commandNeeded) V2NavigationRow("연결 설정 명령 복사·Termux 열기", {
+                        clipboard.setText(AnnotatedString(setupCommand))
+                        onOpenTermux()
+                    }, description = "명령을 복사하고 Termux 앱이 열려요.")
             }
-            if (state.termuxSetup.status == TermuxSetupStatus.PERMISSION_REQUIRED) {
-                V2NavigationRow("런처 실행 권한 설정", onOpenPermissionSettings, description = "Android 설정 앱이 열려요.")
-            }
-            if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED) {
-                V2NavigationRow("연결 설정 명령 복사·Termux 열기", {
-                    clipboard.setText(AnnotatedString(setupCommand))
-                    onOpenTermux()
-                }, description = "명령을 복사하고 Termux 앱이 열려요.")
-            }
-            V2NavigationRow("Termux 한 번 열기", onOpenTermux, description = "Termux 앱이 열려요.")
-            V2OutlineAction("설치 상태 다시 확인", onRefresh, Modifier.fillMaxWidth())
+            V2SheetPrimaryButton("설치 상태 다시 확인", onClick = onRefresh)
+            V2QuietAction("Termux 한 번 열기", onOpenTermux, Modifier.fillMaxWidth())
         }
     }
 }
@@ -1056,7 +1000,7 @@ private fun EmptyHomeCard(deferred: Boolean, onSetup: () -> Unit, onRefresh: () 
         Button(onClick = onSetup, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
             Text(if (deferred) "이어서 하기" else "설치하기")
         }
-        V2OutlineAction("설치 상태 다시 확인", onRefresh, Modifier.fillMaxWidth())
+        V2QuietAction("설치 상태 다시 확인", onRefresh, Modifier.fillMaxWidth())
     }
 }
 
@@ -1121,11 +1065,16 @@ internal fun BackupStorageSetupCard(
                 Text(if (copiedAt > 0) "복사됨" else command, Modifier.padding(12.dp), fontFamily = V2Mono,
                     color = if (copiedAt > 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface)
             }
-            V2NavigationRow("Termux 열기", {
+            Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Outlined.Refresh, null)
+                Spacer(Modifier.width(8.dp))
+                Text("연결 확인")
+            }
+            V2QuietAction("Termux 열기", {
                 checkOnReturn = true
                 onOpenTermux()
-            }, description = "Termux 앱이 열려요.")
-            V2OutlineAction("연결 확인", onRefresh, Modifier.fillMaxWidth(), leadingIcon = { Icon(Icons.Outlined.Refresh, null) })
+            }, Modifier.fillMaxWidth())
         }
     }
 }

@@ -33,7 +33,7 @@ class ActionAffordanceTest {
         ui.onNodeWithContentDescription("전체 로그 복사").assertDoesNotExist()
     }
 
-    @Test fun blockedShortcutShowsOnlyCloseAndCannotDispatchStart() {
+    @Test fun blockedShortcutShowsOnlyAcknowledgementAndCannotDispatchStart() {
         var closed = 0
         var started = 0
         ui.setContent {
@@ -43,7 +43,8 @@ class ActionAffordanceTest {
             }
         }
         ui.onNodeWithText("확인 후 실행").assertDoesNotExist()
-        ui.onNodeWithText("닫기").assertHasClickAction().performClick()
+        ui.onNodeWithText("닫기").assertDoesNotExist()
+        ui.onNodeWithText("확인").assertHasClickAction().performClick()
         ui.runOnIdle { assertEquals(0, started); assertEquals(1, closed) }
     }
 

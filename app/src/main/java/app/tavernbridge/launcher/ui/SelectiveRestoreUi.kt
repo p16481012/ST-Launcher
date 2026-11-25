@@ -3,11 +3,13 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.*
 
@@ -30,12 +32,14 @@ internal fun SelectiveRestoreDialog(
         SelectiveRestoreChoice(it, if (it.relativePath in replacements) SelectiveRestoreConflict.REPLACE else SelectiveRestoreConflict.SKIP)
     }
     val ready = canRestore && !state.loading && state.error.isBlank() && choices.isNotEmpty()
+    val list = rememberLazyListState()
+    LoadBackupPageAtEnd(list, page?.nextCursor, !confirming && !state.loading && state.error.isBlank() && (page?.items?.size ?: 0) < 1000, onMore)
     V2AlertDialog(
         onDismissRequest = onClose,
         scrollBody = false,
         title = { Text(if (confirming) "선택한 항목을 복원할까요?" else "캐릭터·채팅 선택 복원") },
         text = {
-            LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(Modifier.fillMaxWidth().testTag("restore-candidate-list"), state = list, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 item {
                     Text("선택하지 않은 파일과 API 키는 변경하지 않습니다. 현재 설치에 존재하는 사용자 폴더의 항목만 복원합니다.", style = MaterialTheme.typography.bodySmall)
                 }
@@ -75,8 +79,8 @@ internal fun SelectiveRestoreDialog(
                             }
                         }
                     }
-                    if (page?.nextCursor != null && page.items.size < 1000 && !state.loading)
-                        item { V2OutlineAction("더 불러오기", onMore) }
+                    if (page?.nextCursor != null && page.items.size < 1000)
+                        item(key = BackupPageEnd) { Spacer(Modifier.height(1.dp)) }
                     if (page?.items?.size == 1000 && page.nextCursor != null) item { Text("한 번에 목록 1,000개까지 표시합니다.", style = MaterialTheme.typography.bodySmall) }
                 }
                 if (state.loading) item { V2BusyIndicator(Modifier.fillMaxWidth()) }
@@ -85,14 +89,18 @@ internal fun SelectiveRestoreDialog(
                     if (!state.loading) V2OutlineAction("목록 다시 확인", onRefresh)
                 }
                 if (!canRestore) item { Text("서버와 다른 작업을 종료한 뒤 복원할 수 있습니다.", color = MaterialTheme.colorScheme.error) }
+                else if (confirming && !ready && !state.loading && state.error.isBlank())
+                    item { SettingsCaption("현재 복원할 수 있는 선택 항목이 없어요. 이전 단계에서 다시 선택해 주세요.") }
             }
         },
-        confirmButton = { if (ready) V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = { if (confirming) onRestore(choices, backupBefore) else confirming = true }) { Text(if (confirming) "검사 후 복원" else "선택 내용 확인") } },
+        confirmButton = {
+            if (ready) V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = { if (confirming) onRestore(choices, backupBefore) else confirming = true }) { Text(if (confirming) "검사 후 복원" else "선택 내용 확인") }
+            else if (!confirming) V2DialogAction(onClick = onClose) { Text("확인") }
+        },
         dismissButton = {
             val label = if (confirming) "이전" else "닫기"
             val leave: () -> Unit = { if (confirming) confirming = false else onClose() }
-            if (ready) V2DialogAction(tone = V2DialogTone.Quiet, onClick = leave) { Text(label) }
-            else V2OutlineAction(label, leave)
+            if (ready || confirming) V2DialogAction(tone = V2DialogTone.Quiet, onClick = leave) { Text(label) }
         },
     )
 }

@@ -138,7 +138,7 @@ class V2VisualTest {
         compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
             ScreenChrome(MainSection.HOME) {
                 V2HomeDashboard(fixture, onOpen = { opens++ }, onStart = {}, onStop = {}, onRestart = {}, onBackups = {},
-                    onUpdate = {}, onLogs = {}, onHistory = {}, onReadHistory = {}, onRefresh = {}, onRetry = {}, onSnooze = {}, onOpenArchive = {})
+                    onUpdate = {}, onLogs = {}, onHistory = {}, onReadHistory = {}, onRefresh = {}, onRetry = {}, onOpenArchive = {})
             }
         } }
         compose.onNodeWithText("대화 열기").assertIsDisplayed().performClick()
@@ -154,7 +154,7 @@ class V2VisualTest {
             V2HomeDashboard(shown, onOpen = {}, onStart = {}, onStop = { clicks += "stop" },
                 onRestart = { clicks += "restart" }, onBackups = { clicks += "backup" },
                 onUpdate = {}, onLogs = { clicks += "logs" }, onHistory = {}, onReadHistory = {},
-                onRefresh = {}, onRetry = {}, onSnooze = {}, onOpenArchive = {}, onBlocked = { clicks += "blocked" })
+                onRefresh = {}, onRetry = {}, onOpenArchive = {}, onBlocked = { clicks += "blocked" })
         } }
         val actions = listOf("재시작", "백업", "로그").map { compose.onNodeWithText(it) }
         val bounds = actions.map { it.fetchSemanticsNode().boundsInRoot }
@@ -245,7 +245,7 @@ class V2VisualTest {
 
     @Test fun tappingExternalAccessWhileServerRunsExplainsWithoutChangingIt() {
         compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
-            V2HomeDashboard(fixture, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+            V2HomeDashboard(fixture, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
         } }
         compose.onNodeWithText("외부 접속").performScrollTo().performClick()
         compose.onNodeWithText("실행 중인 서버가 잠시 멈췄다가 다시 시작해요.", substring = true).assertIsDisplayed()
@@ -289,7 +289,7 @@ class V2VisualTest {
             var home by remember { mutableStateOf(roomy) }
             var request by remember { mutableStateOf(if (roomy) null else second.fileName) }
             SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
-                if (home) V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+                if (home) V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
                     onOpenArchive = { request = it; home = false })
                 else V2BackupScreen(state, { _, _, _ -> }, {}, {}, { _, _ -> }, {}, {}, {}, { _, _ -> }, { _, _, _ -> },
                     {}, {}, {}, "", {}, {}, {}, {}, request, { request = null }, { home = true })
@@ -315,7 +315,7 @@ class V2VisualTest {
             SillyTavernLauncherTheme(selectedTheme, display) {
                 ScreenChrome(section) {
                     when (section) {
-                        MainSection.HOME -> V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                        MainSection.HOME -> V2HomeDashboard(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                         MainSection.SETTINGS -> V2SettingsLayout(state) { page, roomy ->
                             check(page == SettingsPage.DISPLAY)
                             V2DisplaySettings(state, { selectedTheme = it }, { selectedAccent = it.accent; contrast = it.highContrast }, roomy)

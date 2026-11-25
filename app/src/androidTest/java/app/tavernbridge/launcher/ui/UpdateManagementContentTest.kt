@@ -53,7 +53,7 @@ class UpdateManagementContentTest {
         ui.onNodeWithText("v24.22.3 / 필요 >= 20").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("업데이트 공간").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("config-test.yaml").performScrollTo().assertIsDisplayed()
-        ui.onNodeWithText("업데이트 안전 검사").performScrollTo().performClick()
+        ui.onNodeWithText("다시 검사").performScrollTo().performClick()
         ui.onNodeWithText("이전 버전 선택·복귀").performScrollTo().performClick()
         ui.onNodeWithText("설치 정보·가져오기·브랜치").performScrollTo().performClick()
         ui.onNodeWithText("업데이트 실패 후 이전 상태로 롤백됨").performScrollTo().assertIsDisplayed()

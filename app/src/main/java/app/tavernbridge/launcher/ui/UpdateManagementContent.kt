@@ -37,7 +37,7 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
     DetailLayout(mod, footer = {
         val buttonMod = Modifier.weight(1f).heightIn(min = 52.dp)
         if (report?.updateAvailable == false && blocked.isEmpty()) {
-            V2OutlineAction("다시 확인", onCheck, buttonMod)
+            V2OutlineAction("다시 확인", onCheck, buttonMod, footer = true)
         } else if ((report == null && blocked.isEmpty()) || ready) Button(
             onClick = if (report == null) onCheck else onUpdate, modifier = buttonMod, shape = RoundedCornerShape(14.dp)) {
             Text(if (report == null) "업데이트 안전 검사" else "업데이트")
@@ -58,7 +58,7 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
                 caption = "사용자 데이터·확장 프로그램·config.yaml을 백업해요. secrets.json과 외부 접속 로그인 정보는 넣지 않아요.",
                 onClick = { onBackupPreference(!state.autoBackupBeforeUpdate) })
         }
-        ToolGroup("안전 검사 결과") {
+        ToolGroup("업데이트 전 확인", if (report?.updateAvailable == true && blocked.isEmpty()) "다시 검사" else null, onCheck) {
             if (report == null) ToolRow("아직 검사하지 않았어요.", "커밋·Node.js·저장 공간·수정 파일을 확인해요.")
             else {
                 SettingsRow("현재 커밋", report.currentCommit.shortCommit(), mono = true)
@@ -84,11 +84,6 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
                         Text(report.modifiedFiles.joinToString("\n"), Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
                             style = MaterialTheme.typography.bodySmall, fontFamily = V2Mono)
                     }
-                }
-                if (report.updateAvailable) {
-                    ToolDivider()
-                    if (blocked.isEmpty()) V2OutlineAction("업데이트 안전 검사", onCheck,
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
                 }
             }
             if (blocked.isNotBlank()) ToolRow("지금 검사할 수 없어요", blocked)

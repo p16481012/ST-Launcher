@@ -229,7 +229,9 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
         SettingsDivider()
         SettingsRow("시작 후 브라우저 자동 열기", checked = state.autoOpenBrowser, onClick = { vm.setAutoOpenBrowser(!state.autoOpenBrowser) })
     }
-    if (dialog == "address") V2BottomSheet(onClose = { dialog = "" }) {
+    if (dialog == "address") V2BottomSheet(onClose = { dialog = "" }, footer = if (env.externalAccessEnabled) ({
+        V2OutlineAction("주소 새로고침", vm::refreshLanAddresses, Modifier.fillMaxWidth(), footer = true)
+    }) else null) {
         Text("같은 Wi-Fi 접속 주소", style = MaterialTheme.typography.titleLarge)
         if (!env.externalAccessEnabled) Text("외부 접속이 꺼져 있어요.")
         else {
@@ -241,11 +243,9 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
                 if (addresses.size > 1) Column(Modifier.selectableGroup()) {
                     addresses.forEach { SettingsRadioRow(it.url, it == endpoint) { chosen = it.url } }
                 }
-                Text(endpoint.url)
+                LanAddressCopyRow(endpoint.url) { clipboard.setText(AnnotatedString(endpoint.url)); vm.showMessage("주소를 복사했어요.") }
                 LanQrImage(endpoint)
-                OutlinedButton(onClick = { clipboard.setText(AnnotatedString(endpoint.url)); vm.showMessage("주소를 복사했어요.") }) { Text("주소 복사") }
             }
-            V2OutlineAction("주소 새로고침", vm::refreshLanAddresses)
         }
     }
     if (dialog == "browser") {
@@ -361,11 +361,9 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
                 Text(TermuxProcessHelp.explanation(Build.VERSION.SDK_INT))
                 Text(if (bg.isSamsung) "배터리 설정 → 백그라운드 사용 제한 → 절전·초절전 앱에서 Termux를 제거하세요. 절전 예외에 추가하고, Termux 앱 정보 → 배터리에서 제한 없음을 선택하세요."
                     else "Termux 앱 정보에서 알림을 허용하고 배터리 제한을 확인하세요. Wake lock은 기기의 강제 종료까지 막지는 못해요.")
-                SettingsGroup {
+                V2NavigationGroup {
                     V2NavigationRow("배터리 설정", vm::openDeviceBatterySettings, description = "Android 설정 앱이 열려요")
-                    SettingsDivider()
                     V2NavigationRow("Termux 앱 정보", vm::openTermuxAppSettings, description = "Android 설정 앱이 열려요")
-                    SettingsDivider()
                     V2NavigationRow("Termux 공식 안내", { runCatching { uri.openUri(TermuxProcessHelp.OFFICIAL_HELP_URL) }.onFailure { vm.showMessage("링크를 열 수 없어요.") } },
                         description = "브라우저 앱이 열려요")
                 }
@@ -378,7 +376,6 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
 internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, openDetail: (String) -> Unit) {
     val context = LocalContext.current
     val uri = LocalUriHandler.current
-    var dialog by rememberSaveable { mutableStateOf("") }
     val termux by produceState<TermuxInstallationInfo?>(null, state.environment.termuxInstalled) {
         value = withContext(Dispatchers.IO) { TermuxInstallationInspector(context.applicationContext).inspect() }
     }
@@ -414,7 +411,7 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
         SettingsDivider()
         SettingsRow("GitHub 저장소", caption = "브라우저 앱이 열려요", onClick = { runCatching { uri.openUri("https://github.com/p16481012/ST-Launcher") }.onFailure { vm.showMessage("저장소 링크를 열 수 없어요.") } })
         SettingsDivider()
-        SettingsRow("오픈소스 라이선스", onClick = { dialog = "licenses" })
+        SettingsRow("오픈소스 라이선스", onClick = { openDetail(ABOUT_LICENSES) })
     }
     SettingsGroup {
         val installed = state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected
@@ -426,7 +423,6 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
         SettingsDivider()
         SettingsRow("바로가기 · 앱 관리", onClick = { openDetail(ABOUT_MANAGEMENT) })
     }
-    if (dialog == "licenses") LicenseDialog { dialog = "" }
     SettingsCaption("깡통 커뮤니티에서 만든 비공식 런처예요.\nSillyTavern·Termux 공식 프로젝트와는 관련이 없어요.")
 }
 
@@ -449,27 +445,26 @@ internal fun V2AppManagementSettings(state: LauncherUiState, vm: LauncherViewMod
     else if (state.isWorking) SettingsCaption("진행 중인 작업이 끝나면 확장 프로그램을 관리할 수 있어요.")
 }
 
+internal fun licenseLabel(file: String) = if (file == "Android-runtime-libraries.txt") "AndroidX · Kotlin · 런타임 라이브러리" else file.removeSuffix(".txt")
+
 @Composable
-private fun LicenseDialog(close: () -> Unit) {
+internal fun V2LicenseContent(selected: String?, openFile: (String) -> Unit) {
     val assets = LocalContext.current.assets
     val names = remember(assets) { assets.list("licenses").orEmpty().filter { it.endsWith(".txt") }.sorted() }
-    fun label(file: String) = if (file == "Android-runtime-libraries.txt") "AndroidX · Kotlin · 런타임 라이브러리" else file.removeSuffix(".txt")
-    var selected by rememberSaveable { mutableStateOf<String?>(null) }
     val body by produceState("", selected) {
         val name = selected
         value = if (name == null || name !in names) "" else withContext(Dispatchers.IO) {
             runCatching { assets.open("licenses/$name").bufferedReader().use { it.readText() } }.getOrDefault("라이선스를 열 수 없어요.")
         }
     }
-    V2BottomSheet(onClose = close) {
-        Text(selected?.let(::label) ?: "오픈소스 라이선스", style = MaterialTheme.typography.titleLarge)
-        if (selected == null) names.forEach { name -> SettingsRow(label(name), onClick = { selected = name }) }
-        else {
-            V2LinkAction("목록", { selected = null })
-            Text(body, style = MaterialTheme.typography.bodySmall)
+    if (selected == null) {
+        SettingsGroup {
+            names.forEachIndexed { index, name ->
+                if (index > 0) SettingsDivider()
+                SettingsRow(licenseLabel(name), onClick = { openFile(name) })
+            }
         }
-        V2OutlineAction("닫기", close, Modifier.fillMaxWidth())
-    }
+    } else Text(body, style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
@@ -478,7 +473,7 @@ private fun SettingsInfo(title: String, body: String, close: () -> Unit) {
 }
 
 @Composable
-private fun SettingsRadioRow(label: String, chosen: Boolean, select: () -> Unit) {
+internal fun SettingsRadioRow(label: String, chosen: Boolean, select: () -> Unit) {
     Row(Modifier.fillMaxWidth().selectable(chosen, role = Role.RadioButton, onClick = select).heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         RadioButton(selected = chosen, onClick = null)

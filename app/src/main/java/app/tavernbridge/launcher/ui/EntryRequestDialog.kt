@@ -20,9 +20,11 @@ internal fun EntryRequestDialog(request: LauncherEntryRequest?, gate: LauncherEn
             LauncherEntryGate.ALREADY_STOPPED -> "서버가 이미 종료되어 있습니다."
             else -> "런처 화면에서 상태를 확인해 주세요."
         }) },
-        confirmButton = { if (allowed) V2DialogAction(onClick = onConfirm) { Text("확인 후 실행") } },
+        confirmButton = {
+            if (allowed) V2DialogAction(onClick = onConfirm) { Text("확인 후 실행") }
+            else V2DialogAction(onClick = onClose) { Text("확인") }
+        },
         dismissButton = {
             if (allowed) V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") }
-            else V2OutlineAction("닫기", onClose)
         })
 }

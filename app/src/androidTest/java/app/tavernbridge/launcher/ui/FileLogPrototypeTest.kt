@@ -89,8 +89,11 @@ class FileLogPrototypeTest {
         } }
         ui.onNodeWithText("휴지통").performClick()
         ui.onNodeWithText("SillyTavern/data/기록.txt").assertExists()
-        ui.captureManagementScreen("files-trash", "복구")
-        ui.onNodeWithText("복구").performClick()
+        ui.captureManagementScreen("files-trash", "기록.txt")
+        ui.onNodeWithContentDescription("data/기록.txt 작업").performClick()
+        ui.onNodeWithText("원래 위치로 복원").assertHasClickAction()
+        ui.runOnIdle { assertEquals(emptyList<String>(), captured) }
+        ui.onNodeWithText("원래 위치로 복원").performClick()
         ui.runOnIdle { assertEquals(listOf(id), captured) }
         ui.onNodeWithContentDescription("파일 목록으로 돌아가기").performClick()
         ui.onNodeWithText("빈 폴더예요").assertExists()
@@ -107,7 +110,9 @@ class FileLogPrototypeTest {
                 {}, {}, {}, {}, {}, null, {}, embedded = true)
             }
         } }
+        ui.onNodeWithText("새로 만들기").assertHasClickAction().assertIsDisplayed()
         ui.onNodeWithText("가져오기").assertHasClickAction().assertIsDisplayed()
+        ui.onNodeWithText("선택").assertHasClickAction().assertIsDisplayed()
         ui.onNodeWithContentDescription("data 작업").assertHasClickAction().assertIsDisplayed()
         ui.onNodeWithContentDescription("config.yaml 작업").assertHasClickAction().assertIsDisplayed()
         ui.captureManagementScreen("files-browser", "새로 만들기")
@@ -178,6 +183,28 @@ class FileLogPrototypeTest {
         ui.onNodeWithText("오류만").performClick()
         ui.onNodeWithText("WARN incoming").assertExists()
         ui.onNodeWithText("ordinary item", substring = true).assertDoesNotExist()
+    }
+
+    @Test fun phoneSheetAutomaticallyReadsExtensionlessTextButNeverOpensASecret() {
+        val requested = mutableListOf<String>()
+        val document = mutableStateOf<TavernFilePreview?>(null)
+        val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),
+            fileBrowserEntries = listOf(entry("README"), entry("secrets.json").copy(sensitive = true)))
+        ui.setContent {
+            SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+                TavernFileManagerDialog(state, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {},
+                    { path -> requested += path; document.value = TavernFilePreview(path, 5, text = "Hello") },
+                    document.value, { document.value = null }, embedded = true)
+            }
+        }
+        ui.onNodeWithText("README").performClick()
+        ui.onNodeWithText("Hello").assertExists()
+        ui.onNodeWithText("내용 미리보기").assertDoesNotExist()
+        ui.onNodeWithContentDescription("시트 닫기").performClick()
+        ui.onNodeWithText("secrets.json").performClick()
+        ui.onNodeWithText("민감한 파일 내용은 자동으로 표시하지 않아요.").assertExists()
+        ui.onNodeWithText("Hello").assertDoesNotExist()
+        ui.runOnIdle { assertEquals(listOf("README"), requested) }
     }
 
     @Test fun anotherFileCanBeSelectedWhileTabletPreviewIsPending() {
