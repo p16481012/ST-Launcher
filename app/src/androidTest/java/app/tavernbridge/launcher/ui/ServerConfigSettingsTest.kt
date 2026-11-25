@@ -18,7 +18,7 @@ class ServerConfigSettingsTest {
         ui.setContent {
             var draft by remember { mutableStateOf("") }
             SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
-                V2ServerConfigSettings(LauncherUiState(serverConfig=config, environment=EnvironmentStatus(processRunning=true)),
+                V2ServerConfigSettings(LauncherUiState(serverConfig=config, isWorking=false, environment=EnvironmentStatus(processRunning=true)),
                     draft,{draft=it},{},{},{rev,changes -> assertEquals(revision,rev); sent=changes },{ null })
             }
         }

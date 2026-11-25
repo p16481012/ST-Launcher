@@ -924,12 +924,13 @@ begin_operation() {
     fi
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
-    if [[ "$CURRENT_OPERATION" == import-character || "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
-        # A targeted card/chat action cannot authorize replaying an unrelated installation journal.
+    if [[ "$CURRENT_OPERATION" == server-config-write || "$CURRENT_OPERATION" == import-character || "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
+        # A targeted card/chat/settings action cannot authorize replaying an unrelated installation journal.
         inspect_restore_recovery
         if (( ${#RESTORE_PENDING_WORKS[@]} )); then
             RESTORE_RECOVERY_GUARD_FAILED=1
-            if [[ "$CURRENT_OPERATION" == import-character ]]; then echo "점검·복구를 먼저 마친 뒤 다시 공유해 주세요." >&2
+            if [[ "$CURRENT_OPERATION" == server-config-write ]]; then echo "error_code=RESTORE_ROLLBACK_REQUIRED" >&2
+            elif [[ "$CURRENT_OPERATION" == import-character ]]; then echo "점검·복구를 먼저 마친 뒤 다시 공유해 주세요." >&2
             else echo "이전 작업의 점검·복구를 마친 뒤 채팅을 다시 검사해 주세요." >&2; fi
             exit 25
         fi
@@ -3879,7 +3880,7 @@ recover_pending_restore() {
 recover_restore_before_dispatch() {
     guard_extension_recovery || exit $?
     case "$CURRENT_OPERATION" in
-        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|server-config-write) ;;
+        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
         *) return 0 ;;
     esac
     inspect_restore_recovery
