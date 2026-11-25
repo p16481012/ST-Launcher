@@ -61,6 +61,25 @@ class DiagnosticsFeedbackUiTest {
         compose.captureManagementScreen("review-diagnostic-empty", "진단 시작")
     }
 
+    @Test fun diagnosisOnlyRunsOnStartOrExplicitRecheck() {
+        val vm = compose.runOnIdle { ViewModelProvider(compose.activity)[LauncherViewModel::class.java] }
+        var runs = 0
+        val result = androidx.compose.runtime.mutableStateOf<DiagnosticReport?>(null)
+        compose.setContent {
+            SillyTavernLauncherTheme(AppTheme.LIGHT) {
+                DiagnosticDetail(LauncherUiState(isWorking = false, diagnosticReport = result.value), vm, Modifier) {
+                    runs++; result.value = report
+                }
+            }
+        }
+        compose.runOnIdle { org.junit.Assert.assertEquals(0, runs) }
+        compose.onNodeWithText("진단 시작").performClick()
+        compose.onNodeWithText("다시 진단").assertIsEnabled()
+        compose.runOnIdle { org.junit.Assert.assertEquals(1, runs) }
+        compose.onNodeWithText("다시 진단").performClick()
+        compose.runOnIdle { org.junit.Assert.assertEquals(2, runs) }
+    }
+
     @Test fun everyCountedCheckHasARowAndVersionMetadataIsSeparate() {
         launch(report)
         compose.onNodeWithText("17개 중 15개 정상").assertIsDisplayed()

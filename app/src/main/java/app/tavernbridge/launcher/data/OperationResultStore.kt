@@ -37,8 +37,9 @@ class OperationResultStore(context: Context) {
         } }
     }.getOrDefault(emptyList()).ifEmpty { listOfNotNull(load()?.takeIf { it.operation in ACTIVITY_TYPES }) }
 
-    @Synchronized fun save(summary: OperationResultSummary) {
-        preferences.edit()
+    fun save(summary: OperationResultSummary) { saveConfirmed(summary) }
+    @Synchronized fun saveConfirmed(summary: OperationResultSummary): Boolean {
+        return preferences.edit()
             .apply {
                 if (summary.operation in ACTIVITY_TYPES) {
                     val rows = JSONArray()

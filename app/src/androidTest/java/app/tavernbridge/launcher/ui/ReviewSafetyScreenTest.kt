@@ -1,13 +1,18 @@
 package app.tavernbridge.launcher.ui
 
+import android.graphics.Bitmap
+import android.graphics.Color
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.test.platform.app.InstrumentationRegistry
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
 import java.util.Calendar
+import java.io.File
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -27,11 +32,39 @@ class ReviewSafetyScreenTest {
         sizeBytes = null, isDirectory = true)
     private val model = mutableStateOf(SafetyInventoryUiState(open = true, items = listOf(a,b,cfg,file,folder), protectedEntries = 1, hasLoaded = true))
     private val events = mutableListOf<String>()
+    private val running = mutableStateOf(false)
+    // Switching from a sheet Window to a dialog Window can publish semantics one compositor
+    // frame before the new window is on screen. Save the same frame we inspected, not the next.
+    private fun captureDrawnDeleteDialog() {
+        val inst = InstrumentationRegistry.getInstrumentation()
+        val dir = File(inst.targetContext.filesDir, "v2-visual")
+        check(dir.isDirectory || dir.mkdirs())
+        ui.waitUntil(timeoutMillis = 8_000) {
+            val bitmap = inst.uiAutomation.takeScreenshot() ?: return@waitUntil false
+            try {
+                fun danger(x: Int, y: Int): Boolean {
+                    val pixel = bitmap.getPixel(x, y)
+                    return Color.red(pixel) in 161..233 && Color.green(pixel) in 27..85 && Color.blue(pixel) in 22..82
+                }
+                val w = bitmap.width; val h = bitmap.height
+                val scrim = Color.red(bitmap.getPixel(5, h / 2)) < 208
+                val button = scrim && (h / 3 until h * 4 / 5 - 12 step 8).any { y ->
+                    (w / 2 until w * 19 / 20 - 24 step 8).any { x ->
+                        danger(x,y) && danger(x+20,y) && danger(x,y+10) && danger(x+20,y+10)
+                    }
+                }
+                if (button) File(dir, "review-safety-delete.png").outputStream().use {
+                    check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
+                }
+                button
+            } finally { bitmap.recycle() }
+        }
+    }
     private fun show() = ui.setContent {
         SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    SafetyInventoryScreen(model.value, serverRunning = false, busy = false,
+                    SafetyInventoryScreen(model.value, serverRunning = running.value, busy = false,
                         onClose = { events += "back" }, onRefresh = { events += "refresh" }, onMore = { events += "more" },
                         onAction = { action, row -> events += "$action:${row.id}" },
                         onDeleteMany = { rows -> events += rows.joinToString(",") { it.id } },
@@ -52,7 +85,7 @@ class ReviewSafetyScreenTest {
         captureModalWindowSnapshot("review-safety-actions")
         ui.onNodeWithText("영구 삭제").performClick()
         ui.onNodeWithText("영구 삭제할까요?").assertIsDisplayed()
-        captureModalWindowSnapshot("review-safety-delete")
+        captureDrawnDeleteDialog()
         ui.onNodeWithText("취소").performClick()
         ui.runOnIdle { assertTrue(events.isEmpty()) }
         ui.onAllNodesWithText("업데이트 전 보호 사본").onFirst().performClick()
@@ -87,5 +120,17 @@ class ReviewSafetyScreenTest {
         ui.onNodeWithText("영구 삭제").assertDoesNotExist()
         ui.onNodeWithText("점검·복구").performClick()
         ui.runOnIdle { assertEquals(listOf("notice","repair"), events) }
+    }
+    @Test fun trashRestorationRequiresExplicitAgreementAndRechecksServerGate() {
+        show()
+        ui.onNodeWithTag("safety-inventory-items").performScrollToNode(hasText(file.originalRelativePath))
+        ui.onNodeWithText(file.originalRelativePath).performClick()
+        ui.onNodeWithText("Download로 사본 내보내기").assertDoesNotExist()
+        ui.onNodeWithText("원래 위치로 복원").performClick()
+        ui.runOnIdle { assertTrue(events.isEmpty()); running.value = true }
+        ui.onNodeWithText("복원").assertIsNotEnabled()
+        ui.runOnIdle { running.value = false }
+        ui.onNodeWithText("복원").performClick()
+        ui.runOnIdle { assertEquals(listOf("restore:f"), events) }
     }
 }

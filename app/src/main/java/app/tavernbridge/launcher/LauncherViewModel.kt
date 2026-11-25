@@ -88,6 +88,8 @@ import app.tavernbridge.launcher.model.retryActionAfterFailure
 import app.tavernbridge.launcher.model.readyForTermuxDiagnostic
 import app.tavernbridge.launcher.model.canOfferRuntimeSync
 import app.tavernbridge.launcher.model.canInspectResetImpact
+import app.tavernbridge.launcher.model.SafetyDeleteReceipt
+import app.tavernbridge.launcher.model.isUnfinishedDeleteStep
 import app.tavernbridge.launcher.model.ExistingInstallation
 import app.tavernbridge.launcher.model.InstallationImportMode
 import app.tavernbridge.launcher.model.protectBeforeReplacement
@@ -116,7 +118,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val repository = LauncherRepository(application)
     private val operationResultStore = OperationResultStore(application)
     private val guidePreferences = application.getSharedPreferences("setup_navigation", android.content.Context.MODE_PRIVATE)
-    private val savedOperationResult = operationResultStore.load()
+    private val safetyDeleteStore = app.tavernbridge.launcher.data.SafetyDeleteReceiptStore(application)
+    private var interruptedSafetyBatch = safetyDeleteStore.read()
+    private var liveSafetyBatch: SafetyDeleteReceipt? = null
+    private val savedOperationResult = interruptedSafetyBatch?.let { receipt ->
+        val now = System.currentTimeMillis()
+        receipt.summary(now, SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.KOREA).format(Date(now)))
+    } ?: operationResultStore.load()
     private val themePreferences = ThemePreferences(application)
     private val backupReminderStore = BackupReminderStore(application)
     private val backupMetadataStore = app.tavernbridge.launcher.data.BackupMetadataStore(application, "termux:~/storage/downloads")
@@ -149,6 +157,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             backupReminderNowMillis = System.currentTimeMillis(),
             backgroundStatus = repository.backgroundStatus(),
             lastOperationResult = savedOperationResult,
+            message = interruptedSafetyBatch?.notice,
             recentResults = operationResultStore.recent(),
             lastTrashedEntryId = repository.lastTrashedEntryId(),
         ),
@@ -174,6 +183,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     val storageSetupCommand: String get() = repository.storageSetupCommand()
 
     init {
+        // Never replay deletes. Publish the lower bound before consuming the private count journal.
+        if (interruptedSafetyBatch != null && savedOperationResult != null && operationResultStore.saveConfirmed(savedOperationResult))
+            safetyDeleteStore.clear()
         // Clean only orphaned plaintext staging owned by this feature after process death.
         // No Termux command, shared-storage scan, or network request is performed here.
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { encryptedBackupFiles } }
@@ -625,6 +637,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
                 val recoveredTerminal = !environment.operationActive && !environment.recoveryPending &&
                     progress?.status in setOf("success", "error", "cancelled") &&
+                    !isInterruptedSafetyChild(progress?.operation, progress?.operationStartedAtMillis ?: 0L) &&
                     (progress?.finishedAtMillis ?: 0L) > (state.value.lastOperationResult?.completedAtMillis ?: 0L)
                 val recoveredFailure = recoveredTerminal && progress?.status != "success"
                 val recoveredCancellation = recoveredTerminal && progress?.status == "cancelled"
@@ -920,7 +933,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     val reminder = backupReminderStore.recordRecovered(repository.savedBackupRequest(), progress)
                     mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
                 }
-                val failed = recoveredStatus != RecoveredOperationStatus.SUCCESS
+                val interruptedBatch = isInterruptedSafetyChild(progress?.operation, progress?.operationStartedAtMillis ?: 0L)
+                val failed = interruptedBatch || recoveredStatus != RecoveredOperationStatus.SUCCESS
                 val interrupted = recoveredStatus == RecoveredOperationStatus.INTERRUPTED
                 val cancelled = progress?.status == "cancelled"
                 val latestLogs = if (failed && progress?.operation == "backup") {
@@ -942,6 +956,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     operation, progress?.status,
                 )
                 val resultDetail = when {
+                    interruptedBatch -> interruptedSafetyBatch?.notice ?: state.value.lastOperationResult?.detail.orEmpty()
                     cancelled -> progress?.detail?.ifBlank { "작업을 안전하게 중단했습니다." } ?: "작업을 안전하게 중단했습니다."
                     interrupted -> "작업이 중단되어 완료 여부를 확인할 수 없습니다. 설치 상태와 로그를 확인해 주세요."
                     failed && operation == "backup" -> backupFailureDetail(progress?.detail.orEmpty(), latestLogs)
@@ -951,7 +966,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     operation == "diagnose" -> "작업은 완료됐지만 진단 보고서를 받지 못했습니다. 전체 환경 진단을 다시 실행해 주세요."
                     else -> "진행 중이던 작업을 완료했습니다."
                 }
-                val recoveredSummary = operationSummary(
+                val recoveredSummary = if (interruptedBatch) state.value.lastOperationResult else operationSummary(
                     operation = operation,
                     label = operationLabel(operation),
                     detail = resultDetail.removePrefix("[${progress?.errorCode.orEmpty()}]").trim(),
@@ -1538,21 +1553,24 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         perform(operation = "safety-delete", label = "선택한 보관 항목 삭제",
             successMessage = "${picks.size}개를 영구 삭제했어요.",
             onFinished = { if (state.value.safetyInventory.open) loadSafetyInventory() }) {
-            var done = 0
             var last: TermuxCommandResult? = null
-            try {
-                for (pick in picks) {
-                    currentCoroutineContext()[OperationCancellationControl]?.checkpoint()
-                    val result = repository.changeSafetyItem("delete", pick)
-                    result.requireSuccess()
-                    last = result
-                    done++
-                    mutableState.update { ui -> ui.copy(safetyInventory = ui.safetyInventory.copy(
-                        items = ui.safetyInventory.items.filterNot { it.id == pick.id && it.revision == pick.revision }),
-                        safetyCopyCount = null, fileTrashCount = null) }
-                }
-            } catch (e: CancellationException) { throw e }
-              catch (e: Exception) { throw IllegalStateException("${picks.size}개 중 ${done}개 삭제를 확인했어요. 나머지는 목록을 다시 확인해 주세요.\n" + e.userMessage(), e) }
+            var receipt = SafetyDeleteReceipt(picks.size)
+            withContext(Dispatchers.IO) { safetyDeleteStore.save(receipt) }
+            liveSafetyBatch = receipt
+            interruptedSafetyBatch = null
+            for (pick in picks) {
+                currentCoroutineContext()[OperationCancellationControl]?.checkpoint()
+                val result = repository.changeSafetyItem("delete", pick)
+                result.requireSuccess()
+                last = result
+                receipt = receipt.acknowledge()
+                liveSafetyBatch = receipt
+                // Once acknowledged by Termux, journal before dispatching any further delete.
+                withContext(Dispatchers.IO) { safetyDeleteStore.save(receipt) }
+                mutableState.update { ui -> ui.copy(safetyInventory = ui.safetyInventory.copy(
+                    items = ui.safetyInventory.items.filterNot { it.id == pick.id && it.revision == pick.revision }),
+                    safetyCopyCount = null, fileTrashCount = null) }
+            }
             checkNotNull(last)
         }
     }
@@ -1577,6 +1595,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             "delete" -> "영구 삭제했어요."
             else -> "휴지통 항목을 원래 위치로 복원했습니다. 같은 이름의 기존 항목은 덮어쓰지 않습니다."
         }) {
+            if (action == "delete") interruptedSafetyBatch = null
             val result = repository.changeSafetyItem(action, item)
             if (result.isSuccess) {
                 try {
@@ -3105,7 +3124,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 val diagnostic = if (operation == "backup") backupFailureDetail(error.userMessage(), backupProgress?.logText.orEmpty())
                     else error.userMessage()
                 val errorCode = errorCodeFrom(diagnostic)
-                if (reconnectTimedOutOperation(errorCode, operation, operationStartedAt)) return@launch
+                if (!(operation == "safety-delete" && liveSafetyBatch != null) &&
+                    reconnectTimedOutOperation(errorCode, operation, operationStartedAt)) return@launch
                 // Rollback can succeed even when a subsequent repair step fails.
                 // Conversely a failed restore may now have a retained journal.
                 // Refresh read-only state without replacing the actual error.
@@ -3160,7 +3180,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         backupRequest: BackupRequest? = null,
     ): OperationResultSummary {
         val completedAtMillis = System.currentTimeMillis()
-        return OperationResultSummary(
+        val batch = liveSafetyBatch?.takeIf { operation == "safety-delete" }
+        val outcome = OperationResultSummary(
             operation = operation,
             title = label.removeSuffix(" 중"),
             detail = detail,
@@ -3171,8 +3192,19 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             durationSeconds = ((completedAtMillis - startedAtMillis) / 1_000).coerceAtLeast(0),
             retryAction = retryAction,
             backupRequest = backupRequest,
-        ).also(operationResultStore::save)
+        )
+        val summary = batch?.finish(outcome) ?: outcome
+        if (batch == null) operationResultStore.save(summary)
+        else {
+            if (operationResultStore.saveConfirmed(summary)) safetyDeleteStore.clear()
+            liveSafetyBatch = null
+        }
+        return summary
     }
+
+    private fun isInterruptedSafetyChild(operation: String?, startedAt: Long): Boolean =
+        (operation == "safety-delete" && interruptedSafetyBatch?.complete == false) ||
+            state.value.lastOperationResult.isUnfinishedDeleteStep(operation, startedAt)
 
     private fun operationLabel(operation: String): String = when (operation) {
         "connect-manager" -> "런처 연결"

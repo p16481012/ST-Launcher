@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
@@ -140,7 +141,7 @@ internal fun SafetyInventoryScreen(
             Spacer(Modifier.width(10.dp))
         }
         val pull = rememberPullToRefreshState()
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("safety-inventory-items").semantics {
             if (!busy && !state.loading && !selecting) customActions = listOf(CustomAccessibilityAction("새로고침") { onRefresh(); true })
         }.pullToRefresh(isRefreshing = state.loading, state = pull,
             enabled = !busy && !state.loading && !selecting, threshold = 64.dp, onRefresh = onRefresh),
@@ -201,7 +202,7 @@ internal fun SafetyInventoryScreen(
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text(meta(row), Modifier.weight(1f, fill = false), fontFamily = V2Mono, fontSize = 13.sp,
                                         lineHeight = 18.sp, color = colors.ink2)
-                                    if (row.unconfirmed) Text("확인 필요", color = colors.onAccentWash, fontSize = 12.sp)
+                                    if (row.unconfirmed) Text("확인 필요", color = colors.onAccentWash, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                 }
                             }
                             if (!selecting) ReviewGlyph(R.drawable.rv_more, 18.dp, colors.ink2)
@@ -232,19 +233,21 @@ internal fun SafetyInventoryScreen(
             ReviewGlyph(item.icon, 22.dp, colors.ink2)
             Column { Text(item.title, style = MaterialTheme.typography.titleMedium); Text(meta(item), fontFamily = V2Mono, fontSize = 13.sp, color = colors.ink2) }
         }
-        Text(item.displayName, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.sunken).padding(14.dp),
-            fontFamily = V2Mono, fontSize = 13.sp, color = colors.ink2)
+        Text(item.displayName, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.sunken)
+            .padding(horizontal = 14.dp, vertical = 10.dp), fontFamily = V2Mono, fontSize = 13.sp, lineHeight = 18.sp, color = colors.ink2)
         if (item.unconfirmed) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ReviewGlyph(R.drawable.rv_info, 16.dp, colors.onAccentWash)
             Text("완료 기록이 없는 사본이에요. 지우기 전에 내보내서 내용을 확인해 주세요.", color = colors.ink2, style = MaterialTheme.typography.bodySmall)
         }
-        if (item.restorable) SafetySheetAction("원래 위치로 복원", R.drawable.rv_restart) {
-            if (serverRunning) onNotice("서버를 종료한 뒤 원래 위치로 복원할 수 있어요.") else ask("restore", item)
-        } else Text(if (item.kind == SafetyItemKind.TRASH) "현재 설치와 원래 설치 위치가 달라 직접 복원할 수 없어요."
-            else "이 사본은 여기서 설치에 바로 덮어쓰지 않아요. Download로 내보내 내용을 확인할 수 있어요.",
+        if (item.restorable && !serverRunning) SafetySheetAction("원래 위치로 복원", R.drawable.rv_restart) { ask("restore", item) }
+        else Text(if (item.restorable) "서버를 종료한 뒤 원래 위치로 복원할 수 있어요."
+            else if (item.kind == SafetyItemKind.TRASH) "현재 설치와 원래 설치 위치가 달라 직접 복원할 수 없어요."
+            else "설치에 바로 복원할 수 없는 사본이에요. 내보내서 확인해 주세요.",
             style = MaterialTheme.typography.bodySmall, color = colors.ink2)
-        if (item.canExport) SafetySheetAction("Download로 사본 내보내기", R.drawable.rv_backup) { ask("export", item) }
-        SafetySheetAction("영구 삭제", R.drawable.rv_trash, danger = true) { ask("delete", item) }
+        Column {
+            if (item.canExport) SafetySheetAction("Download로 사본 내보내기", R.drawable.rv_backup) { ask("export", item) }
+            SafetySheetAction("영구 삭제", R.drawable.rv_trash, danger = true) { ask("delete", item) }
+        }
     }
     if (request != null && !locked && !changed) {
         val rows = resolve(request.expected)

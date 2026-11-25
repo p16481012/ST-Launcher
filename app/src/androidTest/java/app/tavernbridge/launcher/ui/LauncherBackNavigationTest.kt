@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.tavernbridge.launcher.LauncherViewModel
 import app.tavernbridge.launcher.model.*
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -94,7 +95,12 @@ class LauncherBackNavigationTest {
         compose.onNode(hasText("백업") and hasClickAction()).performClick()
         compose.onNodeWithText("지금 백업").assertIsDisplayed()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
-        compose.runOnIdle { assertEquals(ToolPage.UPDATE, vm.state.value.toolPage) }
+        // The bottom tab is a root switch, not an Update shortcut; Back must not replay old tabs.
+        compose.runOnIdle {
+            assertEquals(MainSection.HOME, vm.state.value.section)
+            assertEquals(ToolPage.INDEX, vm.state.value.toolPage)
+            assertTrue(vm.state.value.navigation.previous.isEmpty())
+        }
     }
 
     @Test fun externalAccessShortcutReturnsToHomeWithEitherBackControl() {

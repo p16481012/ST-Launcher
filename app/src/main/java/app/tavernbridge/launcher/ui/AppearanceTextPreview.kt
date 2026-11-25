@@ -8,6 +8,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.R
@@ -49,7 +51,8 @@ internal fun AppearanceTextPreview() {
         Text("미리보기 문장", style = MaterialTheme.typography.titleLarge)
         Text("자주 보는 대화 한 줄을 넣으면 글자 크기를 고르기 쉬워요. 이 기기에만 저장돼요.")
         Text("문장", style = MaterialTheme.typography.labelMedium)
-        OutlinedTextField(draft, { draft = limitPreview(it.replace('\n', ' ')) }, Modifier.fillMaxWidth().heightIn(min = 94.dp),
+        OutlinedTextField(draft, { draft = limitPreview(it.replace('\n', ' ')) }, Modifier.fillMaxWidth().heightIn(min = 96.dp).semantics { contentDescription = "미리보기 문장 입력" },
+            placeholder = { Text("오늘도 늦게까지 이야기 나눠 줘서 고마워.") },
             shape = RoundedCornerShape(12.dp), maxLines = 3)
         SettingsCaption("${previewLength(draft)}/80 · 비우면 기본 문장을 써요")
     }

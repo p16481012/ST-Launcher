@@ -168,9 +168,9 @@ class V2VisualTest {
     }
 
     @Test fun settingsUsesMasterDetailOrStackAndCanChangeSize() {
-        var shown = prefs
+        var shown = prefs.copy(reducedMotion = false)
         compose.setContent {
-            var display by remember { mutableStateOf(prefs) }
+            var display by remember { mutableStateOf(shown) }
             SillyTavernLauncherTheme(AppTheme.LIGHT, display) {
                 val state = fixture.copy(displayPreferences = display)
                 ScreenChrome(MainSection.SETTINGS) {

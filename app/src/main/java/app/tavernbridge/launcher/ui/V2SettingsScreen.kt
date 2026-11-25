@@ -167,7 +167,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
             }, label = "settings destination") { (page, child) ->
                 if (page == null) holder.SaveableStateProvider("settings-index") { index(Modifier.fillMaxWidth()) }
                 else holder.SaveableStateProvider(if (child == null) "detail-" + page.name else "child-" + child) {
-                Column(Modifier.fillMaxSize().background(if (wide) colors.surface else colors.background)
+                Column(Modifier.fillMaxSize().background(if (wide && page != SettingsPage.DISPLAY) colors.surface else colors.background)
                     .then(if (child == ABOUT_REPORT) Modifier else Modifier.verticalScroll(rememberScrollState()))
                     .padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -50,9 +50,11 @@ private fun diagnosticTime(raw: String): String {
             clipboard.setText(AnnotatedString(report.copyText()))
             vm.showMessage("진단 보고서를 복사했어요")
         }, Modifier.weight(1f).heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.outlinedButtonColors(containerColor = colors.surface)) { Text("보고서 복사") }
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = colors.surface, contentColor = colors.ink)) {
+            Text("보고서 복사", style = MaterialTheme.typography.titleMedium)
+        }
         Button(onRun, Modifier.weight(1f).heightIn(min = 52.dp), enabled = !state.isWorking, shape = RoundedCornerShape(14.dp)) {
-            Text(if (report == null) "진단 시작" else "다시 진단")
+            Text(if (report == null) "진단 시작" else "다시 진단", style = MaterialTheme.typography.titleMedium)
         }
     }) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -101,7 +103,7 @@ private fun diagnosticTime(raw: String): String {
 @Composable private fun DiagnosticGroup(title: String, action: String? = null, onAction: () -> Unit = {}, body: @Composable ColumnScope.() -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             if (action != null) Text(action, Modifier.v2RowTap("diag-group:$title", click = onAction).padding(vertical = 4.dp),
                 style = MaterialTheme.typography.labelMedium, color = LocalLauncherColors.current.accent)
         }
@@ -161,7 +163,7 @@ private data class DiagnosticAction(@DrawableRes val icon: Int, val label: Strin
     val battery = item.id == "battery" && item.status == DiagnosticStatus.WARNING
     val cause = if (battery) "화면이 꺼지면 Android가 Termux를 멈춰 서버가 꺼질 수 있어요."
         else if (item.id == "git_changes") "설치 폴더에서 바뀐 파일이 ${item.value} 있어요." else item.detail.ifBlank { item.value }
-    val next = if (battery) "배터리 사용을 ‘제한 없음’으로 바꿔 보세요. 배터리를 조금 더 써요."
+    val next = if (battery) "배터리 사용을 ‘제한 없음’으로 바꾸면 해결돼요. 배터리를 조금 더 써요."
         else if (item.id in setOf("git", "node", "npm", "dependencies", "restore_recovery", "node_requirement")) "도구의 점검·복구에서 실행 환경을 확인해 주세요."
         else item.recommendation
     val actions = buildList<DiagnosticAction> {

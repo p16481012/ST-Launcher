@@ -82,14 +82,17 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
             if (wide) VerticalDivider()
             if (displayed != ToolPage.INDEX) Crossfade(displayed, modifier = Modifier.weight(1f).fillMaxHeight(),
                 animationSpec = tween(if (wide && !reduced) 120 else 0), label = "도구 상세 전환") { page ->
-                Column(Modifier.fillMaxSize().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
+                Column(Modifier.fillMaxSize().then(if (wide) Modifier.background(if (page == ToolPage.DIAGNOSTICS)
+                    app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.canvas else MaterialTheme.colorScheme.surface) else Modifier)) {
                     val hasDetailOrigin = selected != ToolPage.INDEX && state.navigation.splitToolsRoot == null &&
                         state.navigation.previous.lastOrNull()?.let { it.section != MainSection.LOGS || it.tool != ToolPage.INDEX } == true
                     val nested = page == ToolPage.UPDATE && allChanges
                     if (page != ToolPage.FILES && (!wide || hasDetailOrigin || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { if (nested) allChanges = false else goBack() }) { ReviewGlyph(app.tavernbridge.launcher.R.drawable.rv_arrow_left, 24.dp, description = "뒤로") }
-                        Text(if (nested) "바뀐 내용 전체" else page.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                        if (page == ToolPage.DIAGNOSTICS) Spacer(Modifier.width(12.dp))
+                        Text(if (nested) "바뀐 내용 전체" else page.label, style = if (page == ToolPage.DIAGNOSTICS)
+                            MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                     }
                     val detailMod = Modifier.fillMaxSize().padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 8.dp)
                     when (page) {

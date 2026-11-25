@@ -100,9 +100,12 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
             }
         }
     }
-    if (wide) Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.Bottom) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { themes() }
-        Box(Modifier.weight(1f)) { accents() }
+    if (wide) BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // Use the actual detail pane, not the device width: six swatches must fit beside their label.
+        if (maxWidth >= 660.dp) Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.Bottom) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { themes() }
+            Box(Modifier.weight(1f)) { accents() }
+        } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { themes(); accents() }
     } else { themes(); accents() }
     SettingsHeading("읽기 편의")
     SettingsGroup {
