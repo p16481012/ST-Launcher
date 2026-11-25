@@ -69,7 +69,11 @@ internal class BackupJobState(context: Context) {
         prefs.getString("failure_detail","").orEmpty(),prefs.getString("failure_code","").orEmpty()) }
     fun record(row: AutoResult, receipt: Pair<String,String>? = null, clearPending: Boolean = false) {
         val rows = JSONArray()
-        (listOf(row) + history()).sortedByDescending { it.time }.take(10).forEach { rows.put(JSONObject().put("time",it.time).put("kind",it.kind)
+        // Normally the newest observation goes first (also after a user clock adjustment).
+        // Only a recovered publication can predate outcomes we have already observed.
+        val observations = listOf(row) + history()
+        val ordered = if (receipt == null) observations else observations.sortedByDescending { it.time }
+        ordered.take(10).forEach { rows.put(JSONObject().put("time",it.time).put("kind",it.kind)
             .put("detail",it.detail).put("code",it.code).put("size",it.size)) }
         val edit = prefs.edit().putString("history",rows.toString())
         if (receipt != null) edit.putString("auto:" + receipt.first, receipt.second)
