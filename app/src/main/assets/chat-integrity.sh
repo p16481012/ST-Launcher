@@ -30,7 +30,7 @@ function parseFile(r,backup=false,limit=Infinity,onRecord=null){
  const fd=fs.openSync(p,C.O_RDONLY|C.O_NOFOLLOW|C.O_NONBLOCK);
  try{
  const st=fs.fstatSync(fd,{bigint:true}); if(!st.isFile())fail(101,'파일이 바뀌었어요.');
- const revision=rev(st,r), base={r,revision,mtime:Number(st.mtimeMs),messages:0,lines:0,bad:0,digests:[],slug:'',first:'',firstUser:'',kind:'ok'};
+ const revision=rev(st,r), base={r,revision,mtime:Number(st.mtimeMs),messages:0,lines:0,bad:0,digests:[],headerDigest:'',slug:'',first:'',firstUser:'',kind:'ok'};
  if(st.size>MAX)return {...base,kind:'too_large'};
  let badHeader=false,unsupported=false,badIndices=[],lineCount=0,lastIncomplete=false;
  const utf8=new TextDecoder('utf-8',{fatal:true}), buf=Buffer.alloc(65536); let pieces=[],length=0;
@@ -43,6 +43,7 @@ function parseFile(r,backup=false,limit=Infinity,onRecord=null){
   if(n===0){
    if(object&&!('mes' in obj)&&(obj.chat_metadata||'user_name' in obj||'character_name' in obj||'create_date' in obj)){
     const uuid=obj.chat_metadata?.integrity;
+    base.headerDigest=hash(JSON.stringify(obj));
     base.slug=typeof uuid==='string'&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(uuid)?uuid.toLowerCase():''; if(onRecord)onRecord(raw,false);return;
    }
    if(message&&r.includes('/group chats/')){ /* Legacy headerless group. */ }
@@ -90,7 +91,8 @@ function strength(a,b){
  if(!isMatch(a,b))return '';
  if(a.slug&&b.slug&&a.slug!==b.slug)return '';
  // Refuse to roll back any surviving edit. Prefix for tail, ordered subsequence for middle.
- if(a.slug&&a.slug===b.slug&&a.digests.length){
+ // Restoring an older header can also roll back the user's chat notes, metadata or extension state.
+ if(a.slug&&a.slug===b.slug&&a.headerDigest===b.headerDigest&&a.digests.length){
  let i=0;for(const h of b.digests){if(h===a.digests[i])i++;else if(a.kind==='bad_tail'&&i<a.digests.length)break;}
  if(i===a.digests.length)return 'verified';
  }
