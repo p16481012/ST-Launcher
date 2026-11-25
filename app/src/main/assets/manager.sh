@@ -268,7 +268,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
+        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
             return 0
             ;;
         *)
@@ -1531,40 +1531,6 @@ NODE
         echo "per_user_basic_auth=0"
         echo "whitelist_b64=$(printf '%s' $'::1\n127.0.0.1' | base64 -w 0)"
     }
-}
-
-save_server_connection_settings() {
-    local enabled="${1:-0}"
-    local whitelist_b64="${2:-}"
-    [[ "$enabled" == "0" || "$enabled" == "1" ]] || { echo "외부 접속 설정이 올바르지 않습니다." >&2; exit 64; }
-    [[ -d "$ST_HOME/.git" && -f "$ST_HOME/package.json" ]] || { echo "SillyTavern 설치를 찾을 수 없습니다." >&2; exit 8; }
-    is_running && { echo "서버 연결 설정을 바꾸려면 먼저 SillyTavern 서버를 종료해 주세요." >&2; exit 10; }
-    [[ -d "$ST_HOME/node_modules/yaml" ]] || { echo "설정 편집 도구를 찾을 수 없습니다. 관리 화면에서 설치 점검·복구를 먼저 실행해 주세요." >&2; exit 12; }
-    local config="$ST_HOME/config.yaml"
-    if [[ ! -f "$config" ]]; then
-        [[ -f "$ST_HOME/default/config.yaml" ]] || { echo "기본 config.yaml을 찾을 수 없습니다." >&2; exit 8; }
-        cp "$ST_HOME/default/config.yaml" "$config"
-    fi
-    mkdir -p "$BACKUP_DIR/network-settings"
-    cp -a "$config" "$BACKUP_DIR/network-settings/config-$(date '+%Y%m%d-%H%M%S').yaml"
-    (cd "$ST_HOME" && node --input-type=commonjs - "$config" "$enabled" "$whitelist_b64" <<'NODE'
-const fs = require('fs');
-const YAML = require('yaml');
-const [configPath, enabled, encoded] = process.argv.slice(2);
-const entries = Buffer.from(encoded, 'base64').toString('utf8').split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-for (const local of ['::1', '127.0.0.1']) if (!entries.includes(local)) entries.unshift(local);
-const document = YAML.parseDocument(fs.readFileSync(configPath, 'utf8'));
-if (document.errors.length) throw new Error('config.yaml 형식을 읽을 수 없습니다.');
-document.set('listen', enabled === '1');
-document.set('whitelistMode', true);
-document.set('whitelist', [...new Set(entries)]);
-const temporary = `${configPath}.launcher-tmp-${process.pid}`;
-fs.writeFileSync(temporary, String(document), { mode: 0o600 });
-fs.renameSync(temporary, configPath);
-NODE
-    )
-    echo "saved=1"
-    server_connection_settings
 }
 
 doctor() {
@@ -3792,7 +3758,7 @@ recover_pending_restore() {
 recover_restore_before_dispatch() {
     guard_extension_recovery || exit $?
     case "$CURRENT_OPERATION" in
-        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|save-server-connection|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
+        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
         *) return 0 ;;
     esac
     inspect_restore_recovery
@@ -4777,7 +4743,6 @@ case "${1:-doctor}" in
     previous-server-logs) previous_server_log "${2:-500}" ;;
     history) history_log "${2:-300}" ;;
     diagnose) diagnose ;;
-    save-server-connection) save_server_connection_settings "${2:-0}" "${3:-}" ;;
     save-lan-security) save_lan_security "${2:-}" "${3:-}" ;;
     progress) show_progress ;;
     check-update|update-preflight) update_preflight ;;

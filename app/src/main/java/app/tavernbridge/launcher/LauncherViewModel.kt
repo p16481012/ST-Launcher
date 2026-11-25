@@ -528,29 +528,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun saveServerConnection(port: Int, externalAccessEnabled: Boolean, whitelistText: String) {
+    fun saveServerPort(port: Int) {
         if (commandEntryBlocked()) return
         if (port !in 1024..65535) {
             mutableState.update { it.copy(error = "포트는 1024부터 65535 사이로 입력해 주세요.") }
             return
         }
-        val whitelist = whitelistText.lineSequence()
-            .flatMap { it.split(',').asSequence() }
-            .map(String::trim)
-            .filter(String::isNotBlank)
-            .distinct()
-            .toMutableList()
-            .apply {
-                if ("127.0.0.1" !in this) add(0, "127.0.0.1")
-                if ("::1" !in this) add(0, "::1")
-            }
         perform("save-server-connection", "서버 연결 설정 저장 중", "서버 연결 설정을 저장했습니다.",
             successMessageForResult = { maintenanceMessage("서버 연결 설정을 저장했습니다.", it) }) {
             maintainServer {
-                repository.saveServerConnectionSettings(port, externalAccessEnabled, whitelist).also { result ->
-                    result.requireSuccess()
-                    mutableState.update { it.copy(configuredPort = port) }
-                }
+                repository.saveConfiguredPort(port)
+                mutableState.update { it.copy(configuredPort = port) }
+                TermuxCommandResult("local-port", "", "", 0, android.app.Activity.RESULT_OK, "")
             }
         }
     }

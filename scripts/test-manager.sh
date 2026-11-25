@@ -81,6 +81,19 @@ set -e
 grep -Fq 'error_code=INVALID_ARGUMENT' <<< "$unknown_output" ||
     fail "manager failure did not return a direct error_code"
 
+# A stale client cannot rewrite LAN credentials/whitelist through the old port editor.
+(
+    export ST_HOME="$TEST_ROOT/old-port-setting"
+    mkdir -p "$ST_HOME/.git"
+    printf '{}\n' > "$ST_HOME/package.json"
+    printf 'port: 8000\nlisten: true\nwhitelist: [127.0.0.1]\nbasicAuthMode: true\nbasicAuthUser: { username: tester, password: fixture-only }\n' > "$ST_HOME/config.yaml"
+    config_before="$(sha256sum < "$ST_HOME/config.yaml")"
+    status=0
+    bash "$ROOT_DIR/app/src/main/assets/manager.sh" save-server-connection 0 '' >/dev/null 2>&1 || status=$?
+    [[ "$status" == 64 ]] || fail "retired LAN writer is still dispatched"
+    [[ "$config_before" == "$(sha256sum < "$ST_HOME/config.yaml")" ]] || fail "port change rewrote LAN config"
+)
+
 printf 'deb https://user-selected.example/termux stable main\n' > "$PREFIX/etc/apt/sources.list"
 configure_temporary_main_repository "https://packages-cf.termux.dev/apt/termux-main/"
 grep -Fq 'https://packages-cf.termux.dev/apt/termux-main/' "$TEMP_APT_SOURCES" ||

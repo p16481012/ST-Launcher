@@ -269,7 +269,7 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
     if (dialog == "port") {
         LaunchedEffect(state.portEditorRequested) { if (state.portEditorRequested) vm.consumePortEditorRequest() }
         ServerPortDialog(state.configuredPort, env.configPort, env.processRunning, enabled, { dialog = "" }) {
-            vm.saveServerConnection(it, env.externalAccessEnabled, env.whitelist.joinToString("\n")); dialog = ""
+            vm.saveServerPort(it); dialog = ""
         }
     }
 }

@@ -29,7 +29,7 @@ Command groups (arguments and defaults are defined by the dispatcher at the end 
 
 - Installation and repair: `doctor`, `install`, `repair`, `reset-installation`
 - Server lifecycle: `start`, `stop`, `restart`, `prepare-persistent-start`, `server-task`, `finish-persistent-start`
-- Server settings: `save-server-connection`, `wake-lock-on`, `wake-lock-off`
+- Server settings: the launcher port is a local preference passed as `ST_PORT` at startup; only `save-lan-security` edits the LAN settings in `config.yaml`. Wake lock: `wake-lock-on`, `wake-lock-off`.
 - Updates: `update-preflight` (`check-update` alias), `update`, `switch-branch`, `last-update-record`
 - Backups: `backup`, `backup-select`, `list-backups`, `import-backup`, `delete-backup`, `delete-backups`, `restore`
 - Storage inspection: `backup-storage-status`, `list-user-folders`, `list-st-files`

@@ -89,8 +89,12 @@ class LauncherRepository(private val context: Context) {
 
     fun configuredPort(): Int = preferences.getInt("server_port", 8000).coerceIn(1024, 65535)
 
-    fun saveConfiguredPort(port: Int) {
-        preferences.edit().putInt("server_port", port.coerceIn(1024, 65535)).apply()
+    // The launch command supplies ST_PORT. Port-only edits must never rewrite SillyTavern's config.yaml.
+    suspend fun saveConfiguredPort(port: Int) {
+        require(port in 1024..65535)
+        withContext(Dispatchers.IO) {
+            check(preferences.edit().putInt("server_port", port).commit()) { "서버 포트를 저장하지 못했습니다." }
+        }
     }
 
     fun autoBackupBeforeUpdate(): Boolean = preferences.getBoolean("auto_backup_before_update", true)
@@ -289,23 +293,6 @@ class LauncherRepository(private val context: Context) {
             "switch-branch ${shellQuote(branch.value)} ${if (allowModifiedFiles) 1 else 0}",
             timeoutMillis = 15 * 60_000L,
         )
-
-    suspend fun saveServerConnectionSettings(
-        port: Int,
-        externalAccessEnabled: Boolean,
-        whitelist: List<String>,
-    ): TermuxCommandResult {
-        val encodedWhitelist = Base64.encodeToString(
-            whitelist.joinToString("\n").toByteArray(),
-            Base64.NO_WRAP,
-        )
-        val result = runManager(
-            "save-server-connection ${if (externalAccessEnabled) 1 else 0} ${shellQuote(encodedWhitelist)}",
-            timeoutMillis = 30_000,
-        )
-        if (result.isSuccess) saveConfiguredPort(port)
-        return result
-    }
 
     suspend fun resetInstallation(): TermuxCommandResult =
         runManager("reset-installation", timeoutMillis = 30 * 60_000L)
