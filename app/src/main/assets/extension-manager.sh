@@ -19,6 +19,7 @@ inspect_extension_recovery() {
 
 guard_extension_recovery() {
     case "$CURRENT_OPERATION" in
+        chat-repair|chat-undo) ;;
         install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|restore-selected|change-version|repair|reset-installation|update|update-preflight|switch-branch|save-lan-security|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|delete-backup|safety-export|safety-delete|safety-restore|extension-update|extension-disable|extension-enable|extension-trash) ;;
         *) return 0 ;;
     esac

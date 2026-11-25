@@ -121,6 +121,10 @@ manager_error_code() {
     local exit_code="$2"
     if [[ "${EXTENSION_RECOVERY_GUARD_FAILED:-0}" == 1 ]]; then echo "EXTENSION_RECOVERY_PENDING"; return; fi
     case "$operation:$exit_code" in
+        chat-scan:100|chat-repair:100|chat-undo:100) echo "CHAT_SCAN_FAILED" ;;
+        chat-repair:101|chat-undo:101) echo "CHAT_CHANGED" ;;
+        chat-repair:102) echo "CHAT_BACKUP_MISMATCH" ;;
+        chat-repair:103|chat-undo:103) echo "CHAT_REPAIR_FAILED" ;;
         restore:20) echo "RESTORE_ZIP_DAMAGED" ;;
         restore:21) echo "RESTORE_ZIP_UNSAFE_PATH" ;;
         restore:22) echo "RESTORE_ZIP_SYMLINK_REJECTED" ;;
@@ -271,7 +275,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
+        chat-repair|chat-undo|chat-scan|install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
             return 0
             ;;
         *)
@@ -907,7 +911,15 @@ begin_operation() {
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
-    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
+    if [[ "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
+        # A read-only scan (or consent to edit ONE chat) must never recover an unrelated installation.
+        inspect_restore_recovery
+        if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+            RESTORE_RECOVERY_GUARD_FAILED=1
+            echo "이전 작업의 점검·복구를 마친 뒤 채팅을 다시 검사해 주세요." >&2
+            exit 25
+        fi
+    elif [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
         "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
@@ -4696,7 +4708,28 @@ diagnose() {
     last_error="$({ grep -iE 'error|failed|exception|fatal' "$SERVER_LOG" "$PREVIOUS_SERVER_LOG" "$LOG_FILE" 2>/dev/null || true; } | tail -n 1)"
     echo "last_error_b64=$(printf '%s' "$last_error" | base64 -w 0 2>/dev/null || true)"
     record_processing "최근 오류 검사 완료 · $([[ -n "$last_error" ]] && echo '오류 기록 있음 (진단 결과에서 확인)' || echo '오류 기록 없음')"
+    if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+        echo "chat_scan_pending=1"
+    elif [[ -d "$ST_HOME/data" && -x "$(command -v node)" ]]; then
+        write_progress 0 "채팅 파일 검사" "개인·그룹 채팅을 읽기 전용으로 확인하고 있어요."
+        chat_helper scan "" || { local rc=$?; if (( rc == 130 )); then return 130; fi; echo "chat_scan_unavailable=1"; }
+    fi
     write_progress 100 "진단 완료" "전체 환경 검사를 완료했습니다." success
+}
+
+chat_helper() {
+    ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/chat-integrity.sh" "$1" "$ST_HOME" "$LAUNCHER_HOME" "${@:2}"
+}
+
+chat_operation() {
+    local act="$1"; shift
+    if [[ "$act" == scan ]]; then begin_operation chat-scan; else begin_st_file_mutation "chat-$act"; fi
+    write_progress 0 "채팅 파일 점검" "채팅 파일과 변경 여부를 확인하고 있어요."
+    if [[ "$act" != scan ]]; then enter_cancellation_guard; fi
+    chat_helper "$act" "$@" || return $?
+    if [[ "$act" != scan ]]; then CANCELLATION_COMMITTED=1; leave_cancellation_guard; fi
+    write_progress 100 "채팅 파일 점검 완료" "선택한 파일 처리를 마쳤어요." success
 }
 
 # Keep transaction implementation separate without changing the restore format.
@@ -4715,6 +4748,7 @@ esac
 trap 'command_cleanup $?' EXIT
 recover_restore_before_dispatch
 case "${1:-doctor}" in
+    chat-scan|chat-repair|chat-undo) chat_operation "${1#chat-}" "${@:2}" ;;
     doctor) doctor ;;
     install) install_st "${2:-release}" ;;
     start) start_st ;;

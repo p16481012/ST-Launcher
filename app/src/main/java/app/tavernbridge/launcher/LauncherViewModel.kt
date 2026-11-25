@@ -1,5 +1,8 @@
 package app.tavernbridge.launcher
 import app.tavernbridge.launcher.model.canReadLiveServerLog
+import app.tavernbridge.launcher.model.ChatScanPage
+import app.tavernbridge.launcher.model.ChatDamage
+import app.tavernbridge.launcher.model.ChatUndo
 import app.tavernbridge.launcher.model.readyForStopContinuation
 import kotlinx.coroutines.CompletableDeferred
 import app.tavernbridge.launcher.model.ManagedExtension
@@ -2300,6 +2303,66 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         request.start()
     }
 
+    fun scanChats(more: Boolean) {
+        val previous = state.value.diagnosticReport?.chatScan
+        val cursor = if (more) previous?.next?.takeIf { it.isNotEmpty() } ?: return else ""
+        perform("chat-scan", "채팅 파일 점검", "채팅 파일을 확인했어요.") {
+            repository.chatScan(cursor).also { result ->
+                if (result.isSuccess) {
+                    check(!result.stdoutTruncated) { "검사 결과가 잘렸어요. 다시 검사해 주세요." }
+                    val page = ChatScanPage.parse(result.stdout)
+                    mutableState.update { ui ->
+                        val all = if (more && previous != null) previous.append(page) else page
+                        ui.copy(diagnosticReport = ui.diagnosticReport?.withChat(all),
+                            chatUndo = if (more) ui.chatUndo else page.receipts, chatCompletion = "")
+                    }
+                }
+            }
+        }
+    }
+
+    fun repairChats(rows: List<ChatDamage>, mode: String) {
+        val known = state.value.diagnosticReport?.chatScan?.issues?.associateBy { it.path } ?: return
+        if (rows.isEmpty() || rows.any { known[it.path] != it } ||
+            rows.distinctBy { it.path }.size != rows.size || (rows.size > 1 && (mode != "restore-backup" || rows.any { !it.restorable }))) return
+        val copy = mode.endsWith("-copy")
+        val success = if (copy) "원본을 그대로 두고 새 파일에 저장했어요." else "채팅을 되찾았어요."
+        perform("chat-repair", "채팅 파일 복구", success) {
+            var last: TermuxCommandResult? = null
+            for ((i,row) in rows.withIndex()) {
+                operationCheckpoint()
+                val result = repository.repairChat(row, mode)
+                if (!result.isSuccess) {
+                    mutableState.update { it.copy(chatCompletion = "${rows.size}개 중 ${i}개 완료 · 나머지는 변경하지 않았어요.") }
+                    return@perform result
+                }
+                val id = result.stdout.lineSequence().single { it.startsWith("trash_id=") }.substringAfter('=')
+                check(!result.stdoutTruncated && ChatUndo.validId(id))
+                mutableState.update { ui ->
+                    val page = ui.diagnosticReport?.chatScan
+                    val refreshed = if (copy || page == null) ui.diagnosticReport else
+                        ui.diagnosticReport.withChat(page.copy(ok = page.ok + 1, rows = page.rows.filterNot { it.path == row.path }))
+                    ui.copy(diagnosticReport = refreshed, chatUndo = listOf(ChatUndo(id,row.label)) + ui.chatUndo,
+                        chatCompletion = if (rows.size == 1) "${row.label} · $success" else "${rows.size}개 중 ${i+1}개 완료")
+                }
+                last = result
+            }
+            checkNotNull(last)
+        }
+    }
+
+    fun undoChat(item: ChatUndo) {
+        if (item !in state.value.chatUndo) return
+        perform("chat-undo", "채팅 복구 실행 취소", "복구 전으로 되돌렸어요.") {
+            repository.undoChat(item.id).also { result ->
+                if (result.isSuccess) mutableState.update { ui -> ui.copy(chatUndo = ui.chatUndo - item,
+                    chatCompletion = "복구 전으로 되돌렸어요. 채팅 파일을 다시 검사해 주세요.",
+                    diagnosticReport = ui.diagnosticReport?.let { r -> r.copy(chatScan = null,
+                        items = r.items.map { if (it.id == "chat_integrity") it.copy(value = "다시 검사해 주세요", status = app.tavernbridge.launcher.model.DiagnosticStatus.INFO) else it }) }) }
+            }
+        }
+    }
+
     fun runDiagnostics() = runDiagnostics(fromSettings = false)
 
     fun makeSettingsReport() = runDiagnostics(fromSettings = true)
@@ -2356,6 +2419,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         workingLabel = "",
                         workProgress = null,
                         diagnosticReport = report,
+                        chatUndo = report.chatScan?.receipts.orEmpty(),
+                        chatCompletion = "",
                         message = "환경 진단을 완료했습니다.",
                         lastOperationResult = summary,
                     )
@@ -3233,6 +3298,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         "import-st-file" -> "파일 가져오기"
         "import-st-folder" -> "폴더 가져오기"
         "restore-st-trash" -> "휴지통 항목 복구"
+        "chat-scan" -> "채팅 파일 점검"
+        "chat-repair" -> "채팅 파일 복구"
+        "chat-undo" -> "채팅 복구 실행 취소"
         "restore" -> "백업 복원"
         "restore-selected" -> "선택한 캐릭터·채팅 복원"
         "change-version" -> "이전 버전으로 변경"

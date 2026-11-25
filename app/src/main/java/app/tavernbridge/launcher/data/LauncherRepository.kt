@@ -1,6 +1,8 @@
 package app.tavernbridge.launcher.data
 
 import android.content.Context
+import app.tavernbridge.launcher.model.ChatDamage
+import app.tavernbridge.launcher.model.ChatScanPage
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.ClipData
@@ -788,7 +790,7 @@ class LauncherRepository(private val context: Context) {
 
         // Long-running probes publish their own measured state; do not cover it with a local waiting card.
         localOperationProgress = null
-        val result = runManager("diagnose", timeoutMillis = 90_000)
+        val result = runManager("diagnose", timeoutMillis = 120_000)
         if (!result.isSuccess) {
             items += DiagnosticItem(
                 id = "diagnose_command",
@@ -970,7 +972,27 @@ class LauncherRepository(private val context: Context) {
             // Only the known item title/status is logged, never diagnostic values or credentials.
             progress.completedItem("${item.title} · $status")
         }
-        return diagnosticReport(items, value("manager_version"))
+        val report = diagnosticReport(items, value("manager_version"))
+        val chat = if (result.stdoutTruncated) null else runCatching { ChatScanPage.parse(result.stdout) }.getOrNull()
+        return if (chat != null) report.withChat(chat) else if (enabled("chat_scan_pending"))
+            report.copy(items = report.items + DiagnosticItem("chat_integrity", "채팅 파일", "점검·복구 후 검사해 주세요", status = DiagnosticStatus.INFO))
+        else if (enabled("st_folder_ready") || enabled("chat_scan_unavailable"))
+            report.copy(items = report.items + DiagnosticItem("chat_integrity", "채팅 파일", "검사하지 못했어요", status = DiagnosticStatus.INFO))
+        else report
+    }
+
+    suspend fun chatScan(cursor: String): TermuxCommandResult = runManager(
+        "chat-scan ${shellQuote(encodeFileArgument(cursor))}", 65_000)
+
+    suspend fun repairChat(row: ChatDamage, mode: String): TermuxCommandResult {
+        require(mode in setOf("restore-backup", "trim-tail", "rescue-copy", "candidate-copy"))
+        val args = listOf(encodeFileArgument(row.path), row.revision, mode, encodeFileArgument(row.backup), row.backupRevision)
+        return runManager("chat-repair " + args.joinToString(" ") { shellQuote(it) }, 180_000)
+    }
+
+    suspend fun undoChat(id: String): TermuxCommandResult {
+        require(id.matches(Regex("[0-9]{1,16}-[a-f0-9-]{36}")))
+        return runManager("chat-undo ${shellQuote(id)}", 180_000)
     }
 
     fun openServerLogTerminal() {

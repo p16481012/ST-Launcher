@@ -145,6 +145,8 @@ data class LauncherUiState(
     val diagnosticPanel: DiagnosticPanel = DiagnosticPanel.OVERVIEW,
     val toolPage: ToolPage = ToolPage.INDEX,
     val diagnosticReport: DiagnosticReport? = null,
+    val chatUndo: List<ChatUndo> = emptyList(),
+    val chatCompletion: String = "",
     val latestVersion: String = "",
     val updateAvailable: Boolean? = null,
     val backups: List<BackupArchive> = emptyList(),

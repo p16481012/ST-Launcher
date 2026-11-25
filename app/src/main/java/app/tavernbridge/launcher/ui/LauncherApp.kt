@@ -459,7 +459,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 return@LaunchedEffect
             }
             val archive = if (op == "backup") state.backups.find { it.fileName == state.lastCreatedBackupName } else null
+            val chatUndo = if (op == "chat-repair") state.chatUndo.firstOrNull() else null
             val action = when {
+                chatUndo != null -> if (state.chatCompletion.contains("개 중 ")) "마지막 1개 실행 취소" else "실행 취소"
                 op == "start" -> "대화 열기"
                 op == "save-lan-security" && state.environment.externalAccessEnabled -> "주소 보기"
                 archive != null -> "보기"
@@ -467,6 +469,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             val result = showV2Notice(snackbarHostState,
                 message = when {
+                    chatUndo != null -> state.chatCompletion.ifBlank { notice }
                     op == "start" -> "서버를 켰어요"
                     archive != null -> "백업했어요 · ${formatBackupBytes(archive.sizeBytes)}"
                     else -> notice
@@ -474,6 +477,15 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             )
             viewModel.consumeNotice()
             if (result == SnackbarResult.ActionPerformed) when {
+                chatUndo != null -> {
+                    val now = viewModel.state.value
+                    if (now.chatUndo.firstOrNull()?.id == chatUndo.id && !now.environment.processRunning && !now.isWorking &&
+                        !now.environment.operationActive && !now.environment.recoveryPending) viewModel.undoChat(chatUndo)
+                    else {
+                        viewModel.selectTool(ToolPage.CHAT_INTEGRITY)
+                        viewModel.showMessage("채팅 파일 점검에서 서버 상태를 확인한 뒤 실행 취소해 주세요.")
+                    }
+                }
                 op == "start" -> {
                     val browser = viewModel.preferredBrowser()
                     if (browser != null) viewModel.openBrowser(browser.packageName)

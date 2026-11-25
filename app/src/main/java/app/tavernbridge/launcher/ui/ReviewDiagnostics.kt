@@ -45,7 +45,9 @@ private fun diagnosticTime(raw: String): String {
     val colors = LocalLauncherColors.current
     var selected by rememberSaveable(report?.checkedAt) { mutableStateOf<String?>(null) }
     var showAll by rememberSaveable(report?.checkedAt) { mutableStateOf(false) }
-    val open: (DiagnosticItem) -> Unit = { selected = it.id }
+    val open: (DiagnosticItem) -> Unit = {
+        if (it.id == "chat_integrity") vm.selectTool(ToolPage.CHAT_INTEGRITY) else selected = it.id
+    }
     DetailLayout(mod, footer = {
         if (report != null) OutlinedButton({
             clipboard.setText(AnnotatedString(report.copyText()))
@@ -87,14 +89,14 @@ private fun diagnosticTime(raw: String): String {
                 { showAll = !showAll }) {
                 (if (showAll) normal else normal.take(3)).forEachIndexed { i, item ->
                     if (i > 0) ToolDivider(40)
-                    DiagnosticResultRow(item, null)
+                    DiagnosticResultRow(item, if (item.id == "chat_integrity") open else null)
                 }
             }
             val info = report.rows(DiagnosticStatus.INFO)
             if (info.isNotEmpty()) DiagnosticGroup("참고 ${info.size}개 · 검사 수에서 제외") {
                 info.forEachIndexed { i, item ->
                     if (i > 0) ToolDivider(40)
-                    DiagnosticResultRow(item, if (item.detail.isNotBlank() || item.recommendation.isNotBlank()) open else null)
+                    DiagnosticResultRow(item, if (item.id == "chat_integrity" || item.detail.isNotBlank() || item.recommendation.isNotBlank()) open else null)
                 }
             }
         }

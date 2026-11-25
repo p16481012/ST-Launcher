@@ -80,6 +80,8 @@ jobs:
           bash scripts/test-node-package-info.sh
           node scripts/test-storage-usage.cjs
           node scripts/test-backup-catalog.cjs
+          node scripts/test-chat-integrity.cjs
+          bash scripts/test-chat-manager.sh
           bash scripts/test-manager-progress.sh
           bash scripts/test-progress.sh
           bash scripts/test-archive-progress.sh
