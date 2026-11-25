@@ -3,6 +3,7 @@ package app.tavernbridge.launcher.ui
 import android.Manifest
 import android.content.*
 import android.content.pm.PackageManager
+import android.app.Activity
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
@@ -46,6 +47,12 @@ import java.util.Date
     return count
 }
 
+private tailrec fun activityOf(c: Context): Activity? = when (c) {
+    is Activity -> c
+    is ContextWrapper -> if (c.baseContext === c) null else activityOf(c.baseContext)
+    else -> null
+}
+
 private fun notificationSettings(c: Context, channel: String) {
     c.startActivity(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,c.packageName)
         .putExtra(Settings.EXTRA_CHANNEL_ID,channel))
@@ -61,7 +68,7 @@ private fun notificationSettings(c: Context, channel: String) {
         BackupJobs.channels(c)
         s.prefs.edit().putBoolean(pref,true).apply()
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(c,Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            val activity = c as? android.app.Activity
+            val activity = activityOf(c)
             if (s.prefs.getBoolean("asked_system",false) && activity != null && !activity.shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))
                 c.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,c.packageName))
             else {
@@ -89,7 +96,7 @@ private fun notificationSettings(c: Context, channel: String) {
                 checked = on, onClick = {
                     if (on) {
                         s.prefs.edit().putBoolean(if (ch == BackupJobs.DUE) "phone" else "failure_notice",false).apply()
-                        c.getSystemService(android.app.NotificationManager::class.java).cancel(if (ch == BackupJobs.DUE) BackupJobs.REMINDER_ID else 2133)
+                        c.getSystemService(android.app.NotificationManager::class.java)?.cancel(if (ch == BackupJobs.DUE) BackupJobs.REMINDER_ID else 2133)
                         BackupJobs.reconcile(c)
                     } else enable()
                 })
@@ -104,10 +111,12 @@ private fun notificationSettings(c: Context, channel: String) {
     var storage by remember { mutableStateOf<Boolean?>(null) }
     var checking by remember { mutableStateOf(false) }
     val resume = resumeCount()
-    val battery = remember(resume,page) { c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations("com.termux") }
+    val battery = remember(resume,page) { c.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations("com.termux") == true }
     val ask = permissionAction(s,BackupJobs.FAILURE)
     val enable = {
-        s.prefs.edit().putBoolean("enabled",true).apply()
+        val edit = s.prefs.edit().putBoolean("enabled",true)
+        if (!s.prefs.contains("failure_notice") && BackupJobs.allowed(c,BackupJobs.FAILURE)) edit.putBoolean("failure_notice",true)
+        edit.apply()
         BackupJobs.reconcile(c,true)
         page = if (!s.prefs.getBoolean("failure_offered",false) && Build.VERSION.SDK_INT >= 33 && !BackupJobs.allowed(c,BackupJobs.FAILURE)) "permission" else ""
         if (page == "permission") s.prefs.edit().putBoolean("failure_offered",true).apply()
@@ -126,7 +135,7 @@ private fun notificationSettings(c: Context, channel: String) {
     SettingsGroup {
         SettingsRow("충전 중 자동 백업",caption="충전 중·기기 유휴·서버 꺼짐일 때 일주일에 한 번",checked=s.enabled,onClick={
             if (s.enabled) { s.prefs.edit().putBoolean("enabled",false).apply(); BackupJobs.reconcile(c)
-                vm.showMessage("자동 백업 예약을 껐어요. 이미 만든 백업은 남겨요.") }
+                vm.showMessage("앞으로의 예약을 껐어요. 이미 Termux에서 시작한 백업은 끝까지 진행될 수 있어요.") }
             else { storage = null; checking = true; page="ready" }
         })
         SettingsDivider()
@@ -135,7 +144,7 @@ private fun notificationSettings(c: Context, channel: String) {
         SettingsRow("마지막 자동 백업",value=history.firstOrNull()?.label ?: "없음",
             caption=history.firstOrNull()?.let { date(it.time) }.orEmpty(),onClick=if (history.isEmpty()) null else ({page="history"}))
     }
-    SettingsCaption("서버가 켜져 있으면 끄지 않고 건너뛰어요. 기기에 따라 실행이 며칠 늦어질 수 있어요.")
+    SettingsCaption("서버가 켜져 있으면 끄지 않고 건너뛰어요. 기기에 따라 며칠 늦어질 수 있어요. 이미 시작된 백업은 충전을 해제해도 마무리될 수 있어요.")
     when(page) {
         "ready" -> if (!checking || !battery) V2BottomSheet(onClose={page=""}) {
             Text("자동 백업 준비",style=MaterialTheme.typography.titleLarge)
@@ -147,7 +156,7 @@ private fun notificationSettings(c: Context, channel: String) {
                 SettingsCaption("Termux에서 termux-setup-storage를 입력한 뒤 돌아와 주세요.")
                 V2SheetPrimaryButton("Termux 열기",onClick=vm::openTermux)
             }
-            V2LinkAction("나중에",{page=""})
+            V2DialogAction(tone=V2DialogTone.Quiet,onClick={page=""}) { Text("나중에") }
         }
         "scope" -> V2BottomSheet(onClose={page=""}) {
             Text("기본 백업 범위",style=MaterialTheme.typography.titleLarge)
@@ -176,12 +185,16 @@ private fun notificationSettings(c: Context, channel: String) {
 }
 private fun date(time: Long) = DateFormat.getDateTimeInstance(DateFormat.SHORT,DateFormat.SHORT).format(Date(time))
 @Composable private fun AutoResultSheet(rows: List<AutoResult>, close: ()->Unit) {
+    val c = LocalContext.current
     V2BottomSheet(onClose=close) {
         Text("자동 백업 기록",style=MaterialTheme.typography.titleLarge)
         rows.forEach { r ->
             SettingsRow(r.label, caption=listOf(date(r.time),r.detail.takeIf { r.kind=="ok" }.orEmpty(),
                 if(r.size>0) formatBackupBytes(r.size) else "",r.code).filter(String::isNotBlank).joinToString(" · "))
         }
+        if (rows.firstOrNull()?.code == "BATTERY") SettingsRow("Termux 배터리 설정 열기",onClick={
+            c.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:com.termux")))
+        })
     }
 }
 @Composable internal fun AutoBackupNotice(s: BackupJobState, manual: ()->Unit, space: ()->Unit) {
