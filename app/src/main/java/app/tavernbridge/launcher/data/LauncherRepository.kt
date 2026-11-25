@@ -597,6 +597,34 @@ class LauncherRepository(private val context: Context) {
         return dispatchStagedTransfer(transfer, "import-st-file ${shellQuote(encodeFileArgument(destination))} ${shellQuote(transfer.name)}", 15 * 60_000L)
     }
 
+    internal suspend fun cardUsers(): List<String> {
+        val result=runManager("list-users",30_000)
+        check(result.isSuccess && !result.stdoutTruncated) { result.readableError() }
+        return result.stdout.lineSequence().map { it.split('\t') }.filter { it.size==3 && it[0]=="user" && it[2]=="1" }
+            .map { String(java.util.Base64.getDecoder().decode(it[1]), Charsets.UTF_8) }.toList()
+    }
+
+    internal suspend fun cardPlan(user: String, names: List<String>): List<Pair<Boolean,String>> {
+        require(names.size in 1..20)
+        val args=(listOf(user)+names).joinToString(" ") { shellQuote(encodeFileArgument(it)) }
+        val result=runManager("character-plan $args",30_000)
+        check(result.isSuccess && !result.stdoutTruncated) { result.readableError() }
+        return result.stdout.lineSequence().map { it.split('\t') }.filter { it.size==3 && it[0]=="plan" }
+            .map { (it[1]=="1") to String(java.util.Base64.getDecoder().decode(it[2]),Charsets.UTF_8) }
+            .toList().also { check(it.size==names.size) { "저장할 이름을 확인하지 못했어요." } }
+    }
+
+    internal suspend fun importSharedCard(user: String, card: app.tavernbridge.launcher.share.SharedCard, rename: Boolean): String {
+        require(card.hash.matches(Regex("[a-f0-9]{64}")))
+        val transfer=importStaging.stageCard(card.file)
+        val args=listOf(encodeFileArgument(user),transfer.name,encodeFileArgument(card.label),card.hash,if(rename)"rename" else "skip")
+            .joinToString(" ") { shellQuote(it) }
+        val result=dispatchStagedTransfer(transfer,"import-character $args",120_000)
+        check(result.isSuccess && !result.stdoutTruncated) { result.readableError() }
+        val saved=result.stdout.lineSequence().single { it.startsWith("card_file=") }.substringAfter('=')
+        return String(java.util.Base64.getDecoder().decode(saved),Charsets.UTF_8)
+    }
+
     suspend fun importSillyTavernFolder(parent: String, uri: Uri): TermuxCommandResult {
         require(uri.scheme == "content" && DocumentsContract.isTreeUri(uri)) { "가져올 폴더를 선택해 주세요." }
         val source = localFolderPathForTree(uri.authority, DocumentsContract.getTreeDocumentId(uri),
