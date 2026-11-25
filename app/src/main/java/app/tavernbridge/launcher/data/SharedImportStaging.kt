@@ -83,8 +83,7 @@ internal class SharedImportStaging(private val context: Context) {
         val maxBytes = BackupTransferLimits.MAX_BYTES
         require(declaredSize <= maxBytes) { "가져올 파일은 8 GiB 이하여야 합니다." }
         fun available() = StatFs(Environment.getExternalStorageDirectory().path).availableBytes
-        val reserve = 32L * 1024 * 1024
-        require(declaredSize < 0 || declaredSize <= available() - reserve) { "파일을 가져올 저장공간이 부족합니다." }
+        if (declaredSize >= 0) BackupTransferLimits.checkDownloadStagingSpace(declaredSize, available())
         val name = if (backup) "SillyTavern-Import-${UUID.randomUUID()}.zip" else "SillyTavern-File-${UUID.randomUUID()}.tmp"
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
@@ -101,7 +100,7 @@ internal class SharedImportStaging(private val context: Context) {
             resolver.openAssetFileDescriptor(source, "r", providerCancellation)?.use { descriptor ->
               descriptor.createInputStream().use { input ->
                 reading.set(input)
-                resolver.openOutputStream(target, "w")?.use { output ->
+                writeToDownload { resolver.openOutputStream(target, "w") }?.use { output ->
                     writing.set(output)
                     val buffer = ByteArray(128 * 1024)
                     var total = 0L
@@ -115,10 +114,11 @@ internal class SharedImportStaging(private val context: Context) {
                         require(total + count <= maxBytes) { "가져올 파일은 8 GiB 이하여야 합니다." }
                         sinceCheck += count
                         if (sinceCheck >= 8 * 1024 * 1024) {
-                            check(available() >= reserve) { "파일을 가져올 저장공간이 부족합니다." }
+                            BackupTransferLimits.checkDownloadStagingSpace(
+                                if (declaredSize >= total) declaredSize - total else null, available())
                             sinceCheck = 0
                         }
-                        output.write(buffer, 0, count)
+                        writeToDownload { output.write(buffer, 0, count) }
                         operation?.checkpoint()
                         total += count
                         val now = System.currentTimeMillis()
@@ -128,7 +128,7 @@ internal class SharedImportStaging(private val context: Context) {
                         }
                     }
                     check(declaredSize < 0 || total == declaredSize) { "가져오는 동안 원본 파일 크기가 바뀌었습니다. 다시 선택해 주세요." }
-                    output.flush()
+                    writeToDownload { output.flush() }
                     operation?.checkpoint()
                     onProgress(CopyProgress(total, if (declaredSize >= 0) declaredSize else total, sourceName, true))
                 } ?: error("임시 파일에 쓸 수 없습니다.")

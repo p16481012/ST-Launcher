@@ -1,7 +1,7 @@
 package app.tavernbridge.launcher.model
 
 internal enum class SpaceLocation(val description: String) {
-    DOWNLOAD("백업 ZIP을 저장하는 다운로드 폴더"),
+    DOWNLOAD("휴대폰의 다운로드 폴더"),
     PRIVATE_TEMP("압축을 검사하거나 풀 때 쓰는 Termux 임시 공간"),
     PRIVATE_INSTALL("설치와 복구 작업에 쓰는 Termux 내부 공간"),
     PRIVATE_SAFETY("되돌리기용 안전 사본을 보관하는 Termux 내부 공간"),
@@ -14,6 +14,7 @@ internal data class StorageFailureAdvice(val location: SpaceLocation, val needed
 // Only a failing guard can quote usage. A successful preflight is stale if a later write fails.
 private val spaceCodes = mapOf(
     "BACKUP_NO_SPACE" to SpaceLocation.BACKUP_UNKNOWN,
+    "IMPORT_STAGING_NO_SPACE" to SpaceLocation.DOWNLOAD,
     "SAFETY_BACKUP_NO_SPACE" to SpaceLocation.PRIVATE_SAFETY,
     "RESTORE_NO_SPACE" to SpaceLocation.PRIVATE_INSTALL,
     "IMPORT_NO_SPACE" to SpaceLocation.PRIVATE_INSTALL,

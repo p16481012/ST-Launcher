@@ -15,6 +15,10 @@ class StorageFailureAdviceTest {
             failure("BACKUP_NO_SPACE", "백업 준비 검사에 실패했습니다.\n$download").storageFailureAdvice())
         assertEquals(StorageFailureAdvice(SpaceLocation.PRIVATE_TEMP, 120, 12),
             failure("BACKUP_NO_SPACE", temp).storageFailureAdvice())
+        assertEquals(StorageFailureAdvice(SpaceLocation.DOWNLOAD, 5368709120, 0),
+            failure("IMPORT_STAGING_NO_SPACE", download).storageFailureAdvice())
+        assertEquals(StorageFailureAdvice(SpaceLocation.DOWNLOAD),
+            failure("IMPORT_STAGING_NO_SPACE", "다운로드 폴더에 임시 파일을 쓰는 중 공간이 부족해졌습니다.").storageFailureAdvice())
         assertEquals(StorageFailureAdvice(SpaceLocation.PRIVATE_INSTALL),
             failure("RESTORE_NO_SPACE", download).storageFailureAdvice())
     }
