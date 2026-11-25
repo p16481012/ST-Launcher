@@ -1048,7 +1048,9 @@ class LauncherRepository(private val context: Context) {
         }
         val report = diagnosticReport(items, value("manager_version"))
         val chat = if (result.stdoutTruncated) null else runCatching { ChatScanPage.parse(result.stdout) }.getOrNull()
-        return if (chat != null) report.withChat(chat) else if (enabled("st_folder_ready") || enabled("chat_scan_unavailable"))
+        return if (chat != null) report.withChat(chat) else if (enabled("chat_scan_pending"))
+            report.copy(items = report.items + DiagnosticItem("chat_integrity", "채팅 파일", "점검·복구 후 검사해 주세요", status = DiagnosticStatus.INFO))
+        else if (enabled("st_folder_ready") || enabled("chat_scan_unavailable"))
             report.copy(items = report.items + DiagnosticItem("chat_integrity", "채팅 파일", "검사하지 못했어요", status = DiagnosticStatus.INFO))
         else report
     }

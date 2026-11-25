@@ -28,3 +28,20 @@ receipt="$(printf '%s\n' "$out" | sed -n 's/^trash_id=//p')"
 run_manager chat-undo "$receipt" | grep -Fx 'undone=1'
 cmp "$ST_HOME/$rel" "$box/original"
 echo 'manager chat server guard, repair and undo passed'
+mkdir -p "$box/pending/backups/restore-work-fixture"
+printf 'pending fixture\n' > "$box/pending/backups/restore-work-fixture/recovery.env"
+for act in scan repair undo; do
+    if (
+        export ST_LAUNCHER_HOME="$box/pending"
+        source "$manager"
+        # If any dispatcher chooses the mutating recovery path, leave a detectable marker.
+        recover_pending_restore(){ touch "$box/UNEXPECTED-RECOVERY"; return 1; }
+        CURRENT_OPERATION="chat-$act"
+        recover_restore_before_dispatch
+        chat_operation "$act"
+    ); then exit 1; else [[ $? == 25 ]]; fi
+    [[ ! -e "$box/UNEXPECTED-RECOVERY" ]]
+    grep -Fxq 'pending fixture' "$box/pending/backups/restore-work-fixture/recovery.env"
+    cmp "$ST_HOME/$rel" "$box/original"
+done
+echo 'pending transaction is never applied by chat inspection, repair or undo'
