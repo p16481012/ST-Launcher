@@ -70,7 +70,8 @@ restore_selected() {
     old_bytes="$(unsigned_decimal "$(printf '%s\n' "$summary" | sed -n 's/^selection_protected_bytes=//p')")" || exit 29
     free="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
     required=$((bytes + old_bytes + 268435456))
-    (( required > bytes && free >= required )) || exit 29
+    (( required > bytes )) || exit 29
+    (( free >= required )) || { echo "선택 항목을 복원할 저장 공간이 부족합니다. 필요: ${required}바이트, 여유: ${free}바이트" >&2; exit 29; }
     [[ "$(stat -c %d "$work/extracted")" == "$(stat -c %d "$ST_HOME")" ]] || exit 25
     measured_archive "선택 파일 압축 해제" "선택한 캐릭터·채팅 파일만 한 번 해제하고 CRC를 검증합니다." extract "$archive" "$work/extracted" "$plan.index" >> "$LOG_FILE" 2>&1 || exit $?
     apply_selected_restore "$plan" "$work/extracted"

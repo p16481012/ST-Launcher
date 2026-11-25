@@ -127,6 +127,8 @@ data class LauncherUiState(
     val autoOpenedStartAtMillis: Long = -2L,
     val lastCreatedBackupName: String? = null,
     val portEditorRequested: Boolean = false,
+    /** A specific settings visit opened from Home; later visits to the Settings tab still start at its index. */
+    val serverSettingsFromHomeEntry: Long? = null,
     val lanAddressRequested: Boolean = false,
     val workProgress: WorkProgress? = null,
     val message: String? = null,

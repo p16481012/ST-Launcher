@@ -3,6 +3,7 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
@@ -22,12 +23,14 @@ class InstalledToolDetailTest {
     private val model = mutableStateOf(LauncherUiState(isWorking = false, environment = env,
         termuxSetup = TermuxSetupState(TermuxSetupStatus.READY)))
     private val calls = mutableListOf<String>()
-    private fun show() {
+    private fun show(verify: (suspend (Long) -> Boolean)? = null) {
         ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                CompositionLocalProvider(LocalVerifiedStop provides verify) {
                 V2InstallationDetail(model.value, Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp),
                     { calls += "storage" }, { calls += "inspect:$it" }, { calls += "branch:${it.value}" },
                     { calls += "repair-page" }, { calls += "reset-page" })
+                }
             }
         } }
     }
@@ -61,6 +64,38 @@ class InstalledToolDetailTest {
         item("점검·복구").assertIsEnabled().performClick()
         item("초기화").assertIsEnabled().performClick()
         ui.runOnIdle { assertEquals(listOf("repair-page", "reset-page"), calls) }
+    }
+
+    @Test fun folderPickerWaitsForVerifiedStopAndCancelDoesNotStartIt() {
+        model.value = model.value.copy(environment = env.copy(processRunning = true))
+        var attempts = 0
+        show {
+            attempts++
+            if (attempts == 1) false else {
+                model.value = model.value.copy(environment = env)
+                true
+            }
+        }
+        item("내부 저장소 폴더 선택").performClick()
+        ui.onNodeWithText("취소").performClick()
+        ui.runOnIdle { assertEquals(0, attempts); assertEquals(emptyList<String>(), calls) }
+        item("내부 저장소 폴더 선택").performClick()
+        ui.onNodeWithText("서버 끄고 이어가기").performClick()
+        ui.runOnIdle { assertEquals(1, attempts); assertEquals(emptyList<String>(), calls) }
+        item("내부 저장소 폴더 선택").performClick()
+        ui.onNodeWithText("서버 끄고 이어가기").performClick()
+        ui.runOnIdle { assertEquals(2, attempts); assertEquals(listOf("storage"), calls) }
+    }
+
+    @Test fun stopReturnsToPathEntryWithoutInspectingOrImportingUntilExplicitChoice() {
+        model.value = model.value.copy(environment = env.copy(processRunning = true))
+        show { model.value = model.value.copy(environment = env); true }
+        item("Termux 폴더 경로 입력").performClick()
+        ui.onNodeWithText("서버 끄고 이어가기").performClick()
+        ui.onNode(hasSetTextAction()).assertIsDisplayed()
+        ui.runOnIdle { assertEquals(emptyList<String>(), calls) }
+        ui.onNodeWithText("취소").performClick()
+        ui.runOnIdle { assertEquals(emptyList<String>(), calls) }
     }
 
     @Test fun pathInspectionAlsoHonorsAChangedEnvironmentAndCancelNeverImports() {

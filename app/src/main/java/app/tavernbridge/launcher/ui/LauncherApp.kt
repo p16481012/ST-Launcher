@@ -108,6 +108,7 @@ import app.tavernbridge.launcher.model.BackupCategory
 import app.tavernbridge.launcher.model.DiagnosticPanel
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.canOfferRuntimeSync
+import app.tavernbridge.launcher.model.storageFailureAdvice
 import app.tavernbridge.launcher.model.MainSection
 import app.tavernbridge.launcher.model.ToolPage
 import app.tavernbridge.launcher.model.SillyBranch
@@ -378,12 +379,46 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         }
     }
     if (summary != null && !state.isWorking && failedResult == summary.completedAtMillis && !summary.succeeded) {
+        val storage = remember(summary) { summary.storageFailureAdvice() }
+        val runtimeIssue = when (summary.errorCode) {
+            "NODE_LINKER_FAILED" -> "Termux의 Node.js에 필요한 파일(라이브러리)이 없거나 버전이 맞지 않아요."
+            "NODE_RUNTIME_FAILED" -> "Termux에서 Node.js가 실행되지 않았어요."
+            "NPM_RUNTIME_FAILED" -> "Node.js 패키지를 설치하는 도구인 npm이 Termux에서 실행되지 않았어요."
+            else -> null
+        }
+        val offerRepair = state.environment.sillyTavernInstalled && summary.operation != "repair"
         if (state.canOfferRuntimeSync(failedResult)) {
             RuntimeLibraryRepairSheet(state, failedResult,
                 onDismiss = { failedResult = -1L },
                 onRetry = { failedResult = -1L; viewModel.retryLastOperation() },
                 onHistory = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
                 onSync = { time -> failedResult = -1L; viewModel.confirmRuntimeLibrarySync(time) })
+        } else if (storage != null) {
+            StorageFailureSheet(summary, storage, state.environment.recoveryPending, onClose = { failedResult = -1L },
+                onDownloads = { failedResult = -1L; viewModel.openDownloadsFolder() },
+                onInventory = { failedResult = -1L; viewModel.openSafetyInventory() },
+                onDeviceStorage = { failedResult = -1L; viewModel.openDeviceStorageSettings() },
+                onRetry = { failedResult = -1L; viewModel.retryLastOperation() },
+                onHistory = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
+        } else if (runtimeIssue != null) {
+            V2BottomSheet(onClose = { failedResult = -1L }, footer = {
+                Column(Modifier.fillMaxWidth()) {
+                    V2SheetPrimaryButton(if (offerRepair) "점검·복구 열기" else "Termux 열기") {
+                        failedResult = -1L
+                        if (offerRepair) viewModel.selectTool(ToolPage.REPAIR) else viewModel.openTermux()
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        if (summary.canRetry) TextButton(onClick = { failedResult = -1L; viewModel.retryLastOperation() }) { Text("다시 시도") }
+                        TextButton(onClick = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) }) { Text("작업 기록 보기") }
+                    }
+                }
+            }) {
+                Text("실행 도구를 확인해 주세요", style = MaterialTheme.typography.titleLarge)
+                Text(runtimeIssue)
+                Text(if (offerRepair) "점검·복구에서 현재 설치에 필요한 실행 도구를 검사할 수 있어요."
+                    else "Termux에서 node --version과 npm --version을 입력해 어느 도구에서 오류가 나는지 확인해 주세요.")
+                FailureTechnicalDetails(summary.completedAtMillis, summary.detail, summary.errorCode)
+            }
         } else V2BottomSheet(onClose = { failedResult = -1L }, footer = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 V2SheetPrimaryButton(if (summary.canRetry) "다시 시도" else "진단 열기") {
@@ -595,6 +630,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         onDispose {}
     }
     androidx.compose.runtime.CompositionLocalProvider(LocalV2NoticeHost provides snackbarHostState,
+        LocalVerifiedStop provides viewModel::stopForContinuation,
         LocalV2ReturnAnchors provides returnAnchors, LocalV2TabAttention provides state.tabAttention(),
         LocalV2BackProgress provides { backProgress.floatValue = it },
         LocalBackupScopeOpener provides { backupScopeOpen = true }) {
@@ -662,6 +698,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         onStop = viewModel::stop,
                         onCancelStart = viewModel::cancelCurrentOperation,
                         onChangePort = viewModel::openPortEditor,
+                        onServerSettings = viewModel::openServerSettingsFromHome,
                         onBlocked = { viewModel.showMessage("다른 작업이 끝난 뒤에 할 수 있어요.") },
                         onRestart = viewModel::restart,
                         onRepair = viewModel::repair,
@@ -859,6 +896,7 @@ private fun HomeScreen(
     onStop: () -> Unit,
     onCancelStart: () -> Unit,
     onChangePort: () -> Unit,
+    onServerSettings: () -> Unit,
     onBlocked: () -> Unit,
     onRestart: () -> Unit,
     onRepair: () -> Unit,
@@ -881,7 +919,7 @@ private fun HomeScreen(
     if (state.environmentChecked && env.sillyTavernInstalled && !env.recoveryPending) {
         V2HomeDashboard(state, onOpen, onStart, onStop, onRestart, onOpenBackups,
             onUpdate, onLogs, onHistory, onReadHistory, onRefresh, onRetry, onSnoozeBackupReminder, onOpenArchive,
-            onCancelStart, onChangePort, onBlocked)
+            onCancelStart, onChangePort, onBlocked, onServerSettings)
     } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         when {

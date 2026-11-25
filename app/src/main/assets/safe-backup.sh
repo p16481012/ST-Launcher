@@ -149,7 +149,8 @@ function checkSpace(required = reserve, force = false) {
     if (!force && Date.now() - lastSpace < 500) return;
     lastSpace = Date.now();
     const stat = fs.statfsSync(parent, { bigint: true });
-    if (stat.bavail * stat.bsize < BigInt(Math.ceil(required))) throw failure('안전 백업을 저장할 공간이 부족합니다. 원본은 정리하지 않았습니다.', 35);
+    const needed = BigInt(Math.ceil(required)), available = stat.bavail * stat.bsize;
+    if (available < needed) throw failure(`안전 백업을 저장할 공간이 부족합니다. 필요: ${needed}바이트, 여유: ${available}바이트`, 35);
 }
 async function plan(relative = '') {
     checkAbort();

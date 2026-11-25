@@ -29,6 +29,7 @@ internal fun TavernTrashScreen(state: LauncherUiState, read: suspend (String) ->
     var skipped by remember { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
+    val stop = rememberStopToContinue(state, "파일 휴지통")
     val readLatest by rememberUpdatedState(read)
     val lastRestore = state.lastOperationResult?.takeIf { it.operation == "restore-st-trash" && it.succeeded }?.completedAtMillis
     var seenRestore by remember { mutableStateOf(lastRestore) }
@@ -60,7 +61,8 @@ internal fun TavernTrashScreen(state: LauncherUiState, read: suspend (String) ->
         }
         Text("이 설치에서 옮긴 파일·폴더예요. 복구하면 원래 위치로 돌아가며, 같은 이름이 있으면 덮어쓰지 않아요.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (state.environment.processRunning || state.environment.operationActive)
+        if (stop != null && !loading && entries.isNotEmpty()) TextButton(onClick = { stop("휴지통에서 복구할 항목 선택") {} }) { Text("서버 끄고 복구할 항목 선택") }
+        else if (state.environment.processRunning || state.environment.operationActive)
             Text("복구하려면 먼저 서버와 진행 중인 작업을 종료해 주세요.", style = MaterialTheme.typography.bodySmall)
         if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
         if (skipped > 0) Text("복구 정보를 읽을 수 없는 항목 ${skipped}개는 그대로 보관돼 있어요.", style = MaterialTheme.typography.bodySmall)

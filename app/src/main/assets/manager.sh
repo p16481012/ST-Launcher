@@ -138,7 +138,7 @@ manager_error_code() {
         inspect-install:54|import-install:54) echo "INSTALL_IMPORT_NO_SPACE" ;;
         import-install:55) echo "INSTALL_IMPORT_COPY_FAILED" ;;
         update:29) echo "UPDATE_NODE_REQUIREMENT" ;;
-        update:30) echo "UPDATE_NO_SPACE" ;;
+        update:30|update-preflight:30) echo "UPDATE_NO_SPACE" ;;
         update:31) echo "UPDATE_GIT_FAILED" ;;
         update:32) echo "UPDATE_PACKAGES_FAILED" ;;
         update:33) echo "UPDATE_SERVER_FAILED" ;;
@@ -1467,12 +1467,10 @@ update_preflight() {
     record_processing "Node.js 호환성 검사 완료 · $([[ "$node_compatible" == 1 ]] && echo '요구 사항 충족' || echo '실행 환경 확인 필요')"
 
     write_progress 0 "남은 저장 공간 확인" "Termux 저장소의 실제 남은 공간을 확인하고 있습니다."
-    free_bytes="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
-    free_bytes="${free_bytes:-0}"
+    free_bytes="$(available_bytes_for "$HOME")" || { echo "Termux 여유 공간을 확인하지 못했습니다." >&2; exit 30; }
     record_processing "남은 저장 공간 확인 완료 · $(awk -v bytes="$free_bytes" 'BEGIN {printf "%.2f GiB", bytes / 1073741824}')"
     write_progress 0 "필요 저장 공간 계산" "기존 node_modules를 보존할 실제 용량과 여유 공간을 계산하고 있습니다."
-    modules_bytes="$(du -sk "$ST_HOME/node_modules" 2>/dev/null | awk '{print $1 * 1024}' | cut -d. -f1)"
-    modules_bytes="${modules_bytes:-0}"
+    modules_bytes="$(node_modules_bytes)" || { echo "Node 모듈 용량을 확인하지 못했습니다." >&2; exit 30; }
     required_bytes=$((modules_bytes + 536870912))
     space_ready=0
     (( free_bytes >= required_bytes )) && space_ready=1
@@ -1812,6 +1810,17 @@ unsigned_decimal() {
     printf '%s\n' "$((10#$value))"
 }
 
+available_bytes_for() {
+    unsigned_decimal "$(df -Pk "$1" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ {printf "%.0f", $4 * 1024}')"
+}
+
+node_modules_bytes() {
+    if [[ ! -d "$ST_HOME/node_modules" ]]; then printf '0\n'; return; fi
+    local usage
+    usage="$(du -sk "$ST_HOME/node_modules")" || return 1
+    unsigned_decimal "$(awk '$1 ~ /^[0-9]+$/ {printf "%.0f", $1 * 1024}' <<< "$usage")"
+}
+
 valid_backup_filename() {
     local LC_ALL=C
     [[ ${#1} -le 255 && "$1" =~ ^SillyTavern-Launcher-[0-9]{8}-[0-9]{6}(-[0-9]+)?(\ \([0-9]+\))*\.zip$ ]]
@@ -1875,7 +1884,7 @@ ensure_restore_space() {
     local archive="$1"
     local expanded_size free_bytes required_bytes
     if ! expanded_size="$(unsigned_decimal "$(archive_expanded_size "$archive")")" ||
-        ! free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)")"; then
+        ! free_bytes="$(available_bytes_for "$BACKUP_DIR")"; then
         echo "복원에 필요한 저장 공간을 계산하지 못했습니다." >&2
         return 29
     fi
@@ -2443,7 +2452,7 @@ extract_restore_archive() {
     expanded="$(unsigned_decimal "$expanded")" || exit 20
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 29
     required_bytes=$((expanded + 268435456))
-    (( free_bytes >= required_bytes )) || { echo "ZIP을 임시 해제할 저장 공간이 부족합니다." >&2; exit 29; }
+    (( free_bytes >= required_bytes )) || { echo "ZIP을 임시 해제할 저장 공간이 부족합니다. 필요: ${required_bytes}바이트, 여유: ${free_bytes}바이트" >&2; exit 29; }
     echo "restore_expanded_bytes=$expanded"
     write_progress 16 "ZIP 해제" "압축을 한 번만 해제하며 파일 손상(CRC)도 함께 검사합니다."
     (
@@ -3422,7 +3431,7 @@ import_install() {
     write_progress 0 "설치 가져오기 공간 계산" "원본 설치의 실제 사용 용량과 남은 공간을 계산하고 있습니다."
     bytes="$(unsigned_decimal "$(run_cancellable du -sk --exclude=node_modules "$source" | awk '{printf "%.0f", $1 * 1024}')")" || exit 54
     free_bytes="$(unsigned_decimal "$(df -Pk "$BACKUP_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')")" || exit 54
-    (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 가져올 저장 공간이 부족합니다." >&2; exit 54; }
+    (( free_bytes >= bytes * 2 + 268435456 )) || { echo "설치를 안전하게 가져올 저장 공간이 부족합니다. 필요: $((bytes * 2 + 268435456))바이트, 여유: ${free_bytes}바이트" >&2; exit 54; }
     record_processing "설치 가져오기 공간 검사 완료 · 원본 ${bytes}바이트 · 사용 가능 ${free_bytes}바이트"
     work="$BACKUP_DIR/install-import-work-$$"
     mkdir -m 700 -- "$work" || { echo "임시 복원 폴더를 새로 만들지 못했습니다. 기존 경로는 변경하지 않습니다: $work" >&2; exit 25; }
@@ -3923,7 +3932,7 @@ restore_extracted_tree() {
         # not a second complete copy of the user's data.
         required_bytes=536870912
     fi
-    (( free_bytes >= required_bytes )) || { echo "기존 데이터 보호와 복원 적용에 필요한 저장 공간이 부족합니다." >&2; exit 29; }
+    (( free_bytes >= required_bytes )) || { echo "기존 데이터 보호와 복원 적용에 필요한 저장 공간이 부족합니다. 필요: ${required_bytes}바이트, 여유: ${free_bytes}바이트" >&2; exit 29; }
     record_processing "복원 공간 검사 완료 · 필요 ${required_bytes}바이트 · 사용 가능 ${free_bytes}바이트"
 
     ensure_restore_target_stopped
@@ -4150,10 +4159,9 @@ reset_installation() {
         echo "지원하지 않는 현재 브랜치입니다: $branch" >&2
         exit 2
     }
-    free_bytes="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
-    free_bytes="${free_bytes:-0}"
+    free_bytes="$(available_bytes_for "$HOME")" || { echo "Termux 여유 공간을 확인하지 못했습니다." >&2; exit 30; }
     (( free_bytes >= 1073741824 )) || {
-        echo "기존 설치를 임시 보관하고 다시 설치할 공간이 부족합니다. 최소 1GB의 여유 공간이 필요합니다." >&2
+        echo "기존 설치를 보관하고 다시 설치할 공간이 부족합니다. 필요: 1073741824바이트, 여유: ${free_bytes}바이트" >&2
         exit 30
     }
 
@@ -4285,14 +4293,12 @@ update_st() {
         echo "Node.js 요구 버전을 충족하지 않습니다. 필요: $node_required, 현재: $(node --version 2>/dev/null || echo 없음)" >&2
         exit 29
     }
-    free_bytes="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4 * 1024}' | cut -d. -f1)"
-    free_bytes="${free_bytes:-0}"
+    free_bytes="$(available_bytes_for "$HOME")" || { echo "Termux 여유 공간을 확인하지 못했습니다." >&2; exit 30; }
     write_progress 0 "업데이트 공간 계산" "기존 Node 모듈의 실제 용량을 계산하고 있습니다. 전체 용량 검사 명령의 완료를 기다립니다."
-    modules_bytes="$(du -sk "$ST_HOME/node_modules" 2>/dev/null | awk '{print $1 * 1024}' | cut -d. -f1)"
-    modules_bytes="${modules_bytes:-0}"
+    modules_bytes="$(node_modules_bytes)" || { echo "Node 모듈 용량을 확인하지 못했습니다." >&2; exit 30; }
     required_bytes=$((modules_bytes + 536870912))
     (( free_bytes >= required_bytes )) || {
-        echo "업데이트 및 롤백 패키지를 보관할 저장 공간이 부족합니다." >&2
+        echo "업데이트 및 롤백 패키지를 보관할 저장 공간이 부족합니다. 필요: ${required_bytes}바이트, 여유: ${free_bytes}바이트" >&2
         exit 30
     }
 

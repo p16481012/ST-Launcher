@@ -29,16 +29,18 @@ internal fun V2InstallationDetail(
     onPickFolder: () -> Unit, onInspectPath: (String) -> Unit, onSwitchBranch: (SillyBranch) -> Unit,
     onOpenRepair: () -> Unit, onOpenReset: () -> Unit,
 ) {
+    val stopToContinue = rememberStopToContinue(state, state.environment.branch)
     val env = state.environment
     val blocked = when {
         env.recoveryPending -> "중단된 작업을 먼저 점검·복구해 주세요."
-        env.processRunning -> "폴더를 가져오거나 브랜치를 바꾸려면 먼저 서버를 종료해 주세요."
         state.isWorking || env.operationActive || state.fileBrowserMutating ||
             state.backupTransfer != null || state.encryptedBackup != null -> "현재 작업이 끝나면 폴더 가져오기와 브랜치 전환을 할 수 있어요."
         !state.termuxSetup.verified || !env.termuxInstalled || !env.commandPermissionGranted || !env.managerConnected ->
             "Termux 연결과 명령 실행 권한을 먼저 확인해 주세요."
+        env.processRunning && stopToContinue == null -> "폴더를 가져오거나 브랜치를 바꾸려면 먼저 서버를 종료해 주세요."
         else -> null
     }
+    val request: (String, () -> Unit) -> Unit = { label, next -> enterStoppedAction(env.processRunning, stopToContinue, label, next) }
     var enterPath by rememberSaveable { mutableStateOf(false) }
     Column(modifier.verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(22.dp)) {
@@ -52,10 +54,11 @@ internal fun V2InstallationDetail(
         ToolGroup("기존 설치 가져오기") {
             InstallationNote("SillyTavern 설치 폴더를 다시 내려받지 않고 실행 모듈만 맞춰요. 폴더를 검사한 뒤 원본을 유지할지 옮길지 선택해요.")
             ToolDivider()
-            InstallationAction("내부 저장소 폴더 선택", Icons.Outlined.FolderOpen, blocked == null, onPickFolder)
+            InstallationAction("내부 저장소 폴더 선택", Icons.Outlined.FolderOpen, blocked == null, { request("내부 저장소 폴더 선택", onPickFolder) })
             ToolDivider(50)
-            InstallationAction("Termux 폴더 경로 입력", Icons.Outlined.Terminal, blocked == null, { enterPath = true })
+            InstallationAction("Termux 폴더 경로 입력", Icons.Outlined.Terminal, blocked == null, { request("Termux 폴더 경로 입력") { enterPath = true } })
             if (blocked != null) InstallationNote(blocked)
+            else if (env.processRunning) InstallationNote("폴더를 선택하면 서버 종료를 확인한 뒤 가져오기를 이어가요.")
         }
         ToolGroup("브랜치 변경") {
             SillyBranch.entries.forEachIndexed { index, target ->
@@ -64,10 +67,11 @@ internal fun V2InstallationDetail(
                     ToolRow(target.label, target.description, trailing = "현재 브랜치")
                 } else {
                     InstallationAction("${target.label}로 변경", null, blocked == null && env.sillyTavernInstalled,
-                        { onSwitchBranch(target) }, target.description)
+                        { request("${target.label} 브랜치 변경 확인") { onSwitchBranch(target) } }, target.description)
                 }
             }
-            if (blocked != null) InstallationNote(if (env.processRunning) "서버 종료 후 전환할 수 있어요." else blocked)
+            if (blocked != null) InstallationNote(if (env.processRunning && stopToContinue == null) "서버 종료 후 전환할 수 있어요." else blocked)
+            else if (env.processRunning) InstallationNote("서버를 끈 뒤 변경할 브랜치를 다시 확인해요.")
             else if (!env.sillyTavernInstalled) InstallationNote("설치 상태를 확인한 뒤 브랜치를 바꿀 수 있어요.")
         }
         ToolGroup("설치 유지관리") {
@@ -78,7 +82,7 @@ internal fun V2InstallationDetail(
                 icon = Icons.Outlined.DeleteOutline, danger = true, onClick = onOpenReset)
         }
     }
-    if (enterPath) ExistingInstallationPathDialog(blocked == null, onDismiss = { enterPath = false }, onInspect = onInspectPath)
+    if (enterPath) ExistingInstallationPathDialog(blocked == null && !env.processRunning, onDismiss = { enterPath = false }, onInspect = onInspectPath)
 }
 
 @Composable private fun InstallationValue(label: String, value: String) {

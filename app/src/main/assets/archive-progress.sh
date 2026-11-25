@@ -308,7 +308,8 @@ function backupPlan(root, destination, planFile, ...selection) {
     if (available < required) fail(58, `Download 저장 공간이 부족합니다. 필요 ${required}바이트, 여유 ${available}바이트`);
     if (!sameVolume) {
         const temp = fs.statfsSync(path.dirname(planFile), { bigint: true });
-        if (temp.bavail * temp.bsize < scratch) fail(58, `Termux 임시 검사 공간이 부족합니다. 필요 ${scratch}바이트`);
+        const tempAvailable = temp.bavail * temp.bsize;
+        if (tempAvailable < scratch) fail(58, `Termux 임시 검사 공간이 부족합니다. 필요 ${scratch}바이트, 여유 ${tempAvailable}바이트`);
     }
     fs.writeFileSync(planFile, plan, { flag: 'wx', mode: 0o600 });
     console.log(`backup_selected_bytes=${snapshot.bytes}\nbackup_required_bytes=${required}\nbackup_free_bytes=${available}`);

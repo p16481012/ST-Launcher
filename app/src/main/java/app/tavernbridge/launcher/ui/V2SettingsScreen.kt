@@ -57,7 +57,7 @@ internal enum class SettingsPage(val title: String, val icon: ImageVector) {
 internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewModel) {
     // Save only the destination, never the contents of a security form.
     var editor by rememberSaveable { mutableStateOf<String?>(null) }
-    V2SettingsLayout(state, editor, { editor = null }, { mode ->
+    V2SettingsLayout(state, editor, { editor = null }, onReturnToOrigin = viewModel::navigateBack, nestedDetail = { mode ->
         when (mode) {
             ABOUT_MANAGEMENT -> V2AppManagementSettings(state, viewModel)
             ABOUT_UPDATE -> UpdateInformationCard(state, viewModel::checkUpdateInformation)
@@ -102,8 +102,10 @@ internal val LauncherUiState.runningSettingsDiagnostic: Boolean
 
 @Composable
 internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, closeNested: () -> Unit = {},
-    nestedDetail: @Composable (String) -> Unit = {}, detail: @Composable (SettingsPage, Boolean) -> Unit) {
-    var open by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
+    nestedDetail: @Composable (String) -> Unit = {}, onReturnToOrigin: () -> Unit = {},
+    detail: @Composable (SettingsPage, Boolean) -> Unit) {
+    var shortcut by rememberSaveable { mutableStateOf(state.serverSettingsFromHomeEntry == state.navigation.entryId) }
+    var open by rememberSaveable { mutableStateOf(if (shortcut) SettingsPage.SERVER else null) }
     var returned by remember { mutableStateOf<SettingsPage?>(null) }
     val reduced = LocalV2ReducedMotion.current
     val holder = rememberSaveableStateHolder()
@@ -117,8 +119,8 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
         val wide = chooseLauncherNavigation(LocalConfiguration.current.screenWidthDp.toFloat()) == LauncherNavigationMode.RAIL
         val roomy = wide && maxWidth >= 890.dp && fontScale < 1.3f
         val listWidth = if (roomy) 350.dp else (maxWidth * .38f).coerceAtMost(300.dp)
-        val back = { if (nested != null) closeNested() else { returned = open; open = null } }
-        V2BackHandler(enabled = nested != null || !wide && open != null, onBack = back)
+        val back = { if (nested != null) closeNested() else if (shortcut) onReturnToOrigin() else { returned = open; open = null } }
+        V2BackHandler(enabled = shortcut || nested != null || !wide && open != null, onBack = back)
         val selected = open ?: SettingsPage.DISPLAY
         val index: @Composable (Modifier) -> Unit = { modifier ->
                 Column(modifier.fillMaxHeight()
@@ -141,6 +143,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                                     (if (active) colors.onSecondaryContainer else colors.secondary) else colors.onSurfaceVariant,
                                 onClick = { if (selected != page || !wide || nested != null) {
                                     if (wide && selected != page) holder.removeState("detail-" + page.name)
+                                    if (selected != page) shortcut = false
                                     closeNested(); open = page
                                 } })
                             if (index != SettingsPage.entries.lastIndex) SettingsDivider(52)
@@ -169,7 +172,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                     .padding(horizontal = if (wide) 40.dp else 20.dp, vertical = if (wide) 24.dp else 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (!wide || child != null) {
+                        if (!wide || child != null || shortcut) {
                             val requester = remember { FocusRequester() }
                             IconButton(onClick = back, modifier = Modifier.focusRequester(requester)) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로") }
                             LaunchedEffect(page, child) { requester.requestFocus() }

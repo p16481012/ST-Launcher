@@ -34,7 +34,7 @@ class RuntimeLibraryRepairSheetTest {
     @Test fun inspectionAndCancelNeverUpgradeAndOnlyExplicitConfirmationRunsOnce() {
         // Keep the sheet mounted while dispatch is pending to exercise an immediate second tap.
         show(keepOpenAfterSync = true)
-        val option = ui.onNodeWithText("Termux 패키지 갱신 옵션")
+        val option = ui.onNodeWithText("Termux 실행 도구 갱신하기")
         val confirm = ui.onNodeWithText("동의하고 갱신·재검사")
         confirm.assertDoesNotExist()
         option.assertIsEnabled().performClick()
@@ -53,10 +53,10 @@ class RuntimeLibraryRepairSheetTest {
 
     @Test fun dismissingTheConfirmationClosesTheSheetWithoutDispatching() {
         show()
-        ui.onNodeWithText("Termux 패키지 갱신 옵션").performClick()
+        ui.onNodeWithText("Termux 실행 도구 갱신하기").performClick()
         ui.onNodeWithContentDescription("시트 닫기").performClick()
         ui.onNodeWithText("동의하고 갱신·재검사").assertDoesNotExist()
-        ui.onNodeWithText("Termux 패키지 갱신 옵션").assertDoesNotExist()
+        ui.onNodeWithText("Termux 실행 도구 갱신하기").assertDoesNotExist()
         ui.runOnIdle { assertEquals(emptyList<Long>(), syncs); assertEquals(0, retries) }
     }
 
@@ -70,7 +70,7 @@ class RuntimeLibraryRepairSheetTest {
     @Test fun unrelatedResultsCannotOfferOrInheritPendingConsent() {
         state.value = state.value.copy(lastOperationResult = failed.copy(errorCode = "NODE_RUNTIME_FAILED"))
         show()
-        val option = ui.onNodeWithText("Termux 패키지 갱신 옵션")
+        val option = ui.onNodeWithText("Termux 실행 도구 갱신하기")
         val confirm = ui.onNodeWithText("동의하고 갱신·재검사")
         option.assertDoesNotExist()
         ui.runOnIdle { state.value = state.value.copy(lastOperationResult = failed) }
@@ -79,6 +79,18 @@ class RuntimeLibraryRepairSheetTest {
         ui.runOnIdle { state.value = state.value.copy(lastOperationResult = failed.copy(operation = "backup")) }
         confirm.assertDoesNotExist()
         option.assertDoesNotExist()
+        ui.runOnIdle { assertEquals(emptyList<Long>(), syncs); assertEquals(0, retries) }
+    }
+
+    @Test fun technicalDetailsAreOptionalAndDoNotRunRepair() {
+        show()
+        ui.onNodeWithText(failed.detail).assertDoesNotExist()
+        ui.onNodeWithText(failed.errorCode).assertDoesNotExist()
+        ui.onNodeWithText("기술 정보 보기").performClick()
+        ui.onNodeWithText(failed.detail).assertIsDisplayed()
+        ui.onNodeWithText(failed.errorCode).assertIsDisplayed()
+        ui.onNodeWithText("기술 정보 접기").performClick()
+        ui.onNodeWithText(failed.detail).assertDoesNotExist()
         ui.runOnIdle { assertEquals(emptyList<Long>(), syncs); assertEquals(0, retries) }
     }
 }

@@ -43,7 +43,7 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
     onRestart: () -> Unit, onBackups: () -> Unit, onUpdate: () -> Unit, onLogs: () -> Unit, onHistory: () -> Unit,
     onReadHistory: () -> Unit, onRefresh: () -> Unit, onRetry: () -> Unit, onSnooze: () -> Unit,
     onOpenArchive: (String) -> Unit, onCancelStart: () -> Unit = {}, onChangePort: () -> Unit = {},
-    onBlocked: () -> Unit = {}) {
+    onBlocked: () -> Unit = {}, onServerSettings: (() -> Unit)? = null) {
     val env = state.environment
     var info by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedResult by remember { mutableStateOf<OperationResultSummary?>(null) }
@@ -130,7 +130,10 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
         }
         else listOfNotNull(env.branch?.label, env.sillyTavernVersion.takeIf(String::isNotBlank), env.commit.take(8).takeIf(String::isNotBlank)).joinToString(" · ") +
             "\n이 주소로 이 기기의 SillyTavern을 열어요.",
-            onDismiss = { info = null })
+            action = if (title == "외부 접속" && onServerSettings != null) "서버 연결 설정 열기" to {
+                info = null
+                onServerSettings()
+            } else null, onDismiss = { info = null })
     }
     selectedResult?.let { result -> V2BottomSheet({ selectedResult = null }, footer = {
         V2SheetPrimaryButton("확인", onClick = LocalV2SheetDismiss.current ?: { selectedResult = null })
@@ -140,7 +143,7 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
         if (result.errorCode.isNotBlank()) Text(result.errorCode, fontFamily = V2Mono, color = MaterialTheme.colorScheme.error)
         Text(result.detail)
     } }
-    historicResult?.let { V2Explanation("작업 결과", it, { historicResult = null }) }
+    historicResult?.let { V2Explanation("작업 결과", it) { historicResult = null } }
 }
 
 @Composable
@@ -268,9 +271,14 @@ private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: (
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun V2Explanation(title: String, detail: String, onDismiss: () -> Unit) {
+internal fun V2Explanation(title: String, detail: String, action: Pair<String, () -> Unit>? = null, onDismiss: () -> Unit) {
     V2BottomSheet(onClose = onDismiss, footer = {
-        V2SheetPrimaryButton("확인", onClick = LocalV2SheetDismiss.current ?: onDismiss)
+        val close = LocalV2SheetDismiss.current ?: onDismiss
+        if (action == null) V2SheetPrimaryButton("확인", onClick = close)
+        else Column(Modifier.fillMaxWidth()) {
+            V2SheetPrimaryButton(action.first, onClick = action.second)
+            TextButton(onClick = close, modifier = Modifier.fillMaxWidth()) { Text("닫기") }
+        }
     }) {
         Text(title, style = MaterialTheme.typography.titleLarge)
         Text(detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)

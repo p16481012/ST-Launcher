@@ -210,6 +210,12 @@ internal fun TavernFileManagerDialog(
     val appliedQuery = debouncedListQuery(query)
     val visibleEntries = remember(state.fileBrowserEntries, appliedQuery, sort) { visibleTavernFiles(state.fileBrowserEntries, appliedQuery, sort) }
     val canModify = state.canModifyTavernFiles()
+    val selectedVersion = selected?.let { item ->
+        state.fileBrowserEntries.firstOrNull { it.relativePath == item.relativePath }?.let { it.relativePath to it.revision }
+    }
+    val stop = rememberStopToContinue(state, Triple(state.fileBrowserPath, selectedVersion, trashOpen))
+    val canEnter = canModify || (stop != null && !state.fileBrowserLoading && !state.fileBrowserMutating)
+    fun openAction(label: String, next: () -> Unit) = enterStoppedAction(state.environment.processRunning, stop, label, next)
     val reduced = LocalV2ReducedMotion.current
     val haptics = LocalHapticFeedback.current
     val systemTouch = LocalViewConfiguration.current
@@ -246,9 +252,9 @@ internal fun TavernFileManagerDialog(
         }
         else if (selectedPaths.size < MAX_FILE_SELECTION && canSelectTavernFileForTrash(entry)) selectedPaths = selectedPaths + entry.relativePath
     }
-    LaunchedEffect(canModify, state.fileBrowserPath) {
-        actionMenu = null
-        if (!canModify) { selectionMode = false; selectedPaths = emptySet() }
+    LaunchedEffect(state.fileBrowserPath) { actionMenu = null }
+    LaunchedEffect(canModify) {
+        if (!canModify) { actionMenu = null; selectionMode = false; selectedPaths = emptySet() }
     }
     ToolPaneHost(embedded, onClose) {
         if (trashOpen) {
@@ -324,7 +330,7 @@ internal fun TavernFileManagerDialog(
                 val toolbar: @Composable () -> Unit = {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surface)) {
                     Box(Modifier.weight(1f)) {
-                        TextButton(onClick = { actionMenu = FileActionMenu.CREATE }, enabled = canModify, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
+                        TextButton(onClick = { openAction("파일·폴더 만들기") { actionMenu = FileActionMenu.CREATE } }, enabled = canEnter, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Outlined.Add, null); Text("새로 만들기", style = MaterialTheme.typography.labelSmall)
                             }
@@ -340,7 +346,7 @@ internal fun TavernFileManagerDialog(
                         }
                     }
                     Box(Modifier.weight(1f)) {
-                        TextButton(onClick = { actionMenu = FileActionMenu.IMPORT }, enabled = canModify, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
+                        TextButton(onClick = { openAction("파일·폴더 가져오기") { actionMenu = FileActionMenu.IMPORT } }, enabled = canEnter, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Outlined.FileDownload, null); Text("가져오기", style = MaterialTheme.typography.labelSmall)
                             }
@@ -355,14 +361,14 @@ internal fun TavernFileManagerDialog(
                                 onClick = { actionMenu = null; onImportFolder() })
                         }
                     }
-                    TextButton(onClick = { selectionMode = true; selected = null; onClosePreview() }, enabled = canModify && visibleEntries.any(::canSelectTavernFileForTrash),
+                    TextButton(onClick = { openAction("파일 선택") { selectionMode = true; selected = null; onClosePreview() } }, enabled = canEnter && visibleEntries.any(::canSelectTavernFileForTrash),
                         modifier = Modifier.weight(1f).heightIn(min = 72.dp), shape = RoundedCornerShape(0.dp)) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Checklist, null); Text("선택", style = MaterialTheme.typography.labelSmall) }
                     }
                 }
                 }
                 if (state.environment.processRunning || state.environment.operationActive) {
-                    Text("서버·작업 실행 중에는 탐색만 가능합니다.",
+                    Text(if (canEnter) "탐색은 그대로 할 수 있어요. 변경할 작업을 누르면 먼저 서버를 꺼요." else "서버·작업 실행 중에는 탐색만 가능합니다.",
                         Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
                 }
                 if (state.fileBrowserError.isNotBlank() && !state.fileListReadFailed) {
@@ -452,9 +458,9 @@ internal fun TavernFileManagerDialog(
                                             TextButton(onClick = { onPreview(active.relativePath) }, enabled = !state.fileBrowserLoading) { Text("내용 미리보기") }
                                         TextButton(onClick = { onEdit(active.relativePath) }, enabled = !state.fileBrowserLoading && active.sizeBytes <= 65536 && !isTavernPng(active)) { Text("텍스트 수정") }
                                     }
-                                    TextButton(onClick = { renameTarget = active; selected = null; onClosePreview() }, enabled = canModify) { Text("이름 변경") }
+                                    TextButton(onClick = { openAction("이름 변경") { renameTarget = active; selected = null; onClosePreview() } }, enabled = canEnter) { Text("이름 변경") }
                                     if (!active.isDirectory) TextButton(onClick = { externalFile = active }) { Text("다른 앱으로 열기") }
-                                    TextButton(onClick = { trashTarget = active; selected = null; onClosePreview() }, enabled = canModify) { Text("휴지통으로 이동", color = MaterialTheme.colorScheme.error) }
+                                    TextButton(onClick = { openAction("휴지통 이동 확인") { trashTarget = active; selected = null; onClosePreview() } }, enabled = canEnter) { Text("휴지통으로 이동", color = MaterialTheme.colorScheme.error) }
                                 }
                             }
                             }
@@ -491,9 +497,9 @@ internal fun TavernFileManagerDialog(
                         OutlinedButton(onClick = { closeActions(); externalFile = entry }, modifier = Modifier.fillMaxWidth()) { Text("다른 앱으로 파일 열기") }
                         Text("텍스트 편집은 64 KiB 이하의 UTF-8 파일을 지원합니다.", style = MaterialTheme.typography.bodySmall)
                     }
-                    OutlinedButton(onClick = { closeActions(); renameTarget = entry }, enabled = canModify,
+                    OutlinedButton(onClick = { openAction("이름 변경") { closeActions(); renameTarget = entry } }, enabled = canEnter,
                         modifier = Modifier.fillMaxWidth()) { Text("이름 변경") }
-                    OutlinedButton(onClick = { closeActions(); trashTarget = entry }, enabled = canModify,
+                    OutlinedButton(onClick = { openAction("휴지통 이동 확인") { closeActions(); trashTarget = entry } }, enabled = canEnter,
                         modifier = Modifier.fillMaxWidth()) { Text("휴지통으로 이동", color = MaterialTheme.colorScheme.error) }
             }
         }
@@ -613,6 +619,7 @@ private fun EntryNameDialog(title: String, initial: String, entries: List<Tavern
 @Composable
 private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSave: (String) -> Unit, onClose: () -> Unit) {
     // Deliberately not saveable: file contents may include credentials and must not enter saved state.
+    val stop = rememberStopToContinue(state, file.relativePath to file.revision)
     var content by remember(file.relativePath, file.revision) { mutableStateOf(file.content) }
     var discard by remember { mutableStateOf(false) }
     val close = { if (content != file.content) discard = true else onClose() }
@@ -633,6 +640,7 @@ private fun TavernTextEditor(file: TavernTextFile, state: LauncherUiState, onSav
                     modifier = Modifier.fillMaxWidth().weight(1f), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = V2Mono),
                     readOnly = !state.canModifyTavernFiles())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (stop != null && !state.fileBrowserLoading) TextButton(onClick = { stop("열어둔 파일 편집") {} }) { Text("서버 끄고 편집") }
                     TextButton(onClick = { close() }, enabled = !state.fileBrowserMutating) { Text("닫기") }
                     Button(onClick = { onSave(content) }, enabled = state.canModifyTavernFiles() && content != file.content) { Text("저장") }
                 }

@@ -1066,6 +1066,10 @@ class LauncherRepository(private val context: Context) {
         openAppSettings(TermuxContract.PACKAGE)
     }
 
+    fun openDeviceStorageSettings() {
+        context.startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
     fun openLauncherAppSettings() {
         openAppSettings(context.packageName)
     }

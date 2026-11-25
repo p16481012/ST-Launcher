@@ -17,6 +17,7 @@ import app.tavernbridge.launcher.ui.theme.V2Mono
 internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
     onCheck: () -> Unit, onBackupPreference: (Boolean) -> Unit, onUpdate: () -> Unit, onInstallation: () -> Unit,
     onVersions: () -> Unit, onBackups: () -> Unit, onAllChanges: () -> Unit) {
+    val stopToContinue = rememberStopToContinue(state)
     val report = state.updatePreflight
     val env = state.environment
     val busy = state.isWorking || env.operationActive
@@ -34,9 +35,13 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
     val sameVersion = report != null && report.updateAvailable && report.currentVersion.isNotBlank() &&
         report.currentVersion == report.targetVersion
     DetailLayout(mod, footer = {
-        Button(onClick = if (report == null) onCheck else onUpdate, modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+        val buttonMod = Modifier.weight(1f).heightIn(min = 52.dp)
+        if (report?.updateAvailable == false) {
+            OutlinedButton(onClick = onCheck, modifier = buttonMod, enabled = blocked.isEmpty(),
+                shape = RoundedCornerShape(14.dp)) { Text("다시 확인") }
+        } else Button(onClick = if (report == null) onCheck else onUpdate, modifier = buttonMod,
             enabled = if (report == null) blocked.isEmpty() else ready, shape = RoundedCornerShape(14.dp)) {
-            Text(when { report == null -> "업데이트 안전 검사"; !report.updateAvailable -> "최신 상태"; else -> "업데이트" })
+            Text(if (report == null) "업데이트 안전 검사" else "업데이트")
         }
     }) {
         Lead(when {
@@ -57,7 +62,9 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
         ToolGroup("안전 검사 결과") {
             if (report == null) ToolRow("아직 검사하지 않았어요.", "커밋·Node.js·저장 공간·수정 파일을 확인해요.")
             else {
-                SettingsRow("커밋", "${report.currentCommit.shortCommit()} → ${report.targetCommit.shortCommit()}", mono = true)
+                SettingsRow("현재 커밋", report.currentCommit.shortCommit(), mono = true)
+                ToolDivider()
+                SettingsRow("대상 커밋", report.targetCommit.shortCommit(), mono = true)
                 ToolDivider()
                 SettingsRow("Node.js", "${report.nodeVersion.ifBlank { "없음" }} / 필요 ${report.nodeRequired.ifBlank { "알 수 없음" }}",
                     caption = if (report.nodeCompatible) "" else "현재 Node.js가 대상 버전의 요구 조건을 충족하지 않아요.",
@@ -79,18 +86,22 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
                             style = MaterialTheme.typography.bodySmall, fontFamily = V2Mono)
                     }
                 }
-                ToolDivider()
-                SettingsRow("업데이트 안전 검사", caption = "원격 커밋과 설치 환경을 다시 확인해요.", enabled = blocked.isEmpty(), onClick = onCheck)
+                if (report.updateAvailable) {
+                    ToolDivider()
+                    SettingsRow("업데이트 안전 검사", caption = "원격 커밋과 설치 환경을 다시 확인해요.", enabled = blocked.isEmpty(), onClick = onCheck)
+                }
             }
             if (blocked.isNotBlank()) ToolRow("지금 검사할 수 없어요", blocked)
         }
 
         ToolGroup("버전 관리") {
             SettingsRow("이전 버전 선택·복귀", caption = when {
-                env.processRunning -> "서버를 종료한 뒤 선택할 수 있어요."
+                blocked.isEmpty() && stopToContinue != null -> "서버를 끈 뒤 돌아갈 버전을 선택해요."
                 blocked.isNotBlank() -> blocked
+                env.processRunning -> "서버를 종료한 뒤 선택할 수 있어요."
                 else -> "이전 커밋이나 버전 백업으로 돌아가요."
-            }, enabled = !env.processRunning && blocked.isEmpty(), onClick = onVersions)
+            }, enabled = blocked.isEmpty() && (!env.processRunning || stopToContinue != null),
+                onClick = { enterStoppedAction(env.processRunning, stopToContinue, "이전 버전 선택", onVersions) })
             ToolDivider()
             ToolRow("설치 정보·가져오기·브랜치", onClick = onInstallation)
         }
@@ -134,7 +145,9 @@ private fun UpdateRecordGroup(record: UpdateRecord?, onBackups: () -> Unit) {
             ToolDivider()
             SettingsRow("브랜치", record.branch.ifBlank { "알 수 없음" })
             ToolDivider()
-            SettingsRow("기록된 커밋", "${record.oldCommit.shortCommit()} → ${record.newCommit.ifBlank { record.targetCommit }.shortCommit()}", mono = true)
+            SettingsRow("변경 전 커밋", record.oldCommit.shortCommit(), mono = true)
+            ToolDivider()
+            SettingsRow("기록된 대상 커밋", record.newCommit.ifBlank { record.targetCommit }.shortCommit(), mono = true)
             if (rolledBack || record.result == "rollback_failed") {
                 ToolDivider()
                 ToolRow("업데이트 전 ZIP 백업 확인·복원", onClick = onBackups)

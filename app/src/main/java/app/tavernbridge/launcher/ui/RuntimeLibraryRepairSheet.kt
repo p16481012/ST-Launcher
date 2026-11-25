@@ -3,6 +3,7 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -33,7 +34,7 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
                 }
                 TextButton(onClick = { confirming = false }, modifier = Modifier.fillMaxWidth()) { Text("취소") }
             } else {
-                V2SheetPrimaryButton("Termux 패키지 갱신 옵션") { confirming = true }
+                V2SheetPrimaryButton("Termux 실행 도구 갱신하기") { confirming = true }
                 OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("전체 갱신 없이 다시 시도") }
                 TextButton(onClick = onHistory, modifier = Modifier.fillMaxWidth()) { Text("기록 보기") }
             }
@@ -45,10 +46,21 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
             Text("인터넷과 여유 공간이 필요해요. Node.js와 npm이 실행되는지 확인한 뒤에만 실행 모듈을 다시 구성해요. 캐릭터·채팅·설정은 지우지 않아요.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            Text("Node.js 실행 라이브러리를 확인해 주세요", style = MaterialTheme.typography.titleLarge)
-            Text("Node.js가 필요한 라이브러리나 심볼을 찾지 못했어요. 아직 Termux 패키지 전체를 갱신하지 않았어요.")
-            Text(failure.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(failure.errorCode, style = MaterialTheme.typography.labelMedium)
+            Text("Termux에서 Node.js를 시작할 수 없어요", style = MaterialTheme.typography.titleLarge)
+            Text("Node.js에 필요한 파일(라이브러리)이 없거나 버전이 맞지 않아요. Termux 패키지를 함께 갱신하면 고칠 수 있어요. 동의하기 전에는 갱신하지 않아요.")
+            FailureTechnicalDetails(failureAt, failure.detail, failure.errorCode)
+        }
+    }
+}
+
+@Composable
+internal fun FailureTechnicalDetails(resultAt: Long, detail: String, errorCode: String) {
+    var expanded by remember(resultAt) { mutableStateOf(false) }
+    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "기술 정보 접기" else "기술 정보 보기") }
+    if (expanded) SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (detail.isNotBlank()) Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (errorCode.isNotBlank()) Text(errorCode, style = MaterialTheme.typography.labelMedium)
         }
     }
 }

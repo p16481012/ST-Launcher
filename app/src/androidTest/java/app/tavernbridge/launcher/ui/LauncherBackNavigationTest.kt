@@ -58,13 +58,13 @@ class LauncherBackNavigationTest {
         compose.onNodeWithText("진단 보고서").assertIsDisplayed()
         compose.runOnIdle { assertEquals(MainSection.SETTINGS, vm.state.value.section) }
         compose.onNodeWithContentDescription("뒤로").performClick()
-        compose.onNodeWithText("설치 정보 확인").performScrollTo().performClick()
+        compose.onNodeWithText("설치 관리 열기").performScrollTo().performClick()
         compose.runOnIdle {
             assertEquals(MainSection.LOGS, vm.state.value.section)
             assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage)
         }
         compose.onNodeWithContentDescription("뒤로").performClick()
-        compose.onNodeWithText("설치 정보 확인").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("설치 관리 열기").performScrollTo().assertIsDisplayed()
     }
 
     @Test fun installedManagementActionsAreRealDestinationsAndBackReturnsToTheirOrigin() {
@@ -82,11 +82,28 @@ class LauncherBackNavigationTest {
         compose.runOnIdle { assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage) }
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.runOnIdle { assertEquals(ToolPage.UPDATE, vm.state.value.toolPage) }
-        compose.onNodeWithText("이전 버전 선택·복귀").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("이전 버전 선택·복귀").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithText("서버를 끄고 이어갈까요?").assertIsDisplayed()
+        compose.onNodeWithText("취소").performClick()
+        compose.runOnIdle { assertEquals("", vm.state.value.dispatchedOperation) }
         compose.onNode(hasText("백업") and hasClickAction()).performClick()
         compose.onNodeWithText("지금 백업").assertIsDisplayed()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.runOnIdle { assertEquals(ToolPage.UPDATE, vm.state.value.toolPage) }
+    }
+
+    @Test fun externalAccessShortcutReturnsToHomeWithEitherBackControl() {
+        val vm = launchExistingInstallation()
+        for (hardwareBack in listOf(false, true)) {
+            compose.onNodeWithText("외부 접속").performScrollTo().performClick()
+            compose.onNodeWithText("서버 연결 설정 열기").performClick()
+            compose.onNodeWithText("포트").performScrollTo().assertIsDisplayed()
+            compose.runOnIdle { assertEquals(MainSection.SETTINGS, vm.state.value.section) }
+            if (hardwareBack) compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+            else compose.onNodeWithContentDescription("뒤로").performClick()
+            compose.runOnIdle { assertEquals(MainSection.HOME, vm.state.value.section) }
+            compose.onNodeWithText("대화 열기").assertExists()
+        }
     }
 
     @Test fun homeLogReturnsHomeAndToolsLogReturnsTools() {

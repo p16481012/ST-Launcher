@@ -3,6 +3,9 @@ package app.tavernbridge.launcher.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.CompletableDeferred
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -18,6 +21,48 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class BackupManagementLinksTest {
     @get:Rule val ui = createComposeRule()
+
+    @Test fun sameNameReplacementDuringStopNeverOpensRestoreForTheWrongArchive() {
+        val original = BackupArchive(fileName = "backup.zip", sizeBytes = 100, createdAt = "", categories = emptySet(),
+            customFolders = emptySet(), includesSecrets = false, sillyTavernVersion = "", revision = "a".repeat(64))
+        val running = EnvironmentStatus(termuxInstalled = true, commandPermissionGranted = true, managerConnected = true,
+            sillyTavernInstalled = true, processRunning = true)
+        val model = mutableStateOf(LauncherUiState(isWorking = false, environmentChecked = true, section = MainSection.BACKUPS,
+            termuxSetup = TermuxSetupState(TermuxSetupStatus.READY), environment = running,
+            backupsLoaded = true, backupStorageReady = true, backups = listOf(original)))
+        val firstStop = CompletableDeferred<Boolean>()
+        var checks = 0
+        val opened = mutableListOf<String>()
+        val verify: suspend (Long) -> Boolean = {
+            checks++
+            if (checks == 1) firstStop.await() else {
+                model.value = model.value.copy(environment = running.copy(processRunning = false))
+                true
+            }
+        }
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            CompositionLocalProvider(LocalVerifiedStop provides verify) {
+                V2BackupScreen(model.value, onCreateBackup = { _, _, _ -> }, onRefresh = {}, onReminderChange = {},
+                    onTransfer = { _, _ -> }, onOpenFolder = {}, onSafety = {}, onScan = {}, onPreviewCleanup = { _, _ -> },
+                    onSaveAnnotation = { _, _, _ -> }, onEncrypted = {}, onSelective = { opened += it.revision },
+                    onImport = {}, storageSetupCommand = "", onTermux = {}, onCopied = {},
+                    onRestore = { opened += "full:" + it.revision }, onDelete = {}, requestedArchive = original.fileName,
+                    onArchiveOpened = {}, onArchiveShortcutBack = {})
+            }
+        } }
+        ui.onNodeWithText("이 백업으로 복원").performClick()
+        ui.onNodeWithText("서버 끄고 이어가기").performClick()
+        ui.runOnIdle {
+            assertEquals(1, checks)
+            model.value = model.value.copy(backups = listOf(original.copy(revision = "b".repeat(64))))
+        }
+        ui.waitForIdle()
+        ui.runOnIdle { firstStop.complete(true) }
+        ui.runOnIdle { assertEquals(emptyList<String>(), opened) }
+        ui.onNodeWithText("일부만 복원").performClick()
+        ui.onNodeWithText("서버 끄고 이어가기").performClick()
+        ui.runOnIdle { assertEquals(listOf("b".repeat(64)), opened) }
+    }
 
     @Test fun overviewNamesTheActionsAndOpensTheRightEncryptionMode() {
         val prefs = DisplayPreferences(reducedMotion = true)

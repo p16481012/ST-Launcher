@@ -20,6 +20,23 @@ class LauncherNavigationTest {
         assertSame(logs.navigation, filtered.navigation)
         assertEquals(MainSection.HOME, filtered.previousScreen().section)
     }
+    @Test fun splitListSwitchesReplaceOnlyTheDetailAndKeepTheOriginalBackDestination() {
+        val tools = home.visit(MainSection.LOGS)
+        val update = tools.visit(MainSection.LOGS, ToolPage.UPDATE, replaceToolsPane = true)
+        val extensions = update.visit(MainSection.LOGS, ToolPage.EXTENSIONS, replaceToolsPane = true)
+        assertEquals(tools.navigation.previous, extensions.navigation.previous)
+        assertEquals(tools.navigation.entryId, extensions.navigation.masterEntry(MainSection.LOGS))
+        assertNotEquals(update.navigation.entryId, extensions.navigation.entryId)
+        assertEquals(MainSection.HOME, extensions.previousScreen().section)
+
+        val nested = extensions.visit(MainSection.LOGS, ToolPage.REPAIR)
+        assertEquals(tools.navigation.entryId, nested.navigation.masterEntry(MainSection.LOGS))
+        assertEquals(ToolPage.EXTENSIONS, nested.previousScreen().toolPage)
+        assertEquals(extensions.navigation.splitToolsRoot, nested.previousScreen().navigation.splitToolsRoot)
+        val direct = home.visit(MainSection.SETTINGS).visit(MainSection.LOGS, ToolPage.INSTALLATION)
+        assertEquals(MainSection.SETTINGS, direct.visit(MainSection.LOGS, ToolPage.LOGS,
+            DiagnosticPanel.SERVER_LOG, replaceToolsPane = true).previousScreen().section)
+    }
     @Test fun crossingSectionsRestoresExactOriginAndNestedFolder() {
         val settings = home.visit(MainSection.SETTINGS)
         val files = settings.visit(MainSection.LOGS, ToolPage.FILES).copy(fileBrowserPath = "data/default-user")

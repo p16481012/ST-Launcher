@@ -1,5 +1,7 @@
 package app.tavernbridge.launcher
 import app.tavernbridge.launcher.model.canReadLiveServerLog
+import app.tavernbridge.launcher.model.readyForStopContinuation
+import kotlinx.coroutines.CompletableDeferred
 import app.tavernbridge.launcher.model.ManagedExtension
 import app.tavernbridge.launcher.model.ExtensionAction
 import app.tavernbridge.launcher.model.ExtensionInventory
@@ -251,19 +253,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         mutableState.update { it.visit(section) }
     }
 
-    fun selectTool(page: ToolPage) {
-        if (page == ToolPage.LOGS) { openDiagnostics(DiagnosticPanel.SERVER_LOG); return }
+    fun selectTool(page: ToolPage, replaceToolsPane: Boolean = false) {
+        if (page == ToolPage.LOGS) { openDiagnostics(DiagnosticPanel.SERVER_LOG, replaceToolsPane); return }
         if (state.value.toolPage == ToolPage.EXTENSIONS && page != ToolPage.EXTENSIONS) closeExtensions()
         if (state.value.toolPage == ToolPage.FILES && page != ToolPage.FILES) {
             leaveFileTools()
         }
-        mutableState.update { it.visit(MainSection.LOGS, page) }
+        mutableState.update { it.visit(MainSection.LOGS, page, replaceToolsPane = replaceToolsPane) }
         if (page == ToolPage.FILES && state.value.fileBrowserMutating) mutableState.update { it.copy(fileBrowserOpen = true) }
         if (!state.value.environment.managerConnected || state.value.isWorking) return
         when (page) {
             ToolPage.EXTENSIONS -> loadExtensions()
             ToolPage.FILES -> openSillyTavernFolder()
             else -> Unit
+        }
+    }
+
+    fun openServerSettingsFromHome() = mutableState.update { ui ->
+        if (ui.section != MainSection.HOME) ui else ui.visit(MainSection.SETTINGS).let {
+            it.copy(serverSettingsFromHomeEntry = it.navigation.entryId)
         }
     }
 
@@ -300,13 +308,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         else selectSection(MainSection.SETUP)
     }
 
-    fun openDiagnostics(panel: DiagnosticPanel) {
+    fun openDiagnostics(panel: DiagnosticPanel, replaceToolsPane: Boolean = false) {
         if (state.value.toolPage == ToolPage.FILES) {
             leaveFileTools()
         }
         if (state.value.toolPage == ToolPage.EXTENSIONS) closeExtensions()
         mutableState.update { it.visit(MainSection.LOGS,
-            if (panel == DiagnosticPanel.OVERVIEW) ToolPage.DIAGNOSTICS else ToolPage.LOGS, panel) }
+            if (panel == DiagnosticPanel.OVERVIEW) ToolPage.DIAGNOSTICS else ToolPage.LOGS, panel, replaceToolsPane = replaceToolsPane) }
         when (panel) {
             DiagnosticPanel.SERVER_LOG -> loadLogs()
             DiagnosticPanel.PREVIOUS_SERVER_LOG -> loadPreviousServerLogs()
@@ -1114,11 +1122,41 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun stop() = perform(
+    fun stop() = dispatchStop()
+
+    /** Result is local to this particular stop, not the latest stored operation/OS callback.
+     * The view model holds no picker, dialog, Activity or destructive continuation. */
+    internal suspend fun stopForContinuation(entryId: Long): Boolean {
+        val before = state.value
+        if (!appInForeground || before.navigation.entryId != entryId || !before.readyForStopContinuation(true)) {
+            showMessage("서버 상태가 바뀌었어요. 원래 화면에서 다시 확인해 주세요.")
+            return false
+        }
+        val verified = CompletableDeferred<Boolean>()
+        dispatchStop(onChecked = { fresh ->
+            val now = state.value
+            val sameScreen = appInForeground && now.navigation.entryId == entryId
+            val canContinue = fresh && sameScreen && now.readyForStopContinuation(false)
+            if (sameScreen && !canContinue) showMessage(when {
+                !fresh || !now.environment.managerConnected ->
+                    "종료 명령은 끝났지만 서버 상태를 확인하지 못했어요. 새로고침한 뒤 다시 선택해 주세요."
+                now.environment.processRunning || now.environment.serverReachable ->
+                    "서버가 아직 실행 중이거나 응답하고 있어요. 원래 작업은 시작하지 않았어요."
+                else -> "다른 작업 또는 복구 상태를 확인해 주세요. 원래 작업은 시작하지 않았어요."
+            })
+            verified.complete(canContinue)
+        }, onFinished = { verified.complete(false) })
+        // Bg/rotation may cancel this waiter, but should not cancel an already consented server stop.
+        return verified.await()
+    }
+
+    private fun dispatchStop(onChecked: ((Boolean) -> Unit)? = null, onFinished: () -> Unit = {}) = perform(
         operation = "stop",
         label = "SillyTavern 종료 중",
         successMessage = "SillyTavern을 종료했습니다.",
         retryAction = RetryAction.STOP,
+        onRefreshChecked = onChecked,
+        onFinished = onFinished,
     ) {
         val result = repository.stop()
         if (result.isSuccess && repository.wakeLockEnabled()) repository.setTermuxWakeLock(false).requireSuccess()
@@ -2300,6 +2338,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
     fun openBatteryOptimizationSettings() = openDeviceScreen("배터리 최적화 설정", repository::openBatteryOptimizationSettings)
     fun openDeviceBatterySettings() = openDeviceScreen("배터리 설정", repository::openDeviceBatterySettings)
+    fun openDeviceStorageSettings() = openDeviceScreen("휴대폰 저장 공간", repository::openDeviceStorageSettings)
     fun openTermuxAppSettings() = openDeviceScreen("Termux 앱 정보", repository::openTermuxAppSettings)
     fun openLauncherAppSettings() = openDeviceScreen("런처 앱 정보", repository::openLauncherAppSettings)
     fun openTermuxNotificationSettings() = openDeviceScreen("Termux 알림 설정", repository::openTermuxNotificationSettings)
@@ -2883,6 +2922,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         backupRequest: BackupRequest? = null,
         onFinished: () -> Unit = {},
         allowRuntimeSyncOffer: Boolean = false,
+        onRefreshChecked: ((Boolean) -> Unit)? = null,
         block: suspend () -> TermuxCommandResult,
     ) {
         if (commandEntryBlocked(requireManager = operation != "connect-manager")) { onFinished(); return }
@@ -2974,6 +3014,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                         lastOperationResult = refreshedResult,
                     )
                 }
+                onRefreshChecked?.invoke(!check.refreshFailed)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

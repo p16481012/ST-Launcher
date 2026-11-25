@@ -77,7 +77,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                             ToolRow(page.label, icon = toolIcon(page), trailing = hint.orEmpty(),
                                 danger = page == ToolPage.RESET, current = wide && displayed == page,
                                 accent = page == ToolPage.UPDATE && state.updatePreflight?.updateAvailable == true,
-                                onClick = { viewModel.selectTool(page) })
+                                onClick = { viewModel.selectTool(page, replaceToolsPane = wide) })
                             if (index < pages.lastIndex) ToolDivider(52)
                         } }
                     }
@@ -87,7 +87,8 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
             if (displayed != ToolPage.INDEX) Crossfade(displayed, modifier = Modifier.weight(1f).fillMaxHeight(),
                 animationSpec = tween(if (wide && !reduced) 120 else 0), label = "도구 상세 전환") { page ->
                 Column(Modifier.fillMaxSize().then(if (wide) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)) {
-                    val hasDetailOrigin = state.navigation.previous.lastOrNull()?.let { it.section != MainSection.LOGS || it.tool != ToolPage.INDEX } == true
+                    val hasDetailOrigin = selected != ToolPage.INDEX && state.navigation.splitToolsRoot == null &&
+                        state.navigation.previous.lastOrNull()?.let { it.section != MainSection.LOGS || it.tool != ToolPage.INDEX } == true
                     val nested = page == ToolPage.UPDATE && allChanges
                     if (page != ToolPage.FILES && (!wide || hasDetailOrigin || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
@@ -127,10 +128,10 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                         ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(page, state, viewModel, onRepair, onReset, detailMod)
                         ToolPage.EXTENSIONS -> ExtensionManagerDialog(
                             state.extensionInventory, state.extensionLoading, state.isWorking, state.environment.managerConnected &&
-                                !state.environment.processRunning && !state.environment.recoveryPending, state.extensionError,
+                                !state.environment.processRunning && !state.environment.operationActive && !state.environment.recoveryPending, state.extensionError,
                             { viewModel.loadExtensions() }, { viewModel.loadExtensions(true) }, viewModel::recoverExtension,
                             viewModel::changeExtension, goBack, embedded = true, onCheckUpdates = viewModel::checkExtensionVersions,
-                            onUpdateAll = viewModel::updateCheckedExtensions)
+                            onUpdateAll = viewModel::updateCheckedExtensions, stopState = state)
                         ToolPage.FILES -> ToolFolder(state, viewModel, goBack, twoFileColumns)
                         ToolPage.INDEX -> Unit
                     }
@@ -214,6 +215,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
     var itemId by rememberSaveable { mutableStateOf<String?>(null) }
+    var normalExpanded by rememberSaveable(report?.checkedAt) { mutableStateOf(false) }
     DetailLayout(mod, footer = {
         OutlinedButton({ report?.let { clipboard.setText(AnnotatedString(it.copyText())); vm.showMessage("진단 보고서를 복사했습니다.") } },
             Modifier.weight(1f).heightIn(min = 52.dp), enabled = report != null, shape = RoundedCornerShape(14.dp)) { Text("보고서 복사") }
@@ -224,9 +226,12 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         if (report != null) {
             listOf(DiagnosticStatus.ERROR, DiagnosticStatus.WARNING, DiagnosticStatus.OK, DiagnosticStatus.INFO).forEach { status ->
                 val rows = report.rows(status)
+                val collapsible = status == DiagnosticStatus.OK && rows.size > 1
                 if (rows.isNotEmpty()) ToolGroup("${status.label} ${rows.size}개" +
-                    if (status == DiagnosticStatus.INFO) " · 검사 수에서 제외" else "") {
-                    rows.forEachIndexed { index, item ->
+                    (if (status == DiagnosticStatus.INFO) " · 검사 수에서 제외" else ""),
+                    action = if (collapsible) (if (normalExpanded) "접기" else "펼치기") else null,
+                    onAction = { normalExpanded = !normalExpanded }) {
+                    if (!collapsible || normalExpanded) rows.forEachIndexed { index, item ->
                         if (index != 0) ToolDivider()
                         val issue = status == DiagnosticStatus.ERROR || status == DiagnosticStatus.WARNING
                         ToolRow(item.title, note = item.value,
@@ -267,12 +272,18 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     val resetMode = page == ToolPage.RESET
     val env = state.environment
     var protect by rememberSaveable { mutableStateOf(true) }
-    val ready = env.managerConnected && !state.isWorking && !env.processRunning && !env.operationActive && (env.sillyTavernInstalled || (!resetMode && env.recoveryPending))
+    val stop = rememberStopToContinue(state, page)
+    val eligible = env.managerConnected && !state.isWorking && !env.operationActive && (!resetMode || !env.recoveryPending) &&
+        (env.sillyTavernInstalled || (!resetMode && env.recoveryPending))
+    val ready = eligible && !env.processRunning
+    val canEnter = ready || (eligible && stop != null)
     val impact by produceState<ResetImpact?>(null, resetMode, ready, state.lastOperationResult) {
         value = if (resetMode && ready) vm.inspectResetImpact() else null
     }
     DetailLayout(mod, footer = {
-        Button({ if (resetMode) reset(protect) else repair() }, Modifier.weight(1f).heightIn(min = 52.dp), enabled = ready,
+        Button({ enterStoppedAction(env.processRunning, stop, if (resetMode) "초기화 확인" else "점검·복구 확인") {
+            if (resetMode) reset(protect) else repair()
+        } }, Modifier.weight(1f).heightIn(min = 52.dp), enabled = canEnter,
             colors = if (resetMode) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
             shape = RoundedCornerShape(14.dp)) { Text(if (resetMode) "초기화" else "점검·복구 시작") }
     }) {
@@ -298,7 +309,11 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
                 ToolRow("③   실행 모듈 다시 구성", "node_modules를 새로 받아요")
             }
         }
-        if (!ready) Text(if (env.processRunning || env.operationActive) "서버와 진행 중인 작업을 먼저 종료해 주세요." else "Termux 연결 및 설치 상태를 확인해 주세요.",
+        if (!ready) Text(when {
+            canEnter -> "버튼을 누르면 서버를 끈 뒤 선택한 작업을 확인해요."
+            state.isWorking || env.operationActive -> "진행 중인 작업이 끝난 뒤 시도해 주세요."
+            else -> "Termux 연결 및 설치 상태를 확인해 주세요."
+        },
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

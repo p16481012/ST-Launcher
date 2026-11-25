@@ -24,6 +24,7 @@ class DiagnosticsFeedbackUiTest {
     @Test fun everyCountedCheckHasARowAndVersionMetadataIsSeparate() {
         val report = DiagnosticReport("now", listOf(
             DiagnosticItem("git", "Git 검사", "정상", status = DiagnosticStatus.OK),
+            DiagnosticItem("node", "Node 검사", "정상", status = DiagnosticStatus.OK),
             DiagnosticItem("npm", "npm 검사", "확인 필요", status = DiagnosticStatus.WARNING),
             DiagnosticItem("v", "앱 버전", "0.3.2", status = DiagnosticStatus.INFO),
         ))
@@ -34,9 +35,15 @@ class DiagnosticsFeedbackUiTest {
                     vm, {}, {}, {}, {}, {}, {})
             }
         }
-        compose.onNodeWithText("검사 결과 2개").assertIsDisplayed()
+        compose.onNodeWithText("검사 결과 3개").assertIsDisplayed()
         compose.onNodeWithText("npm 검사").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Git 검사").performScrollTo().assertIsDisplayed() // No expand action.
+        compose.onNodeWithText("정상 2개").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Git 검사").assertDoesNotExist()
+        compose.onNodeWithText("펼치기").performScrollTo().performClick()
+        compose.onNodeWithText("Git 검사").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Node 검사").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("접기").performScrollTo().performClick()
+        compose.onNodeWithText("Git 검사").assertDoesNotExist()
         compose.onNodeWithText("참고 1개 · 검사 수에서 제외").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("앱 버전").performScrollTo().assertIsDisplayed()
     }

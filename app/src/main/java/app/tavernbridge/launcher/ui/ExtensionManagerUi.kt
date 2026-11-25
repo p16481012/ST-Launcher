@@ -25,6 +25,7 @@ fun ExtensionManagerDialog(
     embedded: Boolean = false,
     onCheckUpdates: (() -> Unit)? = null,
     onUpdateAll: ((List<ManagedExtension>) -> Unit)? = null,
+    stopState: LauncherUiState? = null,
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedRevision by rememberSaveable { mutableStateOf<String?>(null) }
@@ -36,8 +37,15 @@ fun ExtensionManagerDialog(
     val entries = remember(inventory) { extensionDisplayOrder(inventory?.items.orEmpty()) }
     val outdated = entries.filter { it.canUpdate && (it.remoteAhead ?: 0) > 0 }
     val canChange = canModify && !busy && !loading && inventory?.recoveryStatus == "none"
+    val stop = if (stopState != null) rememberStopToContinue(stopState, openId) else null
+    val canEnter = canChange || (stop != null && !busy && !loading && inventory?.recoveryStatus == "none")
+    fun confirm(label: String, show: () -> Unit) {
+        if (canModify) show() else stop?.invoke(label, show)
+    }
     val select: (ManagedExtension, ExtensionAction) -> Unit = { item, action ->
-        selectedId = item.id; selectedRevision = item.revision; selectedAction = action.name
+        confirm("${item.name} · ${action.label} 확인") {
+            selectedId = item.id; selectedRevision = item.revision; selectedAction = action.name
+        }
     }
     val clearSelection = { selectedId = null; selectedRevision = null; selectedAction = null }
     ToolPaneHost(embedded, { if (!busy) onClose() }) {
@@ -60,7 +68,7 @@ fun ExtensionManagerDialog(
                         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus != null && inventory.recoveryStatus != "none") Text(inventory.recoveryMessage, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus == "pending") OutlinedButton(
-                            onClick = { recoverConfirmation = true }, enabled = canModify && !busy && !loading,
+                            onClick = { confirm("확장 교체 복구 확인") { recoverConfirmation = true } }, enabled = (canModify || stop != null) && !busy && !loading,
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("중단된 확장 교체 점검·복구") }
                         if (inventory?.recoveryStatus == "blocked") Text("파일과 복구 기록을 그대로 보존했습니다. 기록을 임의로 삭제하지 말고 진단 정보를 전달해 주세요.", style = MaterialTheme.typography.bodySmall)
@@ -78,7 +86,7 @@ fun ExtensionManagerDialog(
                                         onClick = { openId = if (openId == item.id) null else item.id })
                                 }
                                 if (item.canUpdate && (item.remoteAhead ?: 0) > 0)
-                                    TextButton({ select(item, ExtensionAction.UPDATE) }, enabled = canChange) { Text("업데이트", color = MaterialTheme.colorScheme.secondary) }
+                                    TextButton({ select(item, ExtensionAction.UPDATE) }, enabled = canEnter) { Text("업데이트", color = MaterialTheme.colorScheme.secondary) }
                             }
                             ToolDivider()
                             if (openId == item.id)
@@ -88,16 +96,16 @@ fun ExtensionManagerDialog(
                                 if (item.gitBranch.isNotBlank()) Text("${item.gitBranch} · ${item.checkLabel()}", style = MaterialTheme.typography.bodySmall)
                                 if (item.updateRestriction.isNotBlank()) Text(item.updateRestriction, style = MaterialTheme.typography.bodySmall)
                                 OutlinedButton(onClick = { select(item, ExtensionAction.UPDATE) },
-                                    enabled = canChange && item.canUpdate && item.remoteAhead != 0 && item.checkIssue != ExtensionCheckIssue.DIVERGED,
+                                    enabled = canEnter && item.canUpdate && item.remoteAhead != 0 && item.checkIssue != ExtensionCheckIssue.DIVERGED,
                                     modifier = Modifier.fillMaxWidth()) { Text(when {
                                         item.remoteAhead == 0 -> "변경할 내용 없음"
                                         item.remoteAhead == null -> "Git에서 직접 확인 후 업데이트"
                                         else -> "업데이트"
                                     }) }
                                 val toggle = if (item.disabled) ExtensionAction.ENABLE else ExtensionAction.DISABLE
-                                OutlinedButton(onClick = { select(item, toggle) }, enabled = canChange,
+                                OutlinedButton(onClick = { select(item, toggle) }, enabled = canEnter,
                                     modifier = Modifier.fillMaxWidth()) { Text(toggle.label) }
-                                TextButton(onClick = { select(item, ExtensionAction.TRASH) }, enabled = canChange,
+                                TextButton(onClick = { select(item, ExtensionAction.TRASH) }, enabled = canEnter,
                                     modifier = Modifier.fillMaxWidth()) { Text("휴지통으로 이동", color = MaterialTheme.colorScheme.error) }
                             }
                             }
@@ -113,13 +121,16 @@ fun ExtensionManagerDialog(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Text(if ((inventory?.nextCheckOffset ?: 0) != 0) "새 버전 확인 · 다음 최대 40개" else "새 버전 확인")
                 }
-                if (onUpdateAll != null && outdated.isNotEmpty()) Button(onClick = { bulkRevisions = outdated.associate { it.id to it.revision } }, enabled = canChange,
+                if (onUpdateAll != null && outdated.isNotEmpty()) Button(onClick = {
+                    val expected = outdated.associate { it.id to it.revision }
+                    confirm("선택한 확장 업데이트 확인") { bulkRevisions = expected }
+                }, enabled = canEnter,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("확인된 ${outdated.size}개 모두 업데이트") }
                 if (!embedded) TextButton(onClick = onClose, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("닫기") }
                 }
             }
         }
-        if (info) V2Explanation("확장 프로그램", "공개 GitHub 원본에서 버전이나 새 커밋 수만 확인해요. 확장을 변경하려면 서버를 먼저 종료해 주세요.", { info = false })
+        if (info) V2Explanation("확장 프로그램", "공개 GitHub 원본에서 버전이나 새 커밋 수만 확인해요. 확장을 변경하려면 서버를 먼저 종료해 주세요.") { info = false }
         bulkRevisions?.let { expected ->
             val targets = outdated.filter { expected[it.id] == it.revision }
             V2AlertDialog(onDismissRequest = { bulkRevisions = null }, title = { Text("확장 ${expected.size}개를 업데이트할까요?") },

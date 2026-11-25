@@ -93,7 +93,10 @@ internal fun V2BackupScreen(
     val connected = state.environment.managerConnected && state.termuxSetup.verified
     // Picker reads a user-granted document; staging probes actual Termux read access.
     // A separate "can Termux write a new backup ZIP?" check must not gate the picker.
-    val canImport = connected && !busy && !state.environment.processRunning
+    val running = state.environment.processRunning
+    val stopToImport = rememberStopToContinue(state, pane to selectedName)
+    val canImport = connected && !busy && !state.environment.recoveryPending && (!running || stopToImport != null)
+    val pickImport = { enterStoppedAction(running, stopToImport, "백업 ZIP 선택", onImport) }
     val archives = state.backups
     val listFailed = state.backupListError.isNotBlank()
     var retryingError by rememberSaveable { mutableStateOf(false) }
@@ -164,7 +167,7 @@ internal fun V2BackupScreen(
                         Spacer(Modifier.height(20.dp))
                         BackupGroupHeader(if (dual) "백업 목록" else "최근",
                             if (dual) "파일에서 가져오기" else if (state.backupsLoaded && !listFailed) "전체 ${archives.size}개" else "", if (dual) canImport else state.backupsLoaded,
-                            if (dual) onImport else ({ pane = BackupPane.ALL }))
+                            if (dual) pickImport else ({ pane = BackupPane.ALL }))
                     }
                     val recent = if (listFailed || firstLoad || state.backupStorageReady == false) emptyList() else if (dual) archives else archives.take(2)
                     if (recent.isEmpty()) item {
@@ -202,7 +205,7 @@ internal fun V2BackupScreen(
                         BackupGroupHeader("관리")
                         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surface)) {
                             if (!dual) {
-                                BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", enabled = canImport, click = onImport)
+                                BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", enabled = canImport, click = pickImport)
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             }
                             BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { pane = BackupPane.SPACE })
@@ -210,7 +213,7 @@ internal fun V2BackupScreen(
                             BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { "${it}개" }.orEmpty(),
                                 enabled = connected && !busy, click = onSafety)
                         }
-                        if (state.environment.processRunning) Text("백업을 가져오려면 서버를 먼저 종료해 주세요.",
+                        if (state.environment.processRunning) Text(if (canImport) "가져오기를 누르면 서버를 끈 뒤 백업 ZIP을 선택해요." else "백업을 가져오려면 서버를 먼저 종료해 주세요.",
                             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             if (dual) TextButton(onClick = { pane = BackupPane.ALL }) { Text("전체 관리", color = MaterialTheme.colorScheme.secondary) }
@@ -285,8 +288,8 @@ internal fun V2BackupScreen(
                                             onClick = { onEncrypted(EncryptedBackupMode.EXPORT) })
                                         SettingsDivider(52)
                                         SettingsRow("암호화 백업 열기·복원", caption = ".stbackup 파일을 선택하고 암호를 확인해요.",
-                                            icon = Icons.Outlined.Restore, enabled = !busy,
-                                            onClick = { onEncrypted(EncryptedBackupMode.RESTORE) })
+                                            icon = Icons.Outlined.Restore, enabled = canImport,
+                                            onClick = { enterStoppedAction(running, stopToImport, "암호화 백업 선택") { onEncrypted(EncryptedBackupMode.RESTORE) } })
                                     }
                                     SettingsCaption("원본 ZIP 8 GiB까지 지원해요. 원본 ZIP은 암호화되지 않으며, 암호를 잊으면 암호화한 사본을 복구할 수 없어요.")
                                 }
@@ -364,7 +367,12 @@ private fun BackupDetail(
     onSave: (String, Boolean, String) -> Unit, onDelete: (List<BackupArchive>) -> Unit,
 ) {
     val annotation = state.backupAnnotations[archive.fileName] ?: BackupAnnotation()
-    val canRestore = !busy && !state.environment.processRunning && archive.restoreSpaceReady
+    val running = state.environment.processRunning
+    val stop = rememberStopToContinue(state, Triple(BackupDeleteSelection.key(archive), archive.sizeBytes, archive.restoreSpaceReady))
+    val canSelect = !busy && !state.environment.recoveryPending && (!running || stop != null)
+    val canRestore = canSelect && archive.restoreSpaceReady
+    val openRestore = { enterStoppedAction(running, stop, "선택한 백업 복원 확인") { onRestore(archive) } }
+    val selectParts = { enterStoppedAction(running, stop, "복원할 항목 선택") { onSelective(archive) } }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val singleRow = maxWidth >= 640.dp && LocalDensity.current.fontScale <= 1.3f
         val stack = maxWidth < 300.dp || LocalDensity.current.fontScale >= 1.5f
@@ -390,7 +398,7 @@ private fun BackupDetail(
             if (archive.createdAt.isNotBlank()) BackupDetailRow("백업 파일", archive.fileName)
             Text(when {
                 !archive.restoreSpaceReady -> "복원 공간이 부족합니다. ${formatBackupBytes(archive.requiredRestoreBytes)}가 필요해요."
-                state.environment.processRunning -> "복원하려면 서버를 먼저 종료해 주세요."
+                running -> if (stop != null) "복원을 누르면 서버를 끈 뒤 복원 내용을 확인해요." else "복원하려면 서버를 먼저 종료해 주세요."
                 state.environment.sillyTavernInstalled -> "복원하면 백업 이후의 대화가 지워질 수 있어요. 기본으로 복원 전에 지금 상태를 먼저 백업해요."
                 else -> "이 백업으로 설치 데이터를 복원해요."
             }, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
@@ -399,9 +407,9 @@ private fun BackupDetail(
         V2BottomActions {
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             val restoreButtons: @Composable RowScope.() -> Unit = {
-                Button(onClick = { onRestore(archive) }, enabled = canRestore, shape = RoundedCornerShape(14.dp),
+                Button(onClick = openRestore, enabled = canRestore, shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
-                OutlinedButton(onClick = { onSelective(archive) }, enabled = !busy && !state.environment.processRunning,
+                OutlinedButton(onClick = selectParts, enabled = canSelect,
                     shape = RoundedCornerShape(14.dp), modifier = Modifier.heightIn(min = 52.dp)) { Text("일부만 복원") }
             }
             val otherButtons: @Composable RowScope.() -> Unit = {
@@ -413,9 +421,9 @@ private fun BackupDetail(
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("삭제") }
             }
             if (stack) {
-                Button(onClick = { onRestore(archive) }, enabled = canRestore, shape = RoundedCornerShape(14.dp),
+                Button(onClick = openRestore, enabled = canRestore, shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
-                OutlinedButton(onClick = { onSelective(archive) }, enabled = !busy && !state.environment.processRunning,
+                OutlinedButton(onClick = selectParts, enabled = canSelect,
                     shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("일부만 복원") }
             } else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 restoreButtons()
