@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
@@ -101,8 +102,14 @@ private fun diagnosticTime(raw: String): String {
     report?.items?.find { it.id == selected }?.let { DiagnosticSolution(it, vm, state) { selected = null } }
 }
 
+// A two-pane landscape tablet has less vertical room than the portrait phone.
+// Keep the three healthy preview rows and both footer actions visible without shrinking any touch target.
+@Composable private fun shortDiagnosticPane(): Boolean = LocalConfiguration.current.let {
+    it.screenWidthDp >= 840 && it.screenHeightDp < 720
+}
+
 @Composable private fun DiagnosticGroup(title: String, action: String? = null, onAction: () -> Unit = {}, body: @Composable ColumnScope.() -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (shortDiagnosticPane()) 5.dp else 10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             if (action != null) V2LinkAction(action, onAction)
@@ -134,8 +141,10 @@ private fun diagnosticTime(raw: String): String {
         else -> item.value
     } else ""
     val actionWord = issue && item.id != "git_changes"
+    val compact = shortDiagnosticPane()
     Row(Modifier.fillMaxWidth().then(if (onOpen == null) Modifier else Modifier.v2RowTap("diag-item:${item.id}") { onOpen(item) })
-        .heightIn(min = if (issue) 70.dp else 56.dp).padding(horizontal = 20.dp, vertical = 10.dp),
+        .heightIn(min = if (compact) { if (issue) 56.dp else 48.dp } else { if (issue) 70.dp else 56.dp })
+        .padding(horizontal = 20.dp, vertical = if (compact) 5.dp else 10.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).background(when (item.status) {
             DiagnosticStatus.OK -> c.live; DiagnosticStatus.WARNING -> c.accent
