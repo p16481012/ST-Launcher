@@ -911,7 +911,15 @@ begin_operation() {
     acquire_operation
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
-    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
+    if [[ "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
+        # A read-only scan (or consent to edit ONE chat) must never recover an unrelated installation.
+        inspect_restore_recovery
+        if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+            RESTORE_RECOVERY_GUARD_FAILED=1
+            echo "이전 작업의 점검·복구를 마친 뒤 채팅을 다시 검사해 주세요." >&2
+            exit 25
+        fi
+    elif [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
         "$CURRENT_OPERATION" != storage-usage && "$CURRENT_OPERATION" != delete-backup && "$CURRENT_OPERATION" != restore-selection-list && "$CURRENT_OPERATION" != extension-* ]]; then
         CANCELLATION_GUARD=1
         recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
@@ -3791,7 +3799,7 @@ recover_pending_restore() {
 recover_restore_before_dispatch() {
     guard_extension_recovery || exit $?
     case "$CURRENT_OPERATION" in
-        chat-repair|chat-undo|install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
+        install|start|restart|prepare-persistent-start|server-task|finish-persistent-start|backup|import-backup|import-install|restore|repair|reset-installation|update|update-preflight|switch-branch|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash) ;;
         *) return 0 ;;
     esac
     inspect_restore_recovery
@@ -4700,7 +4708,9 @@ diagnose() {
     last_error="$({ grep -iE 'error|failed|exception|fatal' "$SERVER_LOG" "$PREVIOUS_SERVER_LOG" "$LOG_FILE" 2>/dev/null || true; } | tail -n 1)"
     echo "last_error_b64=$(printf '%s' "$last_error" | base64 -w 0 2>/dev/null || true)"
     record_processing "최근 오류 검사 완료 · $([[ -n "$last_error" ]] && echo '오류 기록 있음 (진단 결과에서 확인)' || echo '오류 기록 없음')"
-    if [[ -d "$ST_HOME/data" && -x "$(command -v node)" ]]; then
+    if (( ${#RESTORE_PENDING_WORKS[@]} )); then
+        echo "chat_scan_pending=1"
+    elif [[ -d "$ST_HOME/data" && -x "$(command -v node)" ]]; then
         write_progress 0 "채팅 파일 검사" "개인·그룹 채팅을 읽기 전용으로 확인하고 있어요."
         chat_helper scan "" || { local rc=$?; if (( rc == 130 )); then return 130; fi; echo "chat_scan_unavailable=1"; }
     fi
