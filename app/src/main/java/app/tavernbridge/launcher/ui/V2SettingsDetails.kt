@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
@@ -165,11 +164,11 @@ internal fun ServerLanRows(state: LauncherUiState, openEditor: (String) -> Unit,
         else -> null
     }
     fun edit(page: String) { if (blocked == null) openEditor(page) else explain(blocked) }
-    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "외부 접속 설명") {
-        explain(blocked ?: "같은 Wi-Fi의 다른 기기에서 접속하려면 허용을 켜고 기기 주소를 등록해 주세요. 실행 중인 서버는 설정을 저장할 때 잠시 멈췄다가 다시 시작해요.")
-    }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("외부 접속", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium)
-        Icon(Icons.Outlined.Info, "외부 접속 설명")
+        IconButton(onClick = {
+            explain(blocked ?: "같은 Wi-Fi의 다른 기기에서 접속하려면 허용을 켜고 기기 주소를 등록해 주세요. 실행 중인 서버는 설정을 저장할 때 잠시 멈췄다가 다시 시작해요.")
+        }) { Icon(Icons.Outlined.Info, "외부 접속 설명") }
     }
     SettingsGroup {
         SettingsRow("같은 Wi-Fi에서 접속 허용", caption = blocked ?: "허용한 기기만 들어올 수 있어요", checked = env.externalAccessEnabled,
