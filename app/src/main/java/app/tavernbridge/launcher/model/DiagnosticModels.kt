@@ -36,7 +36,9 @@ data class DiagnosticReport(
     val checkedAt: String,
     val items: List<DiagnosticItem>,
     val copyOnlyDetails: Map<String, String> = emptyMap(),
+    val chatScan: ChatScanPage? = null,
 ) {
+    fun withChat(page: ChatScanPage) = copy(chatScan = page, items = items.filterNot { it.id == "chat_integrity" } + page.item())
     private val byStatus = items.groupBy { it.status }
     fun rows(status: DiagnosticStatus): List<DiagnosticItem> = byStatus[status].orEmpty()
     val okCount: Int get() = rows(DiagnosticStatus.OK).size

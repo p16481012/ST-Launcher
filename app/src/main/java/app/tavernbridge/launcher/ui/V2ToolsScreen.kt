@@ -123,6 +123,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                             viewModel::inspectExistingInstallation, onSwitchBranch,
                             { viewModel.selectTool(ToolPage.REPAIR) }, { viewModel.selectTool(ToolPage.RESET) })
                         ToolPage.DIAGNOSTICS -> DiagnosticDetail(state, viewModel, detailMod)
+                        ToolPage.CHAT_INTEGRITY -> ChatRecoveryDetail(state, viewModel::scanChats, viewModel::repairChats, viewModel::undoChat, detailMod)
                         ToolPage.LOGS -> ToolLogs(state, viewModel, detailMod)
                         ToolPage.REPAIR, ToolPage.RESET -> MaintenanceDetail(page, state, viewModel, onRepair, onReset, detailMod)
                         ToolPage.EXTENSIONS -> ExtensionManagerDialog(
@@ -147,6 +148,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     ToolPage.EXTENSIONS -> Icons.Outlined.Extension
     ToolPage.FILES -> Icons.Outlined.FolderOpen
     ToolPage.DIAGNOSTICS -> Icons.Outlined.MonitorHeart
+    ToolPage.CHAT_INTEGRITY -> Icons.Outlined.MonitorHeart
     ToolPage.LOGS -> Icons.Outlined.Subject
     ToolPage.REPAIR -> Icons.Outlined.RestartAlt
     ToolPage.RESET -> Icons.Outlined.DeleteOutline
