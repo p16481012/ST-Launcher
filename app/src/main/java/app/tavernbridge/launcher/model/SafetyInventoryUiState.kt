@@ -11,6 +11,7 @@ data class SafetyInventoryUiState(
     val error: String = "",
     val totals: Map<SafetyItemKind, Int>? = null,
     val hasLoaded: Boolean = false,
+    val configFirst: Boolean = false,
 ) {
     fun totalFor(kind: SafetyItemKind): Int? = when {
         truncated || error.isNotBlank() -> null

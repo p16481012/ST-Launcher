@@ -387,6 +387,34 @@ class LauncherRepository(private val context: Context) {
 
     suspend fun recoverExtension(): TermuxCommandResult = runManager("extension-recover", 60_000)
 
+    suspend fun readServerConfig(): app.tavernbridge.launcher.model.ServerConfig = withContext(Dispatchers.IO) {
+        val result = runManager("server-config-read", 30_000)
+        check(result.isSuccess && !result.stdoutTruncated) { result.readableError() }
+        app.tavernbridge.launcher.model.ServerConfig.parse(result.stdout)
+    }
+
+    suspend fun serverConfigUsage(): app.tavernbridge.launcher.model.ChatCopyUsage? = withContext(Dispatchers.IO) {
+        val result = runManager("server-config-usage", 30_000)
+        val response = result.stdout.lineSequence().filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
+        if (!result.isSuccess || result.stdoutTruncated || response["complete"] != "1") return@withContext null
+        val count = response["count"]?.toLongOrNull()?.takeIf { it >= 0 } ?: return@withContext null
+        val bytes = response["bytes"]?.toLongOrNull()?.takeIf { it >= 0 } ?: return@withContext null
+        val users = result.stdout.lineSequence().filter { it.startsWith("user\t") }.map {
+            val fields = it.split('\t'); require(fields.size == 4 && fields[1].length <= 344)
+            val name = String(Base64.decode(fields[1],Base64.DEFAULT),Charsets.UTF_8)
+            require(name.isNotBlank() && !name.any(Char::isISOControl))
+            Triple(name,fields[2].toLong().also { n -> require(n >= 0) },fields[3].toLong().also { n -> require(n >= 0) })
+        }.take(100).toList()
+        app.tavernbridge.launcher.model.ChatCopyUsage(count,bytes,users)
+    }
+
+    suspend fun writeServerConfig(revision:String, values:Map<app.tavernbridge.launcher.model.ServerSetting,String>): TermuxCommandResult {
+        require(revision.matches(Regex("[0-9a-f]{64}")) && values.isNotEmpty() && values.all { it.key.accepts(it.value) })
+        val data = values.entries.joinToString(",") { it.key.key + "=" + it.value }
+        val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        return runManager("server-config-write $revision ${shellQuote(encoded)}", 60_000)
+    }
+
     suspend fun saveLanSecurity(change: app.tavernbridge.launcher.model.LanSecurityChange): TermuxCommandResult = withContext(Dispatchers.IO) {
         try {
             requireManagerAccess("save-lan-security")

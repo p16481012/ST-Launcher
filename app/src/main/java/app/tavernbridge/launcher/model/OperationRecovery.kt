@@ -36,6 +36,7 @@ internal fun recoveredSubstepNotice(requestedOperation: String?, completedOperat
         "backup" -> "백업"
         "save-server-connection" -> "서버 연결 설정 저장"
         "save-lan-security" -> "외부 접속 설정 저장"
+        "server-config-write" -> "서버 설정 저장"
         else -> return null
     }
     val completedLabel = when (completedOperation) {
