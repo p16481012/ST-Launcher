@@ -52,7 +52,8 @@ class ServerLanActionsTest {
                  }
             }
         }
-        compose.onNodeWithText("외부 접속").performClick()
+        compose.onNodeWithText("외부 접속").assertHasNoClickAction()
+        compose.onNodeWithText("외부 접속 설명").performClick()
         compose.onNodeWithText("저장할 때 잠시", substring = true).assertExists()
         compose.onNodeWithText("접속 주소").assertDoesNotExist()
         compose.onNodeWithText("같은 Wi-Fi에서 접속 허용").performClick()

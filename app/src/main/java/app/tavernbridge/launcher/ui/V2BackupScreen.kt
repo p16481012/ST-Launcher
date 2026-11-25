@@ -177,7 +177,7 @@ internal fun V2BackupScreen(
                                     val reason = state.backupListError.removePrefix("[${state.backupListErrorCode}]").trim().lineSequence().firstOrNull()
                                     Text(reason.orEmpty().ifBlank { "Termux 응답을 확인하지 못했어요. 잠시 뒤 다시 시도해 주세요." })
                                     Text(state.backupListErrorCode, fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium)
-                                    TextButton(onClick = { retryingError = true; onRefresh() }, enabled = connected && !busy) { Text("다시 시도") }
+                                    if (connected && !busy) V2OutlineAction("다시 시도", { retryingError = true; onRefresh() })
                                 }
                             }
                             !connected -> BackupBlank("홈에서 Termux 연결을 확인한 뒤 백업을 다시 열어 주세요.")
@@ -204,21 +204,23 @@ internal fun V2BackupScreen(
                         Spacer(Modifier.height(20.dp))
                         BackupGroupHeader("관리")
                         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surface)) {
-                            if (!dual) {
-                                BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", enabled = canImport, click = pickImport)
+                            if (!dual && canImport) {
+                                BackupEntry(Icons.Outlined.Launch, "파일에서 가져오기", description = "ZIP을 선택할 파일 앱이 열려요.", click = pickImport)
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             }
                             BackupEntry(Icons.Outlined.DeleteOutline, "공간 정리", estimate?.let { formatBackupBytes(it) }.orEmpty(), click = { pane = BackupPane.SPACE })
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { copies -> state.fileTrashCount?.let { trash -> "${copies + trash}개" } }.orEmpty(),
-                                enabled = connected && !busy, click = onSafety)
+                            if (connected && !busy) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                BackupEntry(Icons.Outlined.HealthAndSafety, "안전 사본·휴지통", state.safetyCopyCount?.let { copies -> state.fileTrashCount?.let { trash -> "${copies + trash}개" } }.orEmpty(),
+                                    click = onSafety)
+                            }
                         }
-                        if (state.environment.processRunning) Text(if (canImport) "가져오기를 누르면 서버를 끈 뒤 백업 ZIP을 선택해요." else "백업을 가져오려면 서버를 먼저 종료해 주세요.",
+                        if (busy) SettingsCaption("진행 중인 작업이 끝난 뒤 백업을 만들거나 가져올 수 있어요.")
+                        else if (state.environment.recoveryPending) SettingsCaption("점검·복구를 마친 뒤 백업 ZIP을 가져올 수 있어요.")
+                        else if (state.environment.processRunning) Text(if (canImport) "가져오기를 누르면 서버를 끈 뒤 백업 ZIP을 선택해요." else "백업을 가져오려면 서버를 먼저 종료해 주세요.",
                             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            if (dual) TextButton(onClick = { pane = BackupPane.ALL }) { Text("전체 관리", color = MaterialTheme.colorScheme.secondary) }
-                            IconButton(onClick = onRefresh, enabled = connected && !busy && !state.backupListLoading) { Icon(Icons.Outlined.Refresh, "백업 목록 새로고침") }
-                        }
+                        if (dual) V2LinkAction("전체 관리", { pane = BackupPane.ALL })
+                        if (connected && !busy && !state.backupListLoading) V2OutlineAction("백업 목록 새로고침", onRefresh)
                     }
                     item(key = "backup-storage-actions") {
                         Spacer(Modifier.height(16.dp))
@@ -227,7 +229,7 @@ internal fun V2BackupScreen(
                             SettingsRow("암호화 백업", caption = "ZIP 암호화 저장 · 암호화 파일 복원",
                                 icon = Icons.Outlined.Lock, onClick = { pane = BackupPane.MORE })
                             SettingsDivider(52)
-                            SettingsRow("Download 폴더 열기", icon = Icons.Outlined.FolderOpen, onClick = onOpenFolder)
+                            SettingsRow("Download 폴더 열기", caption = "파일 앱이 열려요.", icon = Icons.Outlined.FolderOpen, onClick = onOpenFolder)
                             SettingsDivider(52)
                             SettingsRow("백업 알림", caption = "홈에서 알려줘요. 자동 백업은 하지 않아요.",
                                 icon = Icons.Outlined.Notifications, checked = state.backupReminder.enabled,
@@ -247,8 +249,8 @@ internal fun V2BackupScreen(
                     }
                 }
                 }
-                if (!listFailed && state.backupStorageReady != false) V2BottomActions {
-                    Button(onClick = openScope, enabled = connected && !busy && state.backupStorageReady == true, shape = RoundedCornerShape(14.dp),
+                if (!listFailed && connected && !busy && state.backupStorageReady == true) V2BottomActions {
+                    Button(onClick = openScope, shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth().padding(horizontal = masterPadding, vertical = 8.dp).heightIn(min = 52.dp)) {
                         Text("지금 백업")
                     }
@@ -282,14 +284,17 @@ internal fun V2BackupScreen(
                                     StorageManagementCard(state, onScan, onPreviewCleanup, initiallyExpanded = true)
                                 }
                                 BackupPane.MORE -> {
-                                    SettingsGroup {
-                                        SettingsRow("ZIP 암호화 저장", caption = "기존 ZIP은 그대로 두고 .stbackup 파일로 저장해요.",
-                                            icon = Icons.Outlined.Lock, enabled = !busy,
+                                    if (busy) SettingsCaption("진행 중인 작업을 마친 뒤 암호화 백업을 관리할 수 있어요.")
+                                    else SettingsGroup {
+                                        SettingsRow("ZIP 암호화 저장", caption = "원본 ZIP을 고를 파일 앱이 열려요. 원본은 그대로 남아요.",
+                                            icon = Icons.Outlined.Lock,
                                             onClick = { onEncrypted(EncryptedBackupMode.EXPORT) })
-                                        SettingsDivider(52)
-                                        SettingsRow("암호화 백업 열기·복원", caption = ".stbackup 파일을 선택하고 암호를 확인해요.",
-                                            icon = Icons.Outlined.Restore, enabled = canImport,
-                                            onClick = { enterStoppedAction(running, stopToImport, "암호화 백업 선택") { onEncrypted(EncryptedBackupMode.RESTORE) } })
+                                        if (canImport) {
+                                            SettingsDivider(52)
+                                            SettingsRow("암호화 백업 열기·복원", caption = "암호화 파일을 고를 파일 앱이 열려요.",
+                                                icon = Icons.Outlined.Restore,
+                                                onClick = { enterStoppedAction(running, stopToImport, "암호화 백업 선택") { onEncrypted(EncryptedBackupMode.RESTORE) } })
+                                        } else SettingsCaption("Termux 연결과 이전 작업 복구를 확인하고, 서버가 켜져 있으면 먼저 종료해 주세요.")
                                     }
                                     SettingsCaption("원본 ZIP 8 GiB까지 지원해요. 원본 ZIP은 암호화되지 않으며, 암호를 잊으면 암호화한 사본을 복구할 수 없어요.")
                                 }
@@ -327,21 +332,20 @@ private fun BackupBlank(text: String) {
 private fun BackupGroupHeader(title: String, action: String = "", enabled: Boolean = true, onClick: () -> Unit = {}) {
     Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.SemiBold)
-        if (action.isNotEmpty()) TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(0.dp)) {
-            Text(action, style = MaterialTheme.typography.labelLarge, color = if (enabled) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        if (action.isNotEmpty() && enabled) V2LinkAction(action, onClick)
     }
 }
 
 @Composable
-private fun BackupEntry(icon: ImageVector, label: String, suffix: String = "", enabled: Boolean = true, click: () -> Unit) {
+private fun BackupEntry(icon: ImageVector, label: String, suffix: String = "", description: String = "", click: () -> Unit) {
     val stack = LocalDensity.current.fontScale >= 1.3f
-    Row(Modifier.fillMaxWidth().clickable(enabled, role = Role.Button, onClick = click).heightIn(min = 56.dp).padding(horizontal = 18.dp, vertical = 8.dp),
+    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = click).heightIn(min = 56.dp).padding(horizontal = 18.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        val color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else app.tavernbridge.launcher.ui.theme.LocalLauncherColors.current.disabledInk
+        val color = MaterialTheme.colorScheme.onSurfaceVariant
         Icon(icon, null, Modifier.size(20.dp), tint = color)
         Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyLarge, color = if (enabled) MaterialTheme.colorScheme.onSurface else color)
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            if (description.isNotEmpty()) SettingsCaption(description)
             if (stack && suffix.isNotBlank()) Text(suffix, fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium, color = color)
         }
         if (!stack && suffix.isNotBlank()) Text(suffix, fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium, color = color)
@@ -360,6 +364,7 @@ private fun BackupArchiveRow(archive: BackupArchive, first: Boolean, last: Boole
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BackupDetail(
     archive: BackupArchive, state: LauncherUiState, busy: Boolean, onSelective: (BackupArchive) -> Unit,
@@ -374,7 +379,6 @@ private fun BackupDetail(
     val openRestore = { enterStoppedAction(running, stop, "선택한 백업 복원 확인") { onRestore(archive) } }
     val selectParts = { enterStoppedAction(running, stop, "복원할 항목 선택") { onSelective(archive) } }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val singleRow = maxWidth >= 640.dp && LocalDensity.current.fontScale <= 1.3f
         val stack = maxWidth < 300.dp || LocalDensity.current.fontScale >= 1.5f
         Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
@@ -397,6 +401,7 @@ private fun BackupDetail(
             if (archive.integrity.isNotBlank()) BackupDetailRow("무결성", if (archive.integrity == "zip-crc32") "ZIP CRC" else archive.integrity)
             if (archive.createdAt.isNotBlank()) BackupDetailRow("백업 파일", archive.fileName)
             Text(when {
+                state.environment.recoveryPending -> "복구 중인 자료가 있어요. 점검·복구를 마친 뒤 백업을 복원해 주세요."
                 !archive.restoreSpaceReady -> "복원 공간이 부족합니다. ${formatBackupBytes(archive.requiredRestoreBytes)}가 필요해요."
                 archive.availableRestoreBytes == null && archive.requiredRestoreBytes > 0 -> "현재 여유 공간은 미확인이에요. 복원 전에 다시 검사해요."
                 running -> if (stop != null) "복원을 누르면 서버를 끈 뒤 복원 내용을 확인해요." else "복원하려면 서버를 먼저 종료해 주세요."
@@ -407,31 +412,24 @@ private fun BackupDetail(
         }
         V2BottomActions {
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-            val restoreButtons: @Composable RowScope.() -> Unit = {
-                Button(onClick = openRestore, enabled = canRestore, shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
-                OutlinedButton(onClick = selectParts, enabled = canSelect,
-                    shape = RoundedCornerShape(14.dp), modifier = Modifier.heightIn(min = 52.dp)) { Text("일부만 복원") }
-            }
-            val otherButtons: @Composable RowScope.() -> Unit = {
-                IconButton(onClick = { onTransfer(archive, BackupTransferAction.EXPORT) }, enabled = !busy) {
-                    Icon(Icons.Outlined.SaveAlt, "다른 위치에 저장", Modifier.size(20.dp))
+            if (canSelect) {
+                if (stack) {
+                    if (canRestore) V2SheetPrimaryButton("이 백업으로 복원", onClick = openRestore)
+                    V2OutlineAction("일부만 복원", selectParts, Modifier.fillMaxWidth())
+                } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (canRestore) Button(onClick = openRestore, shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
+                    V2OutlineAction("일부만 복원", selectParts)
                 }
-                TextButton(onClick = { onTransfer(archive, BackupTransferAction.SHARE) }, enabled = !busy) { Text("공유") }
-                TextButton(onClick = { onDelete(listOf(archive)) }, enabled = !busy && BackupDeleteSelection.identifiable(archive) && annotation.trusted && !annotation.pinned,
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("삭제") }
             }
-            if (stack) {
-                Button(onClick = openRestore, enabled = canRestore, shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
-                OutlinedButton(onClick = selectParts, enabled = canSelect,
-                    shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("일부만 복원") }
-            } else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                restoreButtons()
-                if (singleRow) otherButtons()
-            }
-            if (!singleRow) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically, content = otherButtons)
+            if (!busy) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                V2OutlineAction("다른 위치에 저장", { onTransfer(archive, BackupTransferAction.EXPORT) })
+                V2OutlineAction("공유", { onTransfer(archive, BackupTransferAction.SHARE) })
+                if (BackupDeleteSelection.identifiable(archive) && annotation.trusted && !annotation.pinned)
+                    V2DangerAction("삭제", { onDelete(listOf(archive)) })
+            } else SettingsCaption("진행 중인 작업이 끝난 뒤 백업 파일을 관리할 수 있어요.")
         }
         }
         }
@@ -457,12 +455,16 @@ private fun BackupAll(state: LauncherUiState, busy: Boolean, scroll: LazyListSta
     BackHandler(selection) { selection = false; keys = emptyList() }
     LazyColumn(state = scroll) {
         item {
-            BackupGroupHeader("전체 백업 ${state.backups.size}개", if (selection) "취소" else "선택 삭제", enabled = !busy) {
-                selection = !selection; keys = emptyList()
-            }
-            if (selection) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { keys = if (chosen.isEmpty()) deletable.take(200).map(BackupDeleteSelection::key) else emptyList() }) { Text(if (chosen.isEmpty()) "전체 선택" else "선택 해제") }
-                TextButton(enabled = chosen.isNotEmpty() && !busy, onClick = { onDelete(chosen) }) { Text("선택 항목 ${chosen.size}개 삭제", color = MaterialTheme.colorScheme.error) }
+            BackupGroupHeader("전체 백업 ${state.backups.size}개")
+            if (!busy && (deletable.isNotEmpty() || selection)) {
+                V2OutlineAction(if (selection) "선택 종료" else "선택 삭제", { selection = !selection; keys = emptyList() })
+                if (selection && deletable.isNotEmpty()) {
+                    V2OutlineAction(if (chosen.isEmpty()) "전체 선택" else "선택 해제", {
+                        keys = if (chosen.isEmpty()) deletable.take(200).map(BackupDeleteSelection::key) else emptyList()
+                    })
+                    if (chosen.isNotEmpty()) V2DangerAction("선택 항목 ${chosen.size}개 삭제", { onDelete(chosen) })
+                    else SettingsCaption("삭제할 백업을 선택해 주세요.")
+                }
             }
         }
         if (state.backups.isEmpty()) item { BackupBlank("표시할 백업이 없어요.") }

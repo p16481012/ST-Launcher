@@ -13,7 +13,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,7 +34,7 @@ internal fun TermuxProcessHelpCard(
     var expanded by rememberSaveable { mutableStateOf(false) }
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            OutlinedButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text("Termux가 갑자기 종료될 때", modifier = Modifier.weight(1f))
                 Icon(
                     if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
@@ -48,17 +48,11 @@ internal fun TermuxProcessHelpCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                TextButton(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text("Termux 앱 정보 열기")
-                }
-                TextButton(onClick = onOpenBatterySettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text("배터리 설정 열기")
-                }
+                V2NavigationRow("Termux 앱 정보 열기", onOpenTermuxSettings, description = "Android 설정 앱이 열려요")
+                V2NavigationRow("배터리 설정 열기", onOpenBatterySettings, description = "Android 설정 앱이 열려요")
                 if (TermuxProcessHelp.includesAndroid12ProcessLimit(androidSdk)) {
-                    TextButton(
-                        onClick = { onOpenOfficialHelp(TermuxProcessHelp.OFFICIAL_HELP_URL) },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    ) { Text("Android 12 이상 공식 도움말") }
+                    V2NavigationRow("Android 12 이상 공식 도움말", { onOpenOfficialHelp(TermuxProcessHelp.OFFICIAL_HELP_URL) },
+                        description = "브라우저 앱이 열려요")
                 }
             }
         }

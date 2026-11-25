@@ -2,7 +2,6 @@ package app.tavernbridge.launcher.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -16,14 +15,13 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.BackupReminderNotice
 import app.tavernbridge.launcher.model.UpdatePreflight
@@ -37,10 +35,8 @@ internal fun BackupReminderCard(notice: BackupReminderNotice, onOpen: () -> Unit
                 else "마지막 사용자 데이터 백업 기록은 ${notice.ageDays}일 전입니다.")
             Text("생성 기록 기준이며, 백업 파일이 지금도 남아 있는지는 백업 목록에서 확인해 주세요.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onOpen) { Text("백업 확인") }
-                TextButton(onClick = onSnooze) { Text("7일 뒤에 알림") }
-            }
+            V2NavigationRow("백업 확인", onOpen)
+            V2OutlineAction("7일 뒤에 알림", onSnooze)
         }
     }
 }
@@ -50,7 +46,7 @@ internal fun UpdateChangesPreview(report: UpdatePreflight) {
     var expanded by rememberSaveable(report.currentCommit, report.targetCommit) { mutableStateOf(false) }
     if (!report.updateAvailable) return
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(onClick = { expanded = !expanded }) {
+        OutlinedButton(onClick = { expanded = !expanded }) {
             Text("변경 내역 미리보기")
             Icon(if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
                 contentDescription = if (expanded) "변경 내역 접기" else "변경 내역 펼치기")

@@ -53,7 +53,7 @@ private fun diagnosticTime(raw: String): String {
             colors = ButtonDefaults.outlinedButtonColors(containerColor = colors.surface, contentColor = colors.ink)) {
             Text("보고서 복사", style = MaterialTheme.typography.titleMedium)
         }
-        Button(onRun, Modifier.weight(1f).heightIn(min = 52.dp), enabled = !state.isWorking, shape = RoundedCornerShape(14.dp)) {
+        if (!state.isWorking) Button(onRun, Modifier.weight(1f).heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) {
             Text(if (report == null) "진단 시작" else "다시 진단", style = MaterialTheme.typography.titleMedium)
         }
     }) {
@@ -65,6 +65,7 @@ private fun diagnosticTime(raw: String): String {
                 color = colors.ink2, style = if (report == null) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodySmall,
                 fontFamily = if (report == null) null else V2Mono)
         }
+        if (state.isWorking) SettingsCaption("진행 중인 작업이 끝나면 진단할 수 있어요.")
         if (report == null) DiagnosticGroup("확인하는 것") {
             checkAreas.forEachIndexed { i, (icon, label) ->
                 if (i > 0) ToolDivider(52)
@@ -104,8 +105,7 @@ private fun diagnosticTime(raw: String): String {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            if (action != null) Text(action, Modifier.v2RowTap("diag-group:$title", click = onAction).padding(vertical = 4.dp),
-                style = MaterialTheme.typography.labelMedium, color = LocalLauncherColors.current.accent)
+            if (action != null) V2LinkAction(action, onAction)
         }
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = LocalLauncherColors.current.surface) { Column(content = body) }
     }
@@ -169,24 +169,24 @@ private data class DiagnosticAction(@DrawableRes val icon: Int, val label: Strin
     val actions = buildList<DiagnosticAction> {
         when {
             battery -> {
-                add(DiagnosticAction(R.drawable.rv_shield, "배터리 설정 열기", click = vm::openBatteryOptimizationSettings))
-                add(DiagnosticAction(R.drawable.rv_open, "Termux 앱 정보 열기", click = vm::openTermuxAppSettings))
+                add(DiagnosticAction(R.drawable.rv_shield, "배터리 설정 열기", "Android 설정 앱이 열려요", click = vm::openBatteryOptimizationSettings))
+                add(DiagnosticAction(R.drawable.rv_open, "Termux 앱 정보 열기", "Android 설정 앱이 열려요", click = vm::openTermuxAppSettings))
                 if (TermuxProcessHelp.includesAndroid12ProcessLimit(Build.VERSION.SDK_INT)) add(
                     DiagnosticAction(R.drawable.rv_globe, "Android 12 이상 도움말", "외부 브라우저로 열려요") {
                         runCatching { browser.openUri(TermuxProcessHelp.OFFICIAL_HELP_URL) }.onFailure { vm.showMessage("도움말 링크를 열 수 없어요. 브라우저 앱을 확인해 주세요.") }
                     })
             }
             item.id == "download_storage" && item.status == DiagnosticStatus.INFO && item.value == "아직 사용하지 않음" ->
-                add(DiagnosticAction(R.drawable.rv_terminal, "연결 명령 복사·Termux 열기") {
+                add(DiagnosticAction(R.drawable.rv_terminal, "연결 명령 복사·Termux 열기", "Termux 앱이 열려요") {
                     clipboard.setText(AnnotatedString(vm.storageSetupCommand)); vm.openTermux()
                 })
-            item.id in setOf("termux_storage", "download_storage") -> add(DiagnosticAction(R.drawable.rv_folder, "휴대폰 저장 공간 열기", click = vm::openDeviceStorageSettings))
-            item.id == "command_permission" -> add(DiagnosticAction(R.drawable.rv_open, "런처 권한 설정 열기", click = vm::openPermissionSettings))
-            item.id in setOf("termux", "termux_installation") && !state.environment.termuxInstalled -> add(DiagnosticAction(R.drawable.rv_globe, "Termux 다운로드", click = vm::openTermuxDownload))
+            item.id in setOf("termux_storage", "download_storage") -> add(DiagnosticAction(R.drawable.rv_folder, "휴대폰 저장 공간 열기", "Android 설정 앱이 열려요", click = vm::openDeviceStorageSettings))
+            item.id == "command_permission" -> add(DiagnosticAction(R.drawable.rv_open, "런처 권한 설정 열기", "Android 설정 앱이 열려요", click = vm::openPermissionSettings))
+            item.id in setOf("termux", "termux_installation") && !state.environment.termuxInstalled -> add(DiagnosticAction(R.drawable.rv_globe, "Termux 다운로드", "브라우저 앱이 열려요", click = vm::openTermuxDownload))
             item.id == "git_changes" -> add(DiagnosticAction(R.drawable.rv_update, "업데이트 화면 열기") { dismiss(); vm.selectTool(ToolPage.UPDATE) })
             item.id in setOf("git", "node", "npm", "dependencies", "restore_recovery", "node_requirement") && state.environment.sillyTavernInstalled ->
                 add(DiagnosticAction(R.drawable.rv_pulse, "점검·복구 열기") { dismiss(); vm.selectTool(ToolPage.REPAIR) })
-            item.id == "termux_repo" -> add(DiagnosticAction(R.drawable.rv_terminal, "Termux 열기", click = vm::openTermux))
+            item.id == "termux_repo" -> add(DiagnosticAction(R.drawable.rv_terminal, "Termux 열기", "Termux 앱이 열려요", click = vm::openTermux))
         }
     }
     V2BottomSheet(onClose = dismiss, footer = { V2SheetPrimaryButton("확인", onClick = LocalV2SheetDismiss.current ?: dismiss) }) {

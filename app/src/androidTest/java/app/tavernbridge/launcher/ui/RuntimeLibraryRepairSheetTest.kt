@@ -47,7 +47,8 @@ class RuntimeLibraryRepairSheetTest {
         ui.runOnIdle { assertEquals(emptyList<Long>(), syncs) }
         option.performClick()
         confirm.assertIsEnabled().performClick()
-        confirm.assertIsNotEnabled().performClick()
+        confirm.assertDoesNotExist()
+        ui.onNodeWithText("Termux 패키지 갱신을 요청했어요.").assertIsDisplayed()
         ui.runOnIdle { assertEquals(listOf(at), syncs); assertEquals(0, retries) }
     }
 

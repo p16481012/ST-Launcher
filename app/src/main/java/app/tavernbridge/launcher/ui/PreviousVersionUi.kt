@@ -79,14 +79,22 @@ internal fun PreviousVersionDialog(
             if (state.loading) item { V2BusyIndicator(Modifier.fillMaxWidth()) }
             if (state.error.isNotBlank()) item {
                 Text(state.error, color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = onRefresh, enabled = !state.loading) { Text("다시 확인") }
+                if (!state.loading) V2OutlineAction("다시 확인", onRefresh)
             }
             if (!canChange) item { Text("서버와 다른 작업을 종료한 뒤 변경할 수 있습니다.", color = MaterialTheme.colorScheme.error) }
+            else if (!state.loading && state.error.isBlank() && page?.versions?.isNotEmpty() == true && !ready) item {
+                SettingsCaption(if (target == null) "먼저 변경할 버전을 선택해 주세요." else "되돌릴 백업을 선택해 주세요.")
+            }
         } },
-        confirmButton = { V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = {
+        confirmButton = { if (ready && (!confirming || acknowledged)) V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = {
             if (confirming) target?.let { onChange(it, if (restoreData) snapshot else null) } else confirming = true
-        }, enabled = ready && (!confirming || acknowledged)) { Text(if (confirming) "전체 백업 후 변경" else "변경 내용 확인") } },
-        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { if (confirming) confirming = false else onClose() }) { Text(if (confirming) "이전" else "닫기") } },
+        }) { Text(if (confirming) "전체 백업 후 변경" else "변경 내용 확인") } },
+        dismissButton = {
+            val label = if (confirming) "이전" else "닫기"
+            val leave: () -> Unit = { if (confirming) confirming = false else onClose() }
+            if (ready && (!confirming || acknowledged)) V2DialogAction(tone = V2DialogTone.Quiet, onClick = leave) { Text(label) }
+            else V2OutlineAction(label, leave)
+        },
     )
 }
 

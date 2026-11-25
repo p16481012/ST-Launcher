@@ -1,6 +1,11 @@
 package app.tavernbridge.launcher.ui
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -16,15 +21,14 @@ internal fun LauncherEntrySettings() {
     val installer = remember(context) { LauncherShortcutInstaller(context) }
     var result by rememberSaveable { mutableStateOf<PinShortcutResult?>(null) }
     SettingsHeading("홈 화면 바로가기")
-    SettingsGroup {
-        LauncherEntryAction.entries.forEachIndexed { index, action ->
-            if (index > 0) SettingsDivider()
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LauncherEntryAction.entries.forEach { action ->
             val label = stringResource(when (action) {
                 LauncherEntryAction.START -> R.string.entry_start
                 LauncherEntryAction.STOP -> R.string.entry_stop
                 LauncherEntryAction.OPEN -> R.string.entry_open
             })
-            SettingsRow(stringResource(R.string.entry_pin_action, label), onClick = { result = installer.requestPin(action) })
+            V2OutlineAction(stringResource(R.string.entry_pin_action, label), { result = installer.requestPin(action) }, Modifier.fillMaxWidth())
         }
     }
     SettingsCaption(result?.let {
@@ -35,9 +39,6 @@ internal fun LauncherEntrySettings() {
         })
     } ?: "바로가기를 눌러도 서버는 바로 시작하거나 종료되지 않아요. 런처에서 먼저 확인해요.")
     var showHelp by rememberSaveable { mutableStateOf(false) }
-    SettingsGroup {
-        SettingsRow("위젯 · 빠른 설정 타일 사용법", value = if (showHelp) "접기" else "보기",
-            onClick = { showHelp = !showHelp })
-    }
+    V2LinkAction(if (showHelp) "위젯 · 빠른 설정 타일 사용법 접기" else "위젯 · 빠른 설정 타일 사용법", { showHelp = !showHelp })
     if (showHelp) SettingsCaption(stringResource(R.string.entry_tile_widget_help))
 }

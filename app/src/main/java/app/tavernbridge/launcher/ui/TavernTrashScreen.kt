@@ -55,13 +55,13 @@ internal fun TavernTrashScreen(state: LauncherUiState, read: suspend (String) ->
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "파일 목록으로 돌아가기") }
             Text("휴지통", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            IconButton(onClick = { cursor = ""; generation++ }, enabled = !loading && !state.fileBrowserMutating) {
+            if (!loading && !state.fileBrowserMutating) IconButton(onClick = { cursor = ""; generation++ }) {
                 Icon(Icons.Outlined.Refresh, "휴지통 새로고침")
             }
         }
         Text("이 설치에서 옮긴 파일·폴더예요. 복구하면 원래 위치로 돌아가며, 같은 이름이 있으면 덮어쓰지 않아요.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (stop != null && !loading && entries.isNotEmpty()) TextButton(onClick = { stop("휴지통에서 복구할 항목 선택") {} }) { Text("서버 끄고 복구할 항목 선택") }
+        if (stop != null && !loading && entries.isNotEmpty()) V2OutlineAction("서버 끄고 복구할 항목 선택", { stop("휴지통에서 복구할 항목 선택") {} })
         else if (state.environment.processRunning || state.environment.operationActive)
             Text("복구하려면 먼저 서버와 진행 중인 작업을 종료해 주세요.", style = MaterialTheme.typography.bodySmall)
         if (state.fileBrowserError.isNotBlank()) Text(state.fileBrowserError, color = MaterialTheme.colorScheme.error)
@@ -69,7 +69,7 @@ internal fun TavernTrashScreen(state: LauncherUiState, read: suspend (String) ->
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (error.isNotBlank()) item { Column {
                 Text(error, color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = { generation++ }) { Text("다시 시도") }
+                if (!loading) V2OutlineAction("다시 시도", { generation++ })
             } }
             if (!loading && error.isBlank() && entries.isEmpty() && next.isEmpty() && skipped == 0)
                 item { Text("휴지통이 비어 있어요.", Modifier.padding(16.dp)) }
@@ -84,7 +84,7 @@ internal fun TavernTrashScreen(state: LauncherUiState, read: suspend (String) ->
                             }
                             Text("${if (entry.isDirectory) "폴더" else "파일"} · $time", style = MaterialTheme.typography.bodySmall)
                         }
-                        TextButton(onClick = { restore(entry.id) }, enabled = !loading && state.canModifyTavernFiles()) { Text("복구") }
+                        if (!loading && state.canModifyTavernFiles()) V2OutlineAction("복구", { restore(entry.id) })
                     }
                 }
             }

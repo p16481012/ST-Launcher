@@ -88,7 +88,6 @@ internal fun SafetyInventoryScreen(
     var pending by remember { mutableStateOf<SafetyRequest?>(null) }
     val locked = state.mutationBlocked
     val partial = state.nextCursor != null || state.truncated
-    val blockedReason = "복구 중인 자료가 있어요. 점검·복구를 먼저 진행해 주세요."
     fun resolve(expected: Map<String,String>) = expected.mapNotNull { (id, rev) -> indexed[id]?.takeIf { it.revision == rev } }
     fun resetSelection() { selecting = false; selection = emptyMap() }
     val selectedItems = resolve(selection)
@@ -110,8 +109,7 @@ internal fun SafetyInventoryScreen(
     V2BackHandler(true, back)
     fun choose(row: SafetyInventoryItem) {
         when {
-            locked -> onNotice(blockedReason)
-            busy || state.loading -> onNotice("진행 중인 확인이나 작업이 끝난 뒤 선택해 주세요.")
+            locked || busy || state.loading -> return
             selecting -> selection = if (selection.containsKey(row.id)) selection - row.id else selection + (row.id to row.revision)
             else -> sheet = row.id to row.revision
         }
@@ -129,14 +127,10 @@ internal fun SafetyInventoryScreen(
             Spacer(Modifier.width(12.dp))
             Text(if (selecting) "${selection.size}개 선택" else "안전 사본·휴지통", Modifier.weight(1f),
                 style = MaterialTheme.typography.titleLarge, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-            if (!locked && state.items.isNotEmpty()) {
-                if (selecting) TextButton(onClick = {
+            if (!locked && !busy && !state.loading && state.items.isNotEmpty()) {
+                if (selecting) V2TopBarAction(if (selection.size == state.items.size) "선택 해제" else "모두 선택", {
                     selection = if (selection.size == state.items.size) emptyMap() else indexed.mapValues { it.value.revision }
-                }, enabled = !busy && !state.loading) {
-                    Text(if (selection.size == state.items.size) "선택 해제" else "모두 선택", color = colors.ink)
-                } else IconButton(onClick = { selecting = true }, enabled = !busy && !state.loading) {
-                    ReviewGlyph(R.drawable.rv_select, description = "항목 선택")
-                }
+                }) else V2TopBarAction("항목 선택", { selecting = true })
             }
             Spacer(Modifier.width(10.dp))
         }
@@ -154,7 +148,7 @@ internal fun SafetyInventoryScreen(
                     Column {
                         Text("복구가 끝나지 않은 자료가 있어요", fontWeight = FontWeight.SemiBold)
                         Text("점검·복구를 먼저 하면 다시 관리할 수 있어요.", style = MaterialTheme.typography.bodyMedium)
-                        TextButton(onClick = onRepair, enabled = !busy) { Text("점검·복구", color = colors.ink) }
+                        if (!busy) V2LinkAction("점검·복구", onRepair)
                     }
                 } else {
                     Text("업데이트·삭제 때 보관한 자료예요", style = MaterialTheme.typography.titleMedium,
@@ -167,7 +161,7 @@ internal fun SafetyInventoryScreen(
             if (state.loading) item { V2BusyIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp)) }
             if (state.error.isNotBlank()) item {
                 Text(state.error, Modifier.padding(vertical = 8.dp), color = colors.danger)
-                TextButton(onClick = onRefresh, enabled = !state.loading && !busy) { Text("다시 확인") }
+                if (!state.loading && !busy) V2OutlineAction("다시 확인", onRefresh)
             }
             for (kind in SafetyItemKind.entries) {
                 val rows = groups[kind].orEmpty()
@@ -188,7 +182,7 @@ internal fun SafetyInventoryScreen(
                     Column(Modifier.fillMaxWidth().alpha(if (locked) .38f else 1f)
                         .clip(RoundedCornerShape(first, first, last, last)).background(if (selectedRow) colors.sunken else colors.surface)) {
                         Row(Modifier.fillMaxWidth().heightIn(min = 68.dp).semantics { if (selecting) selected = selectedRow }
-                            .clickable(role = if (selecting) Role.Checkbox else Role.Button) { choose(row) }
+                            .then(if (locked || busy || state.loading) Modifier else Modifier.clickable(role = if (selecting) Role.Checkbox else Role.Button) { choose(row) })
                             .padding(start = 20.dp, end = if (selecting) 8.dp else 14.dp, top = 10.dp, bottom = 10.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             if (selecting) Box(Modifier.size(22.dp).clip(RoundedCornerShape(6.dp))
@@ -205,7 +199,7 @@ internal fun SafetyInventoryScreen(
                                     if (row.unconfirmed) Text("확인 필요", color = colors.onAccentWash, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                 }
                             }
-                            if (!selecting) ReviewGlyph(R.drawable.rv_more, 18.dp, colors.ink2)
+                            if (!selecting && !locked && !busy && !state.loading) ReviewGlyph(R.drawable.rv_chevron, 18.dp, colors.ink2)
                         }
                         if (index < rows.lastIndex) HorizontalDivider(Modifier.padding(start = if (selecting) 86.dp else 52.dp, end = 20.dp), color = colors.hairline)
                     }
@@ -218,11 +212,11 @@ internal fun SafetyInventoryScreen(
                 Text("보호 중인 자료 ${state.protectedEntries}개는 표시하지 않아요.", Modifier.padding(top = 12.dp), color = colors.ink2, fontSize = 13.sp)
             }
             if (partial && selecting) item { Text("‘모두 선택’은 현재 불러온 항목에만 적용돼요.", color = colors.ink2, fontSize = 13.sp) }
-            if (state.nextCursor != null) item { TextButton(onClick = onMore, enabled = !busy && !state.loading) { Text("더 보기") } }
+            if (state.nextCursor != null && !busy && !state.loading) item { V2OutlineAction("더 보기", onMore) }
             if (state.truncated) item { Text("조사 한도에 도달해 일부 항목만 표시해요.", style = MaterialTheme.typography.bodySmall) }
         }
-        if (selecting && !locked) Button(onClick = { pending = SafetyRequest("delete", selection.toMap(), true) },
-            enabled = selection.isNotEmpty() && !changed && !state.loading && !busy,
+        if (selecting && !locked && selection.isNotEmpty() && !changed && !state.loading && !busy)
+            Button(onClick = { pending = SafetyRequest("delete", selection.toMap(), true) },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).heightIn(min = 52.dp),
             shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = colors.danger, contentColor = Color.White)) {
             Text("영구 삭제 (${selectedItems.size}) · $selectedTotal")
@@ -244,7 +238,7 @@ internal fun SafetyInventoryScreen(
             else if (item.kind == SafetyItemKind.TRASH) "현재 설치와 원래 설치 위치가 달라 직접 복원할 수 없어요."
             else "설치에 바로 복원할 수 없는 사본이에요. 내보내서 확인해 주세요.",
             style = MaterialTheme.typography.bodySmall, color = colors.ink2)
-        Column {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (item.canExport) SafetySheetAction("Download로 사본 내보내기", R.drawable.rv_backup) { ask("export", item) }
             SafetySheetAction("영구 삭제", R.drawable.rv_trash, danger = true) { ask("delete", item) }
         }
@@ -262,8 +256,10 @@ internal fun SafetyInventoryScreen(
             "delete" -> "$subject(${totalLabel(rows)})을 지워요. 되돌릴 수 없어요. 지금 설치는 지우지 않아요."
             "restore" -> "$subject 항목을 원래 위치로 되돌려요. 같은 이름이 있으면 덮어쓰지 않고 중단해요."
             else -> "$subject 항목을 Download에 암호화하지 않고 복사해요. 대화나 비밀정보가 포함될 수 있어요. 원본은 유지해요."
-        }) }, dismissButton = { V2DialogAction(onClick = { pending = null }, tone = V2DialogTone.Quiet) { Text("취소") } },
-            confirmButton = { V2DialogAction(enabled = allowed, tone = if (action == "delete") V2DialogTone.Danger else V2DialogTone.Primary,
+        } + if (!allowed) "\n작업 및 서버 상태를 확인한 뒤 다시 시도해 주세요." else "") }, dismissButton = {
+            if (allowed) V2DialogAction(onClick = { pending = null }, tone = V2DialogTone.Quiet) { Text("취소") }
+            else V2OutlineAction("닫기", { pending = null })
+        }, confirmButton = { if (allowed) V2DialogAction(tone = if (action == "delete") V2DialogTone.Danger else V2DialogTone.Primary,
                 onClick = {
                     if (pending == request && allowed) {
                         pending = null; resetSelection()
@@ -274,10 +270,10 @@ internal fun SafetyInventoryScreen(
 }
 
 @Composable private fun SafetySheetAction(label: String, icon: Int, danger: Boolean = false, onClick: () -> Unit) {
-    val colors = LocalLauncherColors.current
-    val ink = if (danger) colors.danger else colors.ink
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button, onClick = onClick),
-        horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-        ReviewGlyph(icon, 18.dp, ink); Text(label, color = ink, style = MaterialTheme.typography.bodyLarge)
+    if (danger) V2DangerAction(label, onClick, Modifier.fillMaxWidth())
+    else OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        ReviewGlyph(icon, 18.dp)
+        Spacer(Modifier.width(8.dp))
+        Text(label)
     }
 }

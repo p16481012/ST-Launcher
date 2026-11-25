@@ -12,7 +12,7 @@ import app.tavernbridge.launcher.ui.V2DialogAction
 import app.tavernbridge.launcher.ui.V2DialogTone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,20 +40,20 @@ internal fun OperationCancelControl(
     if (!pending && progress?.status in setOf("success", "error", "cancelled")) return
 
     val pendingDescription = if (progress?.cancellationMode == "deferred") "중단 대기 중" else "중단 요청 중"
-    TextButton(
+    if (pending) {
+        Text(pendingDescription, modifier.semantics { stateDescription = pendingDescription })
+        return
+    }
+    OutlinedButton(
         onClick = { confirming = true },
-        enabled = !pending,
         modifier = modifier.heightIn(min = 48.dp).semantics {
             contentDescription = "작업 중단"
-            if (pending) stateDescription = pendingDescription
         },
         contentPadding = PaddingValues(horizontal = 6.dp),
     ) {
         Icon(Icons.Outlined.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(4.dp))
-        Text(if (pending) {
-            if (progress?.cancellationMode == "deferred") "대기" else "요청 중"
-        } else "중단", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("중단", maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     if (confirming && !pending) {
         V2AlertDialog(

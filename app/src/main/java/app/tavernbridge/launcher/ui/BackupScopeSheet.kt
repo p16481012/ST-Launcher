@@ -50,9 +50,10 @@ internal fun BackupScopeSheet(
         handleLabel = if (choosing) "시트 닫기" else stringResource(R.string.ui_collapse_progress),
         animateSize = true,
         footer = if (!choosing) null else ({
-            V2SheetPrimaryButton("백업 시작", enabled = canStart) {
+            if (canStart) V2SheetPrimaryButton("백업 시작") {
                 onCreate(selected, secrets && canChooseSecrets, folders.toSet())
-            }
+            } else SettingsCaption(if (state.backupStorageReady != true) "저장 공간을 연결한 뒤 백업할 수 있어요."
+                else "백업할 항목이나 사용자 폴더를 선택해 주세요.")
         }),
     ) {
         Crossfade(choosing, modifier = Modifier.fillMaxWidth(), animationSpec = tween(if (reduced) 0 else 120),
@@ -63,10 +64,8 @@ internal fun BackupScopeSheet(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("백업 범위", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     // The two common scopes stay visible; custom folders remain one tap away.
-                    TextButton(onClick = { pickScope(if (scope == "custom") "data" else "custom") },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                        Text(if (scope == "custom") "직접 선택 닫기" else "직접 선택")
-                    }
+                    V2LinkAction(if (scope == "custom") "직접 선택 닫기" else "직접 선택",
+                        { pickScope(if (scope == "custom") "data" else "custom") })
                 }
                 Column(Modifier.fillMaxWidth().selectableGroup()) {
                     ScopeRow("전체 백업", BackupCategory.FULL.description, scope == "full") { pickScope("full") }

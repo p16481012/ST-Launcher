@@ -12,7 +12,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import app.tavernbridge.launcher.R
 
 private const val DEFAULT_SAMPLE = "비 오는 오후, 창가에 앉아 어제 나눈 대화를 읽었어요."
 private fun previewLength(value: String) = value.codePointCount(0, value.length)
@@ -35,16 +34,11 @@ internal fun AppearanceTextPreview() {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(saved.ifBlank { DEFAULT_SAMPLE }, style = MaterialTheme.typography.bodyLarge)
         SettingsCaption("안내 문구도 이 크기로 보여요.")
-        TextButton(onClick = { draft = saved; editing = true }, contentPadding = PaddingValues(horizontal = 2.dp),
-            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) {
-            ReviewGlyph(R.drawable.rv_edit, 16.dp)
-            Spacer(Modifier.width(6.dp))
-            Text("미리보기 문장 바꾸기")
-        }
+        V2LinkAction("미리보기 문장 바꾸기", { draft = saved; editing = true })
     }
     if (editing) V2BottomSheet(onClose = { editing = false }, footer = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { apply("") }, modifier = Modifier.weight(1f)) { Text("기본 문장으로") }
+            V2OutlineAction("기본 문장으로", { apply("") }, Modifier.weight(1f))
             Box(Modifier.weight(1f)) { V2SheetPrimaryButton("적용") { apply(draft) } }
         }
     }) {

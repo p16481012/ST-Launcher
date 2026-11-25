@@ -7,7 +7,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -17,8 +16,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -63,7 +60,7 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
     var info by rememberSaveable { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         SettingsHeading("글자 크기")
-        IconButton(onClick = { info = true }) { ReviewGlyph(R.drawable.rv_info, 18.dp, description = "글자 크기 설명") }
+        V2LinkAction("글자 크기 설명", { info = true })
     }
     val preview: @Composable () -> Unit = {
         AppearanceTextPreview()
@@ -128,8 +125,10 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
     var secretsConfirm by rememberSaveable { mutableStateOf(false) }
     SettingsGroup { SettingsRow("백업 알림 받기", caption = "마지막 백업 후 시간이 지나면 앱에서 알려줘요",
         checked = reminder.enabled, onClick = { vm.setBackupReminderEnabled(!reminder.enabled) }) }
-    SettingsHeading("알림 주기")
-    SettingsSegments(BackupInterval.entries, reminder.interval, { it.label }, vm::setBackupReminderInterval, enabled = reminder.enabled)
+    if (reminder.enabled) {
+        SettingsHeading("알림 주기")
+        SettingsSegments(BackupInterval.entries, reminder.interval, { it.label }, vm::setBackupReminderInterval)
+    } else SettingsCaption("백업 알림을 켜면 알림 주기를 고를 수 있어요.")
     SettingsHeading("자동 백업과 보관")
     SettingsGroup {
         SettingsRow("업데이트 전에 자동 백업", checked = state.autoBackupBeforeUpdate,
@@ -163,11 +162,11 @@ internal fun ServerLanRows(state: LauncherUiState, openEditor: (String) -> Unit,
         else -> null
     }
     fun edit(page: String) { if (blocked == null) openEditor(page) else explain(blocked) }
-    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "외부 접속 설명") {
-        explain(blocked ?: "같은 Wi-Fi의 다른 기기에서 접속하려면 허용을 켜고 기기 주소를 등록해 주세요. 실행 중인 서버는 설정을 저장할 때 잠시 멈췄다가 다시 시작해요.")
-    }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("외부 접속", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-        Icon(Icons.Outlined.Info, "외부 접속 설명")
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("외부 접속", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+        V2LinkAction("외부 접속 설명", {
+            explain(blocked ?: "같은 Wi-Fi의 다른 기기에서 접속하려면 허용을 켜고 기기 주소를 등록해 주세요. 실행 중인 서버는 설정을 저장할 때 잠시 멈췄다가 다시 시작해요.")
+        })
     }
     SettingsGroup {
         SettingsRow("같은 Wi-Fi에서 접속 허용", caption = blocked ?: "허용한 기기만 들어올 수 있어요", checked = env.externalAccessEnabled,
@@ -212,7 +211,9 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
     SettingsGroup {
         SettingsRow("주소", "127.0.0.1:${state.configuredPort}", mono = true)
         SettingsDivider()
-        SettingsRow("포트", state.configuredPort.toString(), mono = true, enabled = enabled, onClick = { dialog = "port" })
+        SettingsRow("포트", state.configuredPort.toString(), mono = true,
+            caption = if (enabled) "" else if (state.isWorking) "진행 중인 작업이 끝나면 바꿀 수 있어요." else "Termux 연결과 설치를 확인한 뒤 바꿀 수 있어요.",
+            onClick = if (enabled) ({ dialog = "port" }) else null)
     }
     var lanReason by rememberSaveable { mutableStateOf<String?>(null) }
     ServerLanRows(state, { action ->
@@ -235,12 +236,14 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
             val endpoint = addresses.firstOrNull { it.url == chosen } ?: addresses.firstOrNull()
             if (endpoint == null) Text(stringResource(R.string.lan_no_address))
             else {
-                if (addresses.size > 1) addresses.forEach { SettingsRow(it.url, if (it == endpoint) "선택됨" else "", onClick = { chosen = it.url }) }
+                if (addresses.size > 1) Column(Modifier.selectableGroup()) {
+                    addresses.forEach { SettingsRadioRow(it.url, it == endpoint) { chosen = it.url } }
+                }
                 Text(endpoint.url)
                 LanQrImage(endpoint)
                 OutlinedButton(onClick = { clipboard.setText(AnnotatedString(endpoint.url)); vm.showMessage("주소를 복사했어요.") }) { Text("주소 복사") }
             }
-            TextButton(onClick = vm::refreshLanAddresses) { Text("주소 새로고침") }
+            V2OutlineAction("주소 새로고침", vm::refreshLanAddresses)
         }
     }
     if (dialog == "browser") {
@@ -250,12 +253,14 @@ internal fun V2ServerSettings(state: LauncherUiState, vm: LauncherViewModel, ope
         val selected = preferred?.packageName
         V2BottomSheet(onClose = { dialog = "" }) {
             Text("열 앱 선택", style = MaterialTheme.typography.titleLarge)
-            SettingsRow("열 때마다 선택", if (selected == null) "선택됨" else "", onClick = { vm.clearPreferredBrowser(); browserRevision++; dialog = "" })
-            choices.forEach { option ->
-                SettingsDivider()
-                SettingsRow(option.label, if (selected == option.packageName) "선택됨" else "", onClick = {
-                    vm.savePreferredBrowser(option.packageName); browserRevision++; dialog = ""
-                })
+            Column(Modifier.selectableGroup()) {
+                SettingsRadioRow("열 때마다 선택", selected == null) { vm.clearPreferredBrowser(); browserRevision++; dialog = "" }
+                choices.forEach { option ->
+                    SettingsDivider()
+                    SettingsRadioRow(option.label, selected == option.packageName) {
+                        vm.savePreferredBrowser(option.packageName); browserRevision++; dialog = ""
+                    }
+                }
             }
         }
     }
@@ -326,13 +331,13 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
     SettingsHeading("실행 설정")
     SettingsGroup {
         SettingsRow("배터리 사용 제한 해제", when (battery) { true -> "정상"; false -> "최적화 대상"; null -> pending },
-            caption = "Termux가 백그라운드에서 멈추지 않게 해요",
+            caption = if (installed) "Android 설정 앱이 열려요" else "Termux를 설치하면 설정할 수 있어요.",
             valueColor = when (battery) { true -> tokens.live; false -> tokens.accent; null -> tokens.ink2 },
-            enabled = installed, onClick = vm::openDeviceBatterySettings)
+            onClick = if (installed) vm::openDeviceBatterySettings else null)
         SettingsDivider()
-        SettingsRow("화면이 꺼져도 계속 실행", if (bg.wakeLockEnabled) "켜짐" else "꺼짐", checked = bg.wakeLockEnabled,
-            caption = "필요할 때 켜세요. 서버 실행 중 절전을 막아요.",
-            enabled = installed, onClick = { vm.setWakeLockEnabled(!bg.wakeLockEnabled) })
+        SettingsRow("화면이 꺼져도 계속 실행", if (bg.wakeLockEnabled) "켜짐" else "꺼짐", checked = bg.wakeLockEnabled.takeIf { installed },
+            caption = if (installed) "필요할 때 켜세요. 서버 실행 중 절전을 막아요." else "Termux를 설치하면 설정할 수 있어요.",
+            onClick = if (installed) ({ vm.setWakeLockEnabled(!bg.wakeLockEnabled) }) else null)
         SettingsDivider()
         SettingsRow("저장소 접근", when (storage) { true -> "정상"; false -> "연결 필요"; null -> pending },
             caption = "백업을 Download 폴더에 저장해요",
@@ -354,9 +359,14 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
                 Text(TermuxProcessHelp.explanation(Build.VERSION.SDK_INT))
                 Text(if (bg.isSamsung) "배터리 설정 → 백그라운드 사용 제한 → 절전·초절전 앱에서 Termux를 제거하세요. 절전 예외에 추가하고, Termux 앱 정보 → 배터리에서 제한 없음을 선택하세요."
                     else "Termux 앱 정보에서 알림을 허용하고 배터리 제한을 확인하세요. Wake lock은 기기의 강제 종료까지 막지는 못해요.")
-                TextButton(onClick = vm::openDeviceBatterySettings) { Text("배터리 설정") }
-                TextButton(onClick = vm::openTermuxAppSettings) { Text("Termux 앱 정보") }
-                TextButton(onClick = { runCatching { uri.openUri(TermuxProcessHelp.OFFICIAL_HELP_URL) }.onFailure { vm.showMessage("링크를 열 수 없어요.") } }) { Text("Termux 공식 안내") }
+                SettingsGroup {
+                    V2NavigationRow("배터리 설정", vm::openDeviceBatterySettings, description = "Android 설정 앱이 열려요")
+                    SettingsDivider()
+                    V2NavigationRow("Termux 앱 정보", vm::openTermuxAppSettings, description = "Android 설정 앱이 열려요")
+                    SettingsDivider()
+                    V2NavigationRow("Termux 공식 안내", { runCatching { uri.openUri(TermuxProcessHelp.OFFICIAL_HELP_URL) }.onFailure { vm.showMessage("링크를 열 수 없어요.") } },
+                        description = "브라우저 앱이 열려요")
+                }
                 Button(onClick = { help = false }) { Text("확인") }
         }
     }
@@ -392,13 +402,15 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
     }
     SettingsHeading("지원")
     SettingsGroup {
+        val canOpenReport = !state.isWorking || state.runningSettingsDiagnostic || state.diagnosticReport != null
         SettingsRow(if (state.diagnosticReport == null && !state.runningSettingsDiagnostic) "진단 보고서 만들기" else "진단 보고서 보기",
-            enabled = !state.isWorking || state.runningSettingsDiagnostic || state.diagnosticReport != null, onClick = {
-            openDetail(ABOUT_REPORT)
-            if (state.diagnosticReport == null && !state.isWorking) vm.makeSettingsReport()
-        })
+            caption = if (canOpenReport) "" else "진행 중인 작업이 끝나면 보고서를 만들 수 있어요.",
+            onClick = if (canOpenReport) ({
+                openDetail(ABOUT_REPORT)
+                if (state.diagnosticReport == null && !state.isWorking) vm.makeSettingsReport()
+            }) else null)
         SettingsDivider()
-        SettingsRow("GitHub 저장소", onClick = { runCatching { uri.openUri("https://github.com/p16481012/ST-Launcher") }.onFailure { vm.showMessage("저장소 링크를 열 수 없어요.") } })
+        SettingsRow("GitHub 저장소", caption = "브라우저 앱이 열려요", onClick = { runCatching { uri.openUri("https://github.com/p16481012/ST-Launcher") }.onFailure { vm.showMessage("저장소 링크를 열 수 없어요.") } })
         SettingsDivider()
         SettingsRow("오픈소스 라이선스", onClick = { dialog = "licenses" })
     }
@@ -421,12 +433,15 @@ internal fun V2AppManagementSettings(state: LauncherUiState, vm: LauncherViewMod
     LauncherEntrySettings()
     SettingsHeading("앱 관리")
     SettingsGroup {
-        SettingsRow("SillyTavern 폴더 관리", enabled = state.environment.sillyTavernInstalled, onClick = vm::openSillyTavernFolder)
-        SettingsDivider()
-        SettingsRow("확장 프로그램 관리", enabled = state.environment.sillyTavernInstalled && !state.isWorking,
-            onClick = { vm.selectTool(app.tavernbridge.launcher.model.ToolPage.EXTENSIONS) })
-        SettingsDivider()
-        SettingsRow("런처 앱 상세 설정 열기", onClick = vm::openLauncherAppSettings)
+        if (state.environment.sillyTavernInstalled) {
+            SettingsRow("SillyTavern 폴더 관리", onClick = vm::openSillyTavernFolder)
+            SettingsDivider()
+            if (!state.isWorking) {
+                SettingsRow("확장 프로그램 관리", onClick = { vm.selectTool(app.tavernbridge.launcher.model.ToolPage.EXTENSIONS) })
+                SettingsDivider()
+            }
+        }
+        SettingsRow("런처 앱 상세 설정 열기", caption = "Android 설정 앱이 열려요", onClick = vm::openLauncherAppSettings)
     }
     if (!state.environment.sillyTavernInstalled) SettingsCaption("폴더와 확장 프로그램은 SillyTavern 설치 후에 열 수 있어요.")
     else if (state.isWorking) SettingsCaption("진행 중인 작업이 끝나면 확장 프로그램을 관리할 수 있어요.")
@@ -448,10 +463,10 @@ private fun LicenseDialog(close: () -> Unit) {
         Text(selected?.let(::label) ?: "오픈소스 라이선스", style = MaterialTheme.typography.titleLarge)
         if (selected == null) names.forEach { name -> SettingsRow(label(name), onClick = { selected = name }) }
         else {
-            TextButton(onClick = { selected = null }) { Text("목록") }
+            V2LinkAction("목록", { selected = null })
             Text(body, style = MaterialTheme.typography.bodySmall)
         }
-        TextButton(onClick = close) { Text("닫기") }
+        V2OutlineAction("닫기", close, Modifier.fillMaxWidth())
     }
 }
 
@@ -461,14 +476,20 @@ private fun SettingsInfo(title: String, body: String, close: () -> Unit) {
 }
 
 @Composable
+private fun SettingsRadioRow(label: String, chosen: Boolean, select: () -> Unit) {
+    Row(Modifier.fillMaxWidth().selectable(chosen, role = Role.RadioButton, onClick = select).heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        RadioButton(selected = chosen, onClick = null)
+        Text(label)
+    }
+}
+
+@Composable
 private fun <T> SettingsChoice(title: String, choices: List<T>, selected: T, label: (T) -> String, select: (T) -> Unit,
     hint: String = "", close: () -> Unit) {
     V2AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
         Column(Modifier.selectableGroup()) {
             if (hint.isNotEmpty()) SettingsCaption(hint)
-            choices.forEach { item -> Row(Modifier.fillMaxWidth().selectable(item == selected, role = Role.RadioButton) { select(item) }
-                .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                RadioButton(selected = item == selected, onClick = null); Text(label(item))
-            } }
+            choices.forEach { item -> SettingsRadioRow(label(item), item == selected) { select(item) } }
         } }, confirmButton = { V2DialogAction(onClick = close) { Text("닫기") } })
 }

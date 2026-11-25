@@ -14,7 +14,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -169,22 +168,20 @@ internal fun LanSecuritySettingsPage(
                     }
                 }
                 val hint = when {
-                    busy -> "진행 중인 작업이 끝난 뒤 적용해 주세요."
+                    busy || submitted -> "진행 중인 작업이 끝난 뒤 적용해 주세요."
                     rejected -> "지금은 적용할 수 없어요. 연결 확인이나 다른 작업이 끝나면 다시 적용해 주세요."
-                    listen && networkError && parsedNetworks == null -> "허용 목록의 주소를 확인해 주세요."
-                    passwordError && !credentialsValid -> "사용할 아이디와 암호를 입력해 주세요."
+                    listen && parsedNetworks == null -> "허용 목록의 주소를 확인해 주세요."
+                    !credentialsValid -> "사용할 아이디와 암호를 입력해 주세요."
                     !acknowledged -> "적용하려면 위의 접속 범위 확인란을 눌러 주세요."
                     else -> null
                 }
-                if (hint != null) Text(hint, style = MaterialTheme.typography.bodySmall)
-                Button(
+                if (!busy && !submitted) Button(
                     onClick = { summary = true },
                     enabled = canSubmit,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) { Text(if (running) "적용하고 재시작" else "적용") }
-                TextButton(onClick = dismiss, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text(stringResource(R.string.lan_cancel))
-                }
+                if (hint != null) Text(hint, style = MaterialTheme.typography.bodySmall)
+                if (!busy && !submitted) V2OutlineAction(stringResource(R.string.lan_cancel), dismiss, Modifier.fillMaxWidth())
             }
     if (summary) V2AlertDialog(onDismissRequest = { summary = false },
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),

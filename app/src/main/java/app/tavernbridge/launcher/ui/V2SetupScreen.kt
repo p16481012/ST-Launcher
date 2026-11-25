@@ -6,7 +6,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.platform.LocalDensity
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -16,9 +15,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -98,8 +97,9 @@ internal fun SetupScreen(
             Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().verticalScroll(rememberScrollState())
                 .heightIn(min = minimumHeight).padding(horizontal = 24.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (step > 1) TextButton(onClick = { requested = step - 1 }, enabled = ready,
-                        contentPadding = PaddingValues(horizontal = 2.dp)) { Text("이전으로") }
+                    if (step > 1 && ready) IconButton(onClick = { requested = step - 1 }) {
+                        Icon(Icons.Outlined.ArrowBack, "이전으로")
+                    }
                     Row(Modifier.weight(1f).semantics { contentDescription = "처음 설정, 5단계 중 ${step}단계" },
                         horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         repeat(5) { index ->
@@ -108,19 +108,18 @@ internal fun SetupScreen(
                                     MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outlineVariant) {}
                         }
                     }
-                    if (step < 5) TextButton(onClick = onLeave, enabled = ready, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                        Text("건너뛰기")
-                    }
-                    if (done) Box {
-                        IconButton(onClick = { existingActions = true }, enabled = ready) {
+                    if (step < 5 && ready) V2TopBarAction("건너뛰기", onLeave)
+                    if (done && ready) Box {
+                        IconButton(onClick = { existingActions = true }) {
                             Icon(Icons.Outlined.MoreHoriz, "기존 설치 작업")
                         }
                         DropdownMenu(expanded = existingActions, onDismissRequest = { existingActions = false }) {
-                            SillyBranch.entries.filter { it != env.branch }.forEach { branch ->
-                                DropdownMenuItem(text = { Text("${branch.label} 브랜치로 전환") }, enabled = !env.processRunning,
-                                    onClick = { existingActions = false; onSwitchBranch(branch) })
+                            if (!env.processRunning) SillyBranch.entries.filter { it != env.branch }.forEach { branch ->
+                                DropdownMenuItem(text = { Text("${branch.label} 브랜치로 전환") },
+                                    trailingIcon = { Text("›") }, onClick = { existingActions = false; onSwitchBranch(branch) })
                             }
-                            DropdownMenuItem(text = { Text("전체 설치 백업") }, onClick = { existingActions = false; onBackup() })
+                            DropdownMenuItem(text = { Text("전체 설치 백업") }, trailingIcon = { Text("›") },
+                                onClick = { existingActions = false; onBackup() })
                         }
                     }
                 }
@@ -172,10 +171,12 @@ internal fun SetupScreen(
                             }
                         }
                         Text(state.selectedInstallBranch.description, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        TextButton(onClick = { showImport = !showImport }) { Text(if (showImport) "기존 설치 가져오기 접기" else "기존 설치 가져오기") }
+                        V2OutlineAction(if (showImport) "기존 설치 가져오기 접기" else "기존 설치 가져오기", { showImport = !showImport })
                         if (showImport) {
                             ExistingInstallationImportCard(enabled = canInstall, onPickFolder = onPickInstallation, onInspectPath = onInspectInstallation)
-                            TextButton(onClick = onImportBackup, enabled = canInstall) { Text("전체 설치 ZIP에서 복원") }
+                            if (canInstall) V2NavigationRow("전체 설치 ZIP에서 복원", onImportBackup,
+                                description = "ZIP을 선택할 파일 앱이 열려요.")
+                            else SettingsCaption("서버와 진행 중인 작업을 종료한 뒤 가져올 수 있어요.")
                         }
                     }
                     else -> {
@@ -200,19 +201,22 @@ internal fun SetupScreen(
                 Spacer(Modifier.height(24.dp))
                 V2BottomActions {
                 Column {
+                if (!ready && step != 3) SettingsCaption("진행 중인 확인을 마친 뒤 계속할 수 있어요.")
                 when (step) {
                     1 -> {
-                        SetupPrimary(if (env.termuxInstalled) "다음" else "F-Droid에서 받기", ready) {
-                            if (env.termuxInstalled) requested = 2 else onDownloadTermux()
+                        if (env.termuxInstalled) {
+                            SetupPrimary("다음", ready) { requested = 2 }
+                            if (ready) V2NavigationRow("Termux 열기", onOpenTermux, description = "Termux 앱이 열려요.")
+                        } else if (ready) {
+                            V2NavigationRow("F-Droid에서 받기", onDownloadTermux, description = "브라우저에서 Termux 설치 페이지가 열려요.")
+                            V2OutlineAction("이미 설치했어요", onVerifyTermux, Modifier.fillMaxWidth())
                         }
-                        SetupQuiet(if (env.termuxInstalled) "Termux 열기" else "이미 설치했어요", ready,
-                            if (env.termuxInstalled) onOpenTermux else onVerifyTermux)
                     }
                     2 -> {
                         SetupPrimary(if (env.commandPermissionGranted) "다음" else "권한 허용", ready) {
                             if (env.commandPermissionGranted) requested = 3 else onRequestPermission()
                         }
-                        SetupQuiet("앱 권한 설정 열기", ready, onOpenPermissionSettings)
+                        if (ready) V2NavigationRow("앱 권한 설정 열기", onOpenPermissionSettings, description = "Android 설정 앱이 열려요.")
                     }
                     3 -> {
                         val setup = state.termuxSetup
@@ -235,14 +239,17 @@ internal fun SetupScreen(
                                 else -> "Termux에서 돌아오면 자동으로 확인해요"
                             }, style = MaterialTheme.typography.labelMedium, color = ink)
                         }
-                        SetupPrimary("Termux 열기", ready && !state.termuxSetup.verified) { copy(); onOpenSetupTermux() }
-                        SetupQuiet("명령 다시 복사", ready && !setup.verified, copy)
+                        if (ready && !setup.verified) {
+                            V2NavigationRow("Termux 열기", { copy(); onOpenSetupTermux() }, description = "명령을 복사한 뒤 Termux 앱이 열려요.")
+                            V2OutlineAction("명령 다시 복사", copy, Modifier.fillMaxWidth())
+                        }
                     }
                     4 -> SetupPrimary(if (env.managerConnected) "다음" else "연결 확인", ready && state.termuxSetup.verified) {
                         if (env.managerConnected) requested = 5 else onConnect()
                     }
                     else -> if (done) SetupPrimary("시작하기", ready, onLeave)
-                        else SetupPrimary("${state.selectedInstallBranch.label} 설치", canInstall, onInstall)
+                        else if (canInstall) SetupPrimary("${state.selectedInstallBranch.label} 설치", true, onInstall)
+                        else if (ready && env.processRunning) SettingsCaption("서버를 종료한 뒤 설치할 수 있어요.")
                 }
                 }
                 }
@@ -253,11 +260,7 @@ internal fun SetupScreen(
 
 @Composable
 private fun SetupPrimary(label: String, enabled: Boolean, action: () -> Unit) {
-    Button(onClick = action, enabled = enabled, shape = RoundedCornerShape(14.dp),
+    if (!enabled) return
+    Button(onClick = action, shape = RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text(label) }
-}
-
-@Composable
-private fun SetupQuiet(label: String, enabled: Boolean, action: () -> Unit) {
-    TextButton(onClick = action, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(label) }
 }

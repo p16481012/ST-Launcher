@@ -123,7 +123,7 @@ class FileLogPrototypeTest {
     @Test fun emptyFolderKeepsCreateButNotSelect() {
         files(emptyList())
         ui.onNodeWithText("빈 폴더예요").assertExists()
-        ui.onNodeWithText("선택").assertIsNotEnabled()
+        ui.onNodeWithText("선택").assertDoesNotExist()
         ui.onNodeWithText("새로 만들기").assertIsEnabled()
     }
 

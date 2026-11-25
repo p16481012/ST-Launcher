@@ -157,7 +157,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (title.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            if (action != null) TextButton(onClick = onAction, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text(action) }
+            if (action != null) V2LinkAction(action, onAction)
         }
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Column(content = content)
@@ -232,9 +232,9 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
         }
     }
     DetailLayout(mod, footer = {
-        Button({ enterStoppedAction(env.processRunning, stop, if (resetMode) "초기화 확인" else "점검·복구 확인") {
+        if (canEnter) Button({ enterStoppedAction(env.processRunning, stop, if (resetMode) "초기화 확인" else "점검·복구 확인") {
             if (resetMode) reset(protect) else repair()
-        } }, Modifier.weight(1f).heightIn(min = 52.dp), enabled = canEnter,
+        } }, Modifier.weight(1f).heightIn(min = 52.dp),
             colors = if (resetMode) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
             shape = RoundedCornerShape(14.dp)) { Text(if (resetMode) "초기화" else "점검·복구 시작") }
     }) {
@@ -278,13 +278,19 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
             listOf(DiagnosticPanel.SERVER_LOG to "현재 실행", DiagnosticPanel.PREVIOUS_SERVER_LOG to "이전 실행").forEach { (choice, label) ->
                 FilterChip(panel == choice, { vm.openDiagnostics(choice) }, { Text(label) }, Modifier.weight(1f).padding(end = 4.dp))
             }
-            Box { IconButton({ menu = true }) { Icon(Icons.Outlined.MoreVert, "로그 옵션") }
-                DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem({ Text("작업 기록") }, { menu = false; vm.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
-                    DropdownMenuItem({ Text("다시 읽기") }, { menu = false; vm.openDiagnostics(panel) })
-                    DropdownMenuItem({ Text("Termux에서 실시간 로그 보기") }, { menu = false; vm.openServerLogTerminal() }, enabled = state.environment.processRunning)
+            V2OutlineAction("로그 옵션", { menu = true })
+        }
+        if (menu) V2BottomSheet(onClose = { menu = false }) {
+            Text("로그 옵션", style = MaterialTheme.typography.titleLarge)
+            SettingsGroup {
+                V2NavigationRow("작업 기록", { menu = false; vm.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
+                if (state.environment.processRunning) {
+                    SettingsDivider()
+                    V2NavigationRow("Termux에서 실시간 로그 보기",
+                        { menu = false; vm.openServerLogTerminal() }, description = "Termux 앱이 열려요")
                 }
             }
+            V2OutlineAction("다시 읽기", { menu = false; vm.openDiagnostics(panel) }, Modifier.fillMaxWidth())
         }
         if (panel == DiagnosticPanel.WORK_HISTORY) Text("런처 작업 기록", style = MaterialTheme.typography.titleMedium)
         if (panel == DiagnosticPanel.SERVER_LOG && !state.canReadLiveServerLog())
@@ -297,8 +303,8 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     if (!state.fileBrowserOpen) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Lead("파일", "SillyTavern 설치와 Termux 연결을 확인해 주세요.")
-            OutlinedButton(vm::openSillyTavernFolder, enabled = !state.isWorking && state.environment.managerConnected) { Text("폴더 다시 열기") }
-            TextButton(back) { Text("도구 목록") }
+            if (!state.isWorking && state.environment.managerConnected) V2NavigationRow("폴더 다시 열기", vm::openSillyTavernFolder)
+            V2LinkAction("도구 목록", back)
         }
         return
     }

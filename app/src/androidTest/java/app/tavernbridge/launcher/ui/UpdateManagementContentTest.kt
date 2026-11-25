@@ -76,8 +76,8 @@ class UpdateManagementContentTest {
         ui.onNodeWithText("현재 커밋").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("대상 커밋").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("업데이트 안전 검사").assertDoesNotExist()
-        ui.onNodeWithText("이전 버전 선택·복귀").performScrollTo().assertIsNotEnabled()
-        ui.onNodeWithText("서버를 종료한 뒤 선택할 수 있어요.").assertExists()
+        ui.onNodeWithText("이전 버전 선택·복귀").assertDoesNotExist()
+        ui.onNodeWithText("서버를 종료한 뒤 선택할 수 있어요.").performScrollTo().assertIsDisplayed()
         ui.onNodeWithText("추가 옵션 접기").assertDoesNotExist()
     }
 
@@ -87,7 +87,7 @@ class UpdateManagementContentTest {
         ui.onNodeWithText("업데이트 안전 검사").performClick()
         ui.runOnIdle { state.value = base.copy(updatePreflight = report.copy(nodeCompatible = false,
             spaceReady = false, backupStorageReady = false)) }
-        ui.onNode(hasText("업데이트") and hasClickAction()).assertIsNotEnabled()
+        ui.onNode(hasText("업데이트") and hasClickAction()).assertDoesNotExist()
         ui.onNodeWithText("백업 저장공간 연결").performScrollTo().performClick()
         ui.runOnIdle { assertEquals(listOf("check", "backups"), actions) }
     }

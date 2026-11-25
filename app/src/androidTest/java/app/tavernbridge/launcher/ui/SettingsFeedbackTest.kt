@@ -43,7 +43,8 @@ class SettingsFeedbackTest {
                 }) { UpdateInformationCard(LauncherUiState(isWorking = busy.value)) { checks++ } }
             }
         }
-        compose.onNodeWithText("업데이트 정보 확인").assertIsNotEnabled()
+        compose.onNodeWithText("업데이트 정보 확인").assertDoesNotExist()
+        compose.onNodeWithText("진행 중인 작업이 끝나면 업데이트 정보를 확인할 수 있어요.").assertIsDisplayed()
         compose.runOnIdle { assertEquals(0, checks); busy.value = false }
         compose.onNodeWithText("업데이트 정보 확인").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, checks); assertEquals("", url) }

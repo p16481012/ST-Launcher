@@ -50,7 +50,10 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
     val export = transfer.mode == EncryptedBackupMode.EXPORT
     val entering = transfer.phase == EncryptedBackupPhase.PASSWORD
     val restoring = transfer.phase == EncryptedBackupPhase.RESTORE_CONFIRM
-    V2AlertDialog(onDismissRequest = viewModel::cancelEncryptedBackup,
+    val canSubmit = entering && password.isNotEmpty() && (!export || (password.length >= 12 && password == again && password.any { !it.isWhitespace() }))
+    val canRestore = restoring && !state.environment.processRunning && !state.isWorking
+    val close = { password = ""; again = ""; viewModel.cancelEncryptedBackup() }
+    V2AlertDialog(onDismissRequest = close,
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         title = { Text(when { entering -> "백업 암호"; restoring -> "인증 완료 · 복원 확인"; else -> "백업 처리 실패" }) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -60,6 +63,7 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
                     visualTransformation=PasswordVisualTransformation(), keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password), modifier=Modifier.fillMaxWidth())
                 if(export) OutlinedTextField(again, { if(it.length<=1024) again=it }, label={Text("암호 다시 입력")}, singleLine=true,
                     visualTransformation=PasswordVisualTransformation(), keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password), modifier=Modifier.fillMaxWidth())
+                if (export && again.isNotEmpty() && password != again) SettingsCaption("두 암호를 같게 입력해 주세요.")
                 if(!export) Text("복호화 ZIP을 앱 전용 저장소에서 인증한 뒤 Termux에 전달합니다. 원본 외에 임시 ZIP 두 개와 해제 공간이 필요합니다.", style=MaterialTheme.typography.bodySmall)
             } else if(restoring) {
                 Text("같은 항목의 현재 데이터는 백업 내용으로 교체됩니다. 백업 이후의 대화가 사라질 수 있습니다. 원본 암호화 파일은 유지합니다.")
@@ -72,10 +76,12 @@ internal fun EncryptedBackupHost(state: LauncherUiState, viewModel: LauncherView
         } },
         confirmButton = {
             when {
-                entering -> V2DialogAction(onClick = { val secret=password.toCharArray();password="";again="";viewModel.submitEncryptedBackupPassword(secret) },
-                    enabled=password.isNotEmpty() && (!export || (password.length>=12 && password==again && password.any { !it.isWhitespace() }))) { Text(if(export) "저장 위치 선택" else "복호화·인증") }
-                restoring -> V2DialogAction(tone = V2DialogTone.Danger, onClick={viewModel.restoreDecryptedBackup(state.environment.sillyTavernInstalled && backupBefore)}, enabled=!state.environment.processRunning && !state.isWorking) {Text("검사 후 복원")}
+                canSubmit -> V2DialogAction(onClick = { val secret=password.toCharArray();password="";again="";viewModel.submitEncryptedBackupPassword(secret) }) { Text(if(export) "저장 위치 선택" else "복호화·인증") }
+                canRestore -> V2DialogAction(tone = V2DialogTone.Danger, onClick={viewModel.restoreDecryptedBackup(state.environment.sillyTavernInstalled && backupBefore)}) {Text("검사 후 복원")}
             }
         },
-        dismissButton={V2DialogAction(tone = V2DialogTone.Quiet, onClick={password="";again="";viewModel.cancelEncryptedBackup()}) {Text("닫기")}})
+        dismissButton = {
+            if (canSubmit || canRestore) V2DialogAction(tone = V2DialogTone.Quiet, onClick = close) { Text("닫기") }
+            else V2OutlineAction("닫기", close)
+        })
 }

@@ -91,7 +91,7 @@ jobs:
           mkdir -p visual-results
           if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then cp "$RUNNER_TEMP/emulator.log" visual-results/emulator.log; fi
           if adb get-state 2>/dev/null | grep -q device; then
-            names=(review-display-small review-display-sheet review-diagnostic-empty review-diagnostic-result review-diagnostic-solution review-safety-list review-safety-actions review-safety-delete review-safety-selection review-safety-locked home home-install-check setup-step-3 settings-index settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash repair-runtime-consent tool-installation management-update management-backup)
+            names=(action-affordances review-display-small review-display-sheet review-diagnostic-empty review-diagnostic-result review-diagnostic-solution review-safety-list review-safety-actions review-safety-delete review-safety-selection review-safety-locked home home-install-check setup-step-3 settings-index settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash repair-runtime-consent tool-installation management-update management-backup)
             for screen in home settings backups; do for mode in light dark; do for contrast in normal high; do for accent in amber green wine slate blue violet; do
               names+=("palette-$screen-$mode-$contrast-$accent")
             done; done; done; done
@@ -107,7 +107,7 @@ jobs:
         env:
           FORM: ${{ matrix.form }}
         run: |
-          expected=(review-display-small review-display-sheet review-diagnostic-empty review-diagnostic-result review-diagnostic-solution review-safety-list review-safety-actions review-safety-delete review-safety-selection review-safety-locked home setup-step-3 settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash tool-installation management-update management-backup)
+          expected=(action-affordances review-display-small review-display-sheet review-diagnostic-empty review-diagnostic-result review-diagnostic-solution review-safety-list review-safety-actions review-safety-delete review-safety-selection review-safety-locked home setup-step-3 settings-display modal-confirm modal-long modal-backup modal-info modal-app-management files-trash tool-installation management-update management-backup)
           if [[ "$FORM" == phone ]]; then expected+=(settings-index); fi
           for name in "${expected[@]}"; do
             test -s "visual-results/$name.png"
@@ -115,6 +115,7 @@ jobs:
           done
           if ! python -c 'from PIL import Image' 2>/dev/null; then python -m pip install Pillow; fi
           python scripts/check_visual_matrix.py visual-results
+          python scripts/grayscale_action_previews.py visual-results
       - uses: actions/upload-artifact@v6
         if: always()
         with:

@@ -36,11 +36,10 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
         report.currentVersion == report.targetVersion
     DetailLayout(mod, footer = {
         val buttonMod = Modifier.weight(1f).heightIn(min = 52.dp)
-        if (report?.updateAvailable == false) {
-            OutlinedButton(onClick = onCheck, modifier = buttonMod, enabled = blocked.isEmpty(),
-                shape = RoundedCornerShape(14.dp)) { Text("다시 확인") }
-        } else Button(onClick = if (report == null) onCheck else onUpdate, modifier = buttonMod,
-            enabled = if (report == null) blocked.isEmpty() else ready, shape = RoundedCornerShape(14.dp)) {
+        if (report?.updateAvailable == false && blocked.isEmpty()) {
+            V2OutlineAction("다시 확인", onCheck, buttonMod)
+        } else if ((report == null && blocked.isEmpty()) || ready) Button(
+            onClick = if (report == null) onCheck else onUpdate, modifier = buttonMod, shape = RoundedCornerShape(14.dp)) {
             Text(if (report == null) "업데이트 안전 검사" else "업데이트")
         }
     }) {
@@ -88,21 +87,20 @@ internal fun UpdateManagementContent(state: LauncherUiState, mod: Modifier,
                 }
                 if (report.updateAvailable) {
                     ToolDivider()
-                    SettingsRow("업데이트 안전 검사", caption = "원격 커밋과 설치 환경을 다시 확인해요.", enabled = blocked.isEmpty(), onClick = onCheck)
+                    if (blocked.isEmpty()) V2OutlineAction("업데이트 안전 검사", onCheck,
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
                 }
             }
             if (blocked.isNotBlank()) ToolRow("지금 검사할 수 없어요", blocked)
         }
 
         ToolGroup("버전 관리") {
-            SettingsRow("이전 버전 선택·복귀", caption = when {
-                blocked.isEmpty() && stopToContinue != null -> "서버를 끈 뒤 돌아갈 버전을 선택해요."
-                blocked.isNotBlank() -> blocked
-                env.processRunning -> "서버를 종료한 뒤 선택할 수 있어요."
-                else -> "이전 커밋이나 버전 백업으로 돌아가요."
-            }, enabled = blocked.isEmpty() && (!env.processRunning || stopToContinue != null),
-                onClick = { enterStoppedAction(env.processRunning, stopToContinue, "이전 버전 선택", onVersions) })
-            ToolDivider()
+            if (blocked.isEmpty() && (!env.processRunning || stopToContinue != null)) {
+                SettingsRow("이전 버전 선택·복귀", caption = if (env.processRunning)
+                    "서버를 끈 뒤 돌아갈 버전을 선택해요." else "이전 커밋이나 버전 백업으로 돌아가요.",
+                    onClick = { enterStoppedAction(env.processRunning, stopToContinue, "이전 버전 선택", onVersions) })
+                ToolDivider()
+            } else ToolRow("이전 버전을 선택할 수 없어요", blocked.ifEmpty { "서버를 종료한 뒤 선택할 수 있어요." })
             ToolRow("설치 정보·가져오기·브랜치", onClick = onInstallation)
         }
         UpdateRecordGroup(state.lastUpdateRecord, onBackups)

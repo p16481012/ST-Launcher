@@ -91,8 +91,7 @@ internal fun V2HomeDashboard(state: LauncherUiState, onOpen: () -> Unit, onStart
                         val recentBackups: @Composable () -> Unit = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("최근 백업", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                                TextButton(onClick = onBackups) { Text(if (state.backupsLoaded) "전체 ${state.backups.size}개" else "전체",
-                                    color = MaterialTheme.colorScheme.secondary) }
+                                V2LinkAction(if (state.backupsLoaded) "전체 ${state.backups.size}개" else "전체", onBackups)
                             }
                             val list = state.backups.sortedByDescending { it.createdAt }.take(2)
                             if (list.isEmpty()) HomeRow(Icons.Outlined.FileDownload, if (state.backupsLoaded) "백업 없음" else "백업 목록 보기", "", onBackups)
@@ -159,7 +158,7 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(listOfNotNull(env.branch?.value, env.sillyTavernVersion.takeIf(String::isNotBlank)).joinToString(" · ").ifBlank { "설치됨" },
             Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, fontFamily = V2Mono, color = cs.onSurfaceVariant)
-        IconButton(onClick = onInfo) { Icon(Icons.Outlined.Info, "서버 정보 설명", Modifier.size(20.dp)) }
+        V2LinkAction("서버 정보 설명", onInfo)
     }
     Spacer(Modifier.height(20.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -214,16 +213,10 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
             enter = fadeIn(tween(if (reduced) 0 else 120)) + expandHorizontally(tween(if (reduced) 0 else 200)),
             exit = fadeOut(tween(if (reduced) 0 else 120)) + shrinkHorizontally(tween(if (reduced) 0 else 200))) {
             Row { Spacer(Modifier.width(8.dp))
-            Surface(onClick = when (actions.stop) {
-                HomeStop.CANCEL_START -> onCancelStart; HomeStop.BLOCKED -> onBlocked; else -> onStop
-            }, enabled = actions.stop !in setOf(HomeStop.STOPPING, HomeStop.HIDDEN),
-            modifier = Modifier.size(52.dp), shape = RoundedCornerShape(14.dp), color = cs.surface,
-            border = androidx.compose.foundation.BorderStroke(1.dp, cs.outlineVariant)) {
-                Box(contentAlignment = Alignment.Center) { if (actions.stop == HomeStop.STOPPING)
-                    VisibleBusyIndicator(Modifier.size(20.dp).semantics { contentDescription = "서버 종료 중" }, false, 2.dp)
-                else Icon(Icons.Outlined.Stop, if (actions.stop == HomeStop.CANCEL_START) "시작 취소" else "서버 종료",
-                    tint = if (actions.stop == HomeStop.BLOCKED) cs.onSurfaceVariant else cs.error) }
-            } }
+            if (actions.stop == HomeStop.STOPPING) {
+                Text("서버 종료 중", Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium)
+            } else V2OutlineAction(if (actions.stop == HomeStop.CANCEL_START) "시작 취소" else "서버 종료",
+                when (actions.stop) { HomeStop.CANCEL_START -> onCancelStart; HomeStop.BLOCKED -> onBlocked; else -> onStop }) }
         }
     }
     if (ready == ServerReadiness.UNRESPONSIVE || ready == ServerReadiness.PORT_CONFLICT)
@@ -232,10 +225,8 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     Spacer(Modifier.height(28.dp))
     Surface(shape = RoundedCornerShape(20.dp), color = cs.surface) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            HomeAction(Modifier.weight(1f), Icons.Outlined.RestartAlt, "재시작", !locked && env.processRunning, onRestart, onBlocked.takeIf { actions.otherWork })
-            VerticalDivider(Modifier.height(28.dp), color = cs.outlineVariant)
+            if (env.processRunning) HomeAction(Modifier.weight(1f), Icons.Outlined.RestartAlt, "재시작", !locked, onRestart, onBlocked.takeIf { actions.otherWork })
             HomeAction(Modifier.weight(1f), Icons.Outlined.FileDownload, "백업", !locked, onBackups, onBlocked.takeIf { locked })
-            VerticalDivider(Modifier.height(28.dp), color = cs.outlineVariant)
             HomeAction(Modifier.weight(1f), Icons.Outlined.Subject, "로그", true, onLogs)
         }
     }
@@ -243,11 +234,12 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
 
 @Composable
 private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit, blocked: (() -> Unit)? = null) {
-    Column(modifier.v2RowTap("home-action:$label", enabled = enabled || blocked != null, role = Role.Button, click = if (enabled) onClick else blocked ?: {}).heightIn(min = 72.dp).padding(4.dp),
-        verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else .54f)
-        Icon(icon, null, Modifier.size(21.dp), tint = ink)
-        Text(label, style = MaterialTheme.typography.labelMedium, color = ink)
+    if (!enabled && blocked == null) return
+    OutlinedButton(onClick = if (enabled) onClick else blocked ?: return, modifier = modifier.padding(2.dp).heightIn(min = 48.dp),
+        shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 4.dp)) {
+        Icon(icon, null, Modifier.size(16.dp))
+        Spacer(Modifier.width(3.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -264,7 +256,7 @@ private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: (
             if (LocalDensity.current.fontScale >= 1.3f && value.isNotBlank()) Text(value, style = MaterialTheme.typography.bodyMedium) }
         if (value.isNotBlank() && LocalDensity.current.fontScale < 1.3f)
             Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-        Icon(if (label == "외부 접속") Icons.Outlined.Info else Icons.Outlined.ChevronRight,
+        Icon(Icons.Outlined.ChevronRight,
             if (label == "외부 접속") "외부 접속 설명" else null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
     }
 }
@@ -277,7 +269,7 @@ internal fun V2Explanation(title: String, detail: String, action: Pair<String, (
         if (action == null) V2SheetPrimaryButton("확인", onClick = close)
         else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = close) { Text("닫기") }
+            V2DialogAction(onClick = close, tone = V2DialogTone.Quiet) { Text("닫기") }
             Box(Modifier.weight(1f)) { V2SheetPrimaryButton(action.first, onClick = action.second) }
         }
     }) {

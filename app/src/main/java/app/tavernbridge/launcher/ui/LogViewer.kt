@@ -98,7 +98,7 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                 }
                 androidx.compose.animation.AnimatedVisibility(showJump, Modifier.align(Alignment.BottomEnd).padding(10.dp),
                     enter = fadeIn(tween(if (reduced) 0 else 150)), exit = fadeOut(tween(if (reduced) 0 else 150))) {
-                    IconButton({ scope.launch {
+                    Button({ scope.launch {
                         if (reduced) scroll.scrollToItem(lines.size) else scroll.scroll {
                             val layout = LazyLayoutScrollScope(scroll, this)
                             val target = lines.size.coerceAtMost((layout.itemCount - 1).coerceAtLeast(0))
@@ -109,23 +109,21 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                             layout.snapToItem(target, 0)
                         }
                         following = true
-                    } }, Modifier.size(48.dp).semantics { contentDescription = "맨 아래로" }) {
-                        Surface(Modifier.size(40.dp), shape = CircleShape, color = cs.onSurface, contentColor = cs.surface) {
-                            Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ArrowDownward, null) }
-                        }
+                    } }, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "맨 아래로" }) {
+                        Icon(Icons.Outlined.ArrowDownward, null, Modifier.size(16.dp)); Text("맨 아래로")
                     }
                 }
             }
         }
-        V2BottomActions { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (visible.isNotBlank()) V2BottomActions { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton({ clipboard.setText(AnnotatedString(redactSensitiveText(visible, maxLength = 60_000))) },
-                Modifier.weight(1f).heightIn(min = 48.dp), enabled = visible.isNotBlank(), shape = RoundedCornerShape(14.dp)) { Text("복사") }
+                Modifier.weight(1f).heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Text("복사") }
             OutlinedButton({
                 shareError = runCatching {
                     val text = redactSensitiveText(visible, maxLength = 60_000)
                     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "로그 공유"))
                 }.isFailure
-            }, Modifier.weight(1f).heightIn(min = 48.dp), enabled = visible.isNotBlank(), shape = RoundedCornerShape(14.dp)) { Text("공유") }
+            }, Modifier.weight(1f).heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Text("공유") }
         } }
     }
 }

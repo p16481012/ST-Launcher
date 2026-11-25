@@ -249,11 +249,14 @@ internal fun V2NoticeHost(host: SnackbarHostState) {
                 })) {
                 Snackbar(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                         .semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(20.dp),
-                    action = data.visuals.actionLabel?.let { label -> { TextButton(onClick = data::performAction) {
-                        Text(label, color = MaterialTheme.colorScheme.inversePrimary)
-                    } } }, dismissAction = { TextButton(onClick = data::dismiss) {
-                        Text("닫기", color = MaterialTheme.colorScheme.inverseOnSurface)
-                    } }) { Text(data.visuals.message) }
+                    action = data.visuals.actionLabel?.let { label -> { SnackbarOutline(label, data::performAction) } },
+                    dismissAction = { SnackbarOutline("닫기", data::dismiss) }) { Text(data.visuals.message) }
             }
     } }
+}
+
+@Composable private fun SnackbarOutline(label: String, onClick: () -> Unit) {
+    val ink = MaterialTheme.colorScheme.inverseOnSurface
+    OutlinedButton(onClick, Modifier.heightIn(min = 48.dp), border = androidx.compose.foundation.BorderStroke(1.dp, ink),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = ink), contentPadding = PaddingValues(horizontal = 9.dp)) { Text(label) }
 }

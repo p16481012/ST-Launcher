@@ -93,7 +93,7 @@ class ReviewSafetyScreenTest {
     }
     @Test fun selectedBytesExcludeNothingSilentlyAndChangedArchiveIsNeverDeleted() {
         show()
-        ui.onNodeWithContentDescription("항목 선택").performClick()
+        ui.onNodeWithText("항목 선택").performClick()
         ui.onAllNodesWithText("업데이트 전 보호 사본")[0].performClick()
         ui.onAllNodesWithText("업데이트 전 보호 사본")[1].performClick()
         val del = "영구 삭제 (2) · 5.4 GB"
@@ -103,7 +103,7 @@ class ReviewSafetyScreenTest {
         ui.runOnIdle { model.value = model.value.copy(items = listOf(a.copy(revision = "new"), b, cfg, file, folder)) }
         ui.onNodeWithText("영구 삭제할까요?").assertDoesNotExist()
         ui.runOnIdle { assertEquals(listOf("notice"), events) }
-        ui.onNodeWithContentDescription("항목 선택").performClick()
+        ui.onNodeWithText("항목 선택").performClick()
         ui.onNodeWithText("모두 선택").performClick()
         ui.onNodeWithText("영구 삭제 (5) · 전체 용량 미확인").performClick()
         ui.onNodeWithText("영구 삭제").performClick()
@@ -113,11 +113,11 @@ class ReviewSafetyScreenTest {
         model.value = model.value.copy(mutationBlocked = true)
         show()
         ui.captureManagementScreen("review-safety-locked", "복구가 끝나지 않은 자료가 있어요")
-        ui.onNodeWithContentDescription("항목 선택").assertDoesNotExist()
-        ui.onAllNodesWithText("업데이트 전 보호 사본").onFirst().performClick()
+        ui.onNodeWithText("항목 선택").assertDoesNotExist()
+        ui.onAllNodesWithText("업데이트 전 보호 사본").onFirst().assertHasNoClickAction()
         ui.onNodeWithText("영구 삭제").assertDoesNotExist()
         ui.onNodeWithText("점검·복구").performClick()
-        ui.runOnIdle { assertEquals(listOf("notice","repair"), events) }
+        ui.runOnIdle { assertEquals(listOf("repair"), events) }
     }
     @Test fun trashRestorationRequiresExplicitAgreementAndRechecksServerGate() {
         show()
@@ -126,7 +126,8 @@ class ReviewSafetyScreenTest {
         ui.onNodeWithText("Download로 사본 내보내기").assertDoesNotExist()
         ui.onNodeWithText("원래 위치로 복원").performClick()
         ui.runOnIdle { assertTrue(events.isEmpty()); running.value = true }
-        ui.onNodeWithText("복원").assertIsNotEnabled()
+        ui.onNodeWithText("복원").assertDoesNotExist()
+        ui.onNodeWithText("작업 및 서버 상태를 확인한 뒤", substring = true).assertIsDisplayed()
         ui.runOnIdle { running.value = false }
         ui.onNodeWithText("복원").performClick()
         ui.runOnIdle { assertEquals(listOf("restore:f"), events) }

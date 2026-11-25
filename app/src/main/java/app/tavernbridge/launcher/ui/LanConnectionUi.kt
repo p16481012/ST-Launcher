@@ -15,7 +15,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,18 +54,11 @@ fun LanConnectionCard(
                         onClick = { onCopy(endpoint.url) },
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                     ) { Text(stringResource(R.string.lan_copy_address)) }
-                    TextButton(
-                        onClick = { qrEndpoint = endpoint },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    ) { Text(stringResource(R.string.lan_show_qr)) }
+                    V2NavigationRow(stringResource(R.string.lan_show_qr), { qrEndpoint = endpoint })
                 }
-                TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text(stringResource(R.string.lan_refresh_addresses))
-                }
+                V2OutlineAction(stringResource(R.string.lan_refresh_addresses), onRefresh, Modifier.fillMaxWidth())
             }
-            OutlinedButton(onClick = onConfigure, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                Text(stringResource(R.string.lan_security_settings))
-            }
+            V2NavigationRow(stringResource(R.string.lan_security_settings), onConfigure)
         }
     }
     qrEndpoint?.takeIf { externalEnabled && endpoints.any { current -> current.url == it.url } }?.let { endpoint ->

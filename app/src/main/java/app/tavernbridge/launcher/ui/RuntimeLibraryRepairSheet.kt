@@ -1,13 +1,11 @@
 package app.tavernbridge.launcher.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,14 +27,18 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
     V2BottomSheet(onClose = onDismiss, footer = {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (confirming) {
-                V2SheetPrimaryButton("동의하고 갱신·재검사", enabled = !submitted) {
-                    if (!submitted) { submitted = true; onSync(failureAt) }
+                if (submitted) SettingsCaption("Termux 패키지 갱신을 요청했어요.")
+                else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    V2DialogAction(onClick = { confirming = false }, tone = V2DialogTone.Quiet) { Text("취소") }
+                    Box(Modifier.weight(1f)) { V2SheetPrimaryButton("동의하고 갱신·재검사") {
+                        if (!submitted) { submitted = true; onSync(failureAt) }
+                    } }
                 }
-                TextButton(onClick = { confirming = false }, modifier = Modifier.fillMaxWidth()) { Text("취소") }
             } else {
                 V2SheetPrimaryButton("Termux 실행 도구 갱신하기") { confirming = true }
                 OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("전체 갱신 없이 다시 시도") }
-                TextButton(onClick = onHistory, modifier = Modifier.fillMaxWidth()) { Text("기록 보기") }
+
             }
         }
     }) {
@@ -49,6 +51,7 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
             Text("Termux에서 Node.js를 시작할 수 없어요", style = MaterialTheme.typography.titleLarge)
             Text("Node.js에 필요한 파일(라이브러리)이 없거나 버전이 맞지 않아요. Termux 패키지를 함께 갱신하면 고칠 수 있어요. 동의하기 전에는 갱신하지 않아요.")
             FailureTechnicalDetails(failureAt, failure.detail, failure.errorCode)
+            V2NavigationRow("기록 보기", onHistory)
         }
     }
 }
@@ -56,7 +59,7 @@ internal fun RuntimeLibraryRepairSheet(state: LauncherUiState, failureAt: Long, 
 @Composable
 internal fun FailureTechnicalDetails(resultAt: Long, detail: String, errorCode: String) {
     var expanded by remember(resultAt) { mutableStateOf(false) }
-    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "기술 정보 접기" else "기술 정보 보기") }
+    V2OutlineAction(if (expanded) "기술 정보 접기" else "기술 정보 보기", { expanded = !expanded })
     if (expanded) SelectionContainer {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (detail.isNotBlank()) Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)

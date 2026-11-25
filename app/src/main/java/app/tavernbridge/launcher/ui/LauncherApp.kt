@@ -22,7 +22,8 @@ import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -67,7 +68,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
 import app.tavernbridge.launcher.model.canModifyTavernFiles
@@ -407,10 +407,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         failedResult = -1L
                         if (offerRepair) viewModel.selectTool(ToolPage.REPAIR) else viewModel.openTermux()
                     }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        if (summary.canRetry) TextButton(onClick = { failedResult = -1L; viewModel.retryLastOperation() }) { Text("다시 시도") }
-                        TextButton(onClick = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) }) { Text("작업 기록 보기") }
-                    }
+                    if (summary.canRetry) V2OutlineAction("다시 시도", { failedResult = -1L; viewModel.retryLastOperation() }, Modifier.fillMaxWidth())
+                    V2NavigationRow("작업 기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
                 }
             }) {
                 Text("실행 도구를 확인해 주세요", style = MaterialTheme.typography.titleLarge)
@@ -425,8 +423,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     failedResult = -1L
                     if (summary.canRetry) viewModel.retryLastOperation() else viewModel.selectTool(ToolPage.DIAGNOSTICS)
                 }
-                TextButton(onClick = { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) },
-                    modifier = Modifier.fillMaxWidth()) { Text("기록 보기") }
+                V2NavigationRow("기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
             }
         }) {
             Text("${summary.title} 작업을 마치지 못했어요", style = MaterialTheme.typography.titleLarge)
@@ -568,13 +565,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { selectedBrowserPackage = browser.packageName }
+                                .selectable(selected == browser.packageName, role = Role.RadioButton, onClick = { selectedBrowserPackage = browser.packageName })
+                                .heightIn(min = 48.dp)
                                 .padding(vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RadioButton(
                                 selected = selected == browser.packageName,
-                                onClick = { selectedBrowserPackage = browser.packageName },
+                                onClick = null,
                             )
                             Text(browser.label)
                         }
@@ -582,8 +580,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 }
             },
             confirmButton = {
-                V2DialogAction(
-                    enabled = selected != null,
+                if (selected != null) V2DialogAction(
                     onClick = {
                         selected?.let { viewModel.openBrowser(it, rememberChoice = true) }
                         browserPickerOpen = false
@@ -592,15 +589,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 ) { Text("항상") }
             },
             dismissButton = {
-                V2DialogAction(tone = V2DialogTone.Quiet, onClick = {
-                    browserPickerOpen = false
-                    selectedBrowserPackage = null
-                }) { Text("취소") }
-                V2DialogAction(tone = V2DialogTone.Quiet, enabled = selected != null, onClick = {
-                    selected?.let { viewModel.openBrowser(it, rememberChoice = false) }
-                    browserPickerOpen = false
-                    selectedBrowserPackage = null
-                }) { Text("한 번만") }
+                val cancel = { browserPickerOpen = false; selectedBrowserPackage = null }
+                if (selected == null) V2OutlineAction("닫기", cancel) else {
+                    V2DialogAction(tone = V2DialogTone.Quiet, onClick = cancel) { Text("취소") }
+                    V2OutlineAction("한 번만", {
+                        viewModel.openBrowser(selected, rememberChoice = false)
+                        cancel()
+                    })
+                }
             },
         )
     }
@@ -733,7 +729,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                     } else if (state.environment.recoveryPending && state.termuxSetup.verified && state.environment.managerConnected) {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
                             RestoreRecoveryCard(state, viewModel::repair, viewModel::stop, viewModel::openTermux)
-                            if (section == MainSection.BACKUPS) TextButton(onClick = viewModel::openSafetyInventory) { Text("안전 사본·휴지통 보기") }
+                            if (section == MainSection.BACKUPS) V2NavigationRow("안전 사본·휴지통 보기", viewModel::openSafetyInventory)
                         }
                     } else if (!showWelcome && state.environment.sillyTavernInstalled && state.termuxSetup.verified && state.environment.managerConnected) {
                         if (section == MainSection.SETUP) {
@@ -958,7 +954,7 @@ private fun RestoreRecoveryCard(
             ) {
                 Text(if (state.environment.processRunning) "먼저 서버 종료" else "점검·복구")
             }
-            TextButton(onClick = onOpenTermux) { Text("Termux 열기") }
+            V2NavigationRow("Termux 열기", onOpenTermux, description = "Termux 앱이 열려요.")
         }
     }
 }
@@ -1035,14 +1031,10 @@ internal fun EnvironmentCheckingCard(
                 }
             }
             if (wakeBlocked) {
-                Button(onClick = onOpenTermuxSettings, modifier = Modifier.fillMaxWidth()) {
-                    Text("Termux 배터리 설정 열기")
-                }
+                V2NavigationRow("Termux 배터리 설정 열기", onOpenTermuxSettings, description = "Android 설정 앱이 열려요.")
             }
             if (state.termuxSetup.status == TermuxSetupStatus.PERMISSION_REQUIRED) {
-                Button(onClick = onOpenPermissionSettings, modifier = Modifier.fillMaxWidth()) {
-                    Text("런처 실행 권한 설정")
-                }
+                V2NavigationRow("런처 실행 권한 설정", onOpenPermissionSettings, description = "Android 설정 앱이 열려요.")
             }
             if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED) {
                 Button(onClick = {
@@ -1052,12 +1044,8 @@ internal fun EnvironmentCheckingCard(
                     Text("연결 설정 명령 복사·Termux 열기")
                 }
             }
-            OutlinedButton(onClick = onOpenTermux, modifier = Modifier.fillMaxWidth()) {
-                Text("Termux 한 번 열기")
-            }
-            TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                Text("설치 상태 다시 확인")
-            }
+            V2NavigationRow("Termux 한 번 열기", onOpenTermux, description = "Termux 앱이 열려요.")
+            V2OutlineAction("설치 상태 다시 확인", onRefresh, Modifier.fillMaxWidth())
         }
     }
 }
@@ -1071,7 +1059,7 @@ private fun EmptyHomeCard(deferred: Boolean, onSetup: () -> Unit, onRefresh: () 
         Button(onClick = onSetup, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
             Text(if (deferred) "이어서 하기" else "설치하기")
         }
-        TextButton(onClick = onRefresh) { Text("설치 상태 다시 확인") }
+        V2OutlineAction("설치 상태 다시 확인", onRefresh, Modifier.fillMaxWidth())
     }
 }
 
@@ -1145,11 +1133,7 @@ internal fun BackupStorageSetupCard(
             ) {
                 Text("Termux 열기")
             }
-            TextButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Outlined.Refresh, null)
-                Spacer(Modifier.width(8.dp))
-                Text("연결 확인")
-            }
+            V2OutlineAction("연결 확인", onRefresh, Modifier.fillMaxWidth())
         }
     }
 }

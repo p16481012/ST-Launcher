@@ -12,10 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.model.LauncherUiState
@@ -53,21 +50,24 @@ internal fun V2InstallationDetail(
         }
         ToolGroup("기존 설치 가져오기") {
             InstallationNote("SillyTavern 설치 폴더를 다시 내려받지 않고 실행 모듈만 맞춰요. 폴더를 검사한 뒤 원본을 유지할지 옮길지 선택해요.")
-            ToolDivider()
-            InstallationAction("내부 저장소 폴더 선택", Icons.Outlined.FolderOpen, blocked == null, { request("내부 저장소 폴더 선택", onPickFolder) })
-            ToolDivider(50)
-            InstallationAction("Termux 폴더 경로 입력", Icons.Outlined.Terminal, blocked == null, { request("Termux 폴더 경로 입력") { enterPath = true } })
-            if (blocked != null) InstallationNote(blocked)
-            else if (env.processRunning) InstallationNote("폴더를 선택하면 서버 종료를 확인한 뒤 가져오기를 이어가요.")
+            if (blocked != null) InstallationNote(blocked) else {
+                ToolDivider()
+                ToolRow("내부 저장소 폴더 선택", "설치 폴더를 선택할 파일 앱이 열려요.", icon = Icons.Outlined.FolderOpen,
+                    onClick = { request("내부 저장소 폴더 선택", onPickFolder) })
+                ToolDivider(50)
+                ToolRow("Termux 폴더 경로 입력", icon = Icons.Outlined.Terminal,
+                    onClick = { request("Termux 폴더 경로 입력") { enterPath = true } })
+                if (env.processRunning) InstallationNote("폴더를 선택하면 서버 종료를 확인한 뒤 가져오기를 이어가요.")
+            }
         }
         ToolGroup("브랜치 변경") {
-            SillyBranch.entries.forEachIndexed { index, target ->
+            SillyBranch.entries.filter { it == env.branch || (blocked == null && env.sillyTavernInstalled) }.forEachIndexed { index, target ->
                 if (index != 0) ToolDivider()
                 if (target == env.branch) {
                     ToolRow(target.label, target.description, trailing = "현재 브랜치")
                 } else {
-                    InstallationAction("${target.label}로 변경", null, blocked == null && env.sillyTavernInstalled,
-                        { request("${target.label} 브랜치 변경 확인") { onSwitchBranch(target) } }, target.description)
+                    ToolRow("${target.label}로 변경", target.description,
+                        onClick = { request("${target.label} 브랜치 변경 확인") { onSwitchBranch(target) } })
                 }
             }
             if (blocked != null) InstallationNote(if (env.processRunning && stopToContinue == null) "서버 종료 후 전환할 수 있어요." else blocked)
@@ -108,11 +108,4 @@ internal fun V2InstallationDetail(
 @Composable private fun InstallationNote(text: String) {
     Text(text, Modifier.padding(horizontal = 20.dp, vertical = 12.dp), style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
-
-@Composable private fun InstallationAction(label: String, icon: ImageVector?, enabled: Boolean, onClick: () -> Unit, note: String = "") {
-    if (enabled) ToolRow(label, note, icon = icon, onClick = onClick)
-    else Box(Modifier.fillMaxWidth().semantics(mergeDescendants = true) { disabled() }) {
-        ToolRow(label, note, icon = icon)
-    }
 }

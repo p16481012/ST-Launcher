@@ -18,6 +18,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Check shared action affordances
+        run: python3 scripts/check_action_affordances.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:

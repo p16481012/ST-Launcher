@@ -11,17 +11,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,19 +55,20 @@ internal fun UpdateInformationCard(state: LauncherUiState, onCheck: () -> Unit) 
             }
         }
         if (state.updateInfoError.isNotBlank()) Text(state.updateInfoError, color = MaterialTheme.colorScheme.error)
-        Button(onClick = onCheck, enabled = !state.updateInfoLoading && !state.isWorking, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-            shape = RoundedCornerShape(14.dp)) {
-            if (state.updateInfoLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(if (state.updateInfoLoading) "확인 중…" else "업데이트 정보 확인")
+        when {
+            state.updateInfoLoading -> SettingsCaption("업데이트 정보를 확인하고 있어요.")
+            state.isWorking -> SettingsCaption("진행 중인 작업이 끝나면 업데이트 정보를 확인할 수 있어요.")
+            else -> Button(onClick = onCheck, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("업데이트 정보 확인")
+            }
         }
         SettingsCaption("이 앱 안에서 런처와 Node.js 버전 정보를 조회해요. 자동으로 설치하지 않아요.")
-        OutlinedButton(onClick = { linkFailed = runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) }.isFailure },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) {
-            Icon(Icons.Outlined.OpenInNew, null, Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("GitHub 릴리스 열기")
+        SettingsGroup {
+            V2NavigationRow("GitHub 릴리스 열기", { linkFailed = runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) }.isFailure },
+                description = "브라우저 앱이 열려요")
         }
         if (linkFailed) Text("릴리스 페이지를 열 수 없어요. 브라우저 앱을 확인해 주세요.", color = MaterialTheme.colorScheme.error)
     }

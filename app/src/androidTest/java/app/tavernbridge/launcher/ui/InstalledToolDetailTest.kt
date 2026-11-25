@@ -53,12 +53,12 @@ class InstalledToolDetailTest {
             "branch:release", "repair-page", "reset-page"), calls) }
     }
 
-    @Test fun runningServerRetainsEveryTargetAndExplainsWhyWritesAreUnavailable() {
+    @Test fun runningServerHidesUnavailableWritesAndExplainsHowToProceed() {
         model.value = model.value.copy(environment = env.copy(processRunning = true))
         show()
-        item("내부 저장소 폴더 선택").assertIsNotEnabled()
-        item("Termux 폴더 경로 입력").assertIsNotEnabled()
-        item("Release로 변경").assertIsNotEnabled()
+        ui.onNodeWithText("내부 저장소 폴더 선택").assertDoesNotExist()
+        ui.onNodeWithText("Termux 폴더 경로 입력").assertDoesNotExist()
+        ui.onNodeWithText("Release로 변경").assertDoesNotExist()
         item("서버 종료 후 전환할 수 있어요.").assertIsDisplayed()
         // The repair and reset pages themselves can be inspected; dispatch is guarded in their own flows.
         item("점검·복구").assertIsEnabled().performClick()

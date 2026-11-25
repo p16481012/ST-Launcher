@@ -26,7 +26,7 @@ internal fun StorageManagementCard(state: LauncherUiState, onScan: () -> Unit, o
     var days by rememberSaveable { mutableStateOf("30") }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) { Text("저장 공간·백업 정리 ${if (expanded) "접기" else "보기"}") }
+            V2OutlineAction("저장 공간·백업 정리 ${if (expanded) "접기" else "보기"}", { expanded = !expanded }, Modifier.fillMaxWidth())
             if (expanded) {
                 Text("직접 확인할 때만 검사합니다. 백업을 자동으로 삭제하지 않습니다.", style = MaterialTheme.typography.bodySmall)
                 state.storageUsage?.let { report ->
@@ -37,16 +37,18 @@ internal fun StorageManagementCard(state: LauncherUiState, onScan: () -> Unit, o
                     }
                     if (!report.complete) Text("시간·항목 수·접근 권한 제한으로 일부 항목을 확인하지 못했습니다.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
-                OutlinedButton(onClick = onScan, enabled = !state.isWorking, modifier = Modifier.fillMaxWidth()) { Text("저장 공간 확인") }
+                if (!state.isWorking) V2OutlineAction("저장 공간 확인", onScan, Modifier.fillMaxWidth())
+                else SettingsCaption("진행 중인 작업을 마친 뒤 저장 공간을 확인할 수 있어요.")
                 HorizontalDivider()
                 Text("오래된 백업 정리", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(keep, { if (it.length <= 4 && it.all(Char::isDigit)) keep = it }, label = { Text("최근 보관 개수 · 고정 백업 제외") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(days, { if (it.length <= 5 && it.all(Char::isDigit)) days = it }, label = { Text("이 날짜 수보다 오래된 백업") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Text("고정한 백업·날짜가 불명확한 백업은 보호합니다. 다음 화면에서 직접 고른 항목만 삭제합니다.", style = MaterialTheme.typography.bodySmall)
                 val keepValue = keep.toIntOrNull(); val daysValue = days.toIntOrNull()
-                OutlinedButton(onClick = { onPreview(requireNotNull(keepValue), requireNotNull(daysValue)) },
-                    enabled = !state.isWorking && !state.backupCleanupLoading && keepValue != null && keepValue in 1..1000 && daysValue != null && daysValue in 1..36500,
-                    modifier = Modifier.fillMaxWidth()) { Text(if (state.backupCleanupLoading) "미리보기 준비 중" else "정리 후보 미리보기") }
+                if (!state.isWorking && !state.backupCleanupLoading && keepValue != null && keepValue in 1..1000 && daysValue != null && daysValue in 1..36500)
+                    V2NavigationRow("정리 후보 미리보기", { onPreview(keepValue, daysValue) })
+                else if (state.backupCleanupLoading) SettingsCaption("정리 후보를 확인하고 있어요.")
+                else if (!state.isWorking) SettingsCaption("최근 보관 개수는 1~1000, 보관 일수는 1~36500 사이로 입력해 주세요.")
             }
         }
     }
@@ -57,9 +59,7 @@ internal fun BackupAnnotationControl(archive: BackupArchive, annotation: BackupA
     var open by rememberSaveable(archive.fileName) { mutableStateOf(false) }
     var pinned by rememberSaveable(archive.fileName, annotation.pinned) { mutableStateOf(annotation.pinned) }
     var memo by rememberSaveable(archive.fileName, annotation.memo) { mutableStateOf(annotation.memo) }
-    TextButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-        Text(if (annotation.pinned) "고정됨 · 메모 편집" else if (annotation.memo.isNotBlank()) "메모 편집" else "고정·메모")
-    }
+    V2NavigationRow(if (annotation.pinned) "고정됨 · 메모 편집" else if (annotation.memo.isNotBlank()) "메모 편집" else "고정·메모", { open = true })
     if (annotation.memo.isNotBlank()) Text(annotation.memo, style = MaterialTheme.typography.bodySmall)
     if (open) V2AlertDialog(onDismissRequest = { open = false }, title = { Text("백업 고정·메모") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -92,8 +92,11 @@ internal fun BackupCleanupDialog(preview: BackupRetentionPreview, onClose: () ->
                     }
                 }
             }
-        } }, confirmButton = { V2DialogAction(onClick = { confirm = true }, enabled = selected.isNotEmpty()) { Text("선택한 ${selected.size}개 삭제") } },
-        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") } })
+        } }, confirmButton = { if (selected.isNotEmpty()) V2DialogAction(tone = V2DialogTone.Danger, onClick = { confirm = true }) { Text("선택한 ${selected.size}개 삭제") } },
+        dismissButton = {
+            if (selected.isNotEmpty()) V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") }
+            else V2OutlineAction("닫기", onClose)
+        })
     if (confirm) V2AlertDialog(onDismissRequest = { confirm = false }, title = { Text("선택한 백업을 영구 삭제할까요?") },
         text = { Text("${selected.size}개 ZIP은 복구할 수 없습니다. 삭제 직전에 고정 상태와 파일 변경 여부를 다시 확인합니다.") },
         confirmButton = { V2DialogAction(tone = V2DialogTone.Danger, onClick = { confirm = false; onDelete(selected.toSet()) }) { Text("영구 삭제") } },

@@ -75,18 +75,24 @@ internal fun SelectiveRestoreDialog(
                             }
                         }
                     }
-                    if (page?.nextCursor != null && page.items.size < 1000) item { TextButton(onClick = onMore, enabled = !state.loading) { Text("더 불러오기") } }
+                    if (page?.nextCursor != null && page.items.size < 1000 && !state.loading)
+                        item { V2OutlineAction("더 불러오기", onMore) }
                     if (page?.items?.size == 1000 && page.nextCursor != null) item { Text("한 번에 목록 1,000개까지 표시합니다.", style = MaterialTheme.typography.bodySmall) }
                 }
                 if (state.loading) item { V2BusyIndicator(Modifier.fillMaxWidth()) }
                 if (state.error.isNotBlank()) item {
                     Text(state.error, color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = onRefresh, enabled = !state.loading) { Text("목록 다시 확인") }
+                    if (!state.loading) V2OutlineAction("목록 다시 확인", onRefresh)
                 }
                 if (!canRestore) item { Text("서버와 다른 작업을 종료한 뒤 복원할 수 있습니다.", color = MaterialTheme.colorScheme.error) }
             }
         },
-        confirmButton = { V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = { if (confirming) onRestore(choices, backupBefore) else confirming = true }, enabled = ready) { Text(if (confirming) "검사 후 복원" else "선택 내용 확인") } },
-        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { if (confirming) confirming = false else onClose() }) { Text(if (confirming) "이전" else "닫기") } },
+        confirmButton = { if (ready) V2DialogAction(tone = if (confirming) V2DialogTone.Danger else V2DialogTone.Primary, onClick = { if (confirming) onRestore(choices, backupBefore) else confirming = true }) { Text(if (confirming) "검사 후 복원" else "선택 내용 확인") } },
+        dismissButton = {
+            val label = if (confirming) "이전" else "닫기"
+            val leave: () -> Unit = { if (confirming) confirming = false else onClose() }
+            if (ready) V2DialogAction(tone = V2DialogTone.Quiet, onClick = leave) { Text(label) }
+            else V2OutlineAction(label, leave)
+        },
     )
 }
