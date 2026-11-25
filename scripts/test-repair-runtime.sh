@@ -17,6 +17,7 @@ if [[ ${1:-} == __case ]]; then
     begin_operation() { CURRENT_OPERATION="$1"; }
     cancellation_requested() { [[ -f "$case_dir/cancel" ]]; }
     is_running() { [[ "$scenario" == running ]]; }
+    curl() { return 1; }
     pkg() { printf 'index\n' >> "$trace"; [[ "$*" == 'update -y' && "$scenario" != network ]]; }
     dpkg-query() {
         case "$scenario:${!#}" in

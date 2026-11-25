@@ -21,6 +21,7 @@ run_case() (
     local trace="$case_root/trace"
     : > "$trace"
     begin_operation() { CURRENT_OPERATION="$1"; OPERATION_STARTED_EPOCH="$(date +%s)"; }
+    curl() { return 1; }  # No listener in this isolated first-install fixture.
     cancellation_requested() { (( cancel_flag )); }
     getprop() { printf 'arm64-v8a\n'; }
     pkg() {

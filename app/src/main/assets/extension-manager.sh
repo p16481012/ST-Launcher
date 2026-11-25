@@ -38,6 +38,7 @@ extension_mutate() {
     local action="$1" id="${2:-}" revision="${3:-}" code=0
     is_running && { echo "확장을 변경하기 전에 서버를 종료해 주세요." >&2; exit 10; }
     begin_operation "extension-$action"
+    ensure_restore_target_stopped
     inspect_restore_recovery
     (( ${#RESTORE_PENDING_WORKS[@]} == 0 )) || { echo "먼저 중단된 설치 작업을 점검·복구해 주세요." >&2; exit 25; }
     write_progress 0 "확장 관리" "선택한 확장의 상태를 확인하고 요청한 변경을 준비합니다."
@@ -56,6 +57,7 @@ save_lan_security() {
     (( 10#$port >= 1 && 10#$port <= 65535 )) || exit 90
     is_running && { echo "연결 보안을 변경하기 전에 서버를 종료해 주세요." >&2; exit 10; }
     begin_operation save-lan-security
+    ensure_restore_target_stopped
     inspect_restore_recovery
     (( ${#RESTORE_PENDING_WORKS[@]} == 0 )) || exit 25
     write_progress 0 "연결 보안 설정" "일회성 로컬 연결로 설정을 받아 저장합니다. 비밀번호는 기록하지 않습니다."

@@ -34,6 +34,7 @@ SESSION_FILE="$RUN_DIR/server-session.env"
 LOCK_DIR="$RUN_DIR/operation.lock"
 DEPENDENCY_HASH_FILE="$LAUNCHER_HOME/dependency-lock.sha256"
 INSTALL_MARKER="$RUN_DIR/install-owned"
+INSTALL_STAGE_ACTIVE=0
 PORT="${ST_PORT:-8000}"
 CURRENT_OPERATION="idle"
 LAST_LOGGED_PROGRESS=""
@@ -804,10 +805,7 @@ operation_cleanup() {
         code=0
     elif { (( code == 130 )) || [[ -f "$(cancellation_request_path).confirmed" ]]; } && (( ! RESTORE_RECOVERY_RETAINED )); then
         write_progress 0 "중단 처리 중" "실행 작업이 종료되었습니다. 임시 파일과 상태를 정리하고 있습니다."
-        if [[ "$CURRENT_OPERATION" == "install" && -f "$INSTALL_MARKER" ]]; then
-            rm -rf "$ST_HOME"
-            rm -f "$INSTALL_MARKER" "$DEPENDENCY_HASH_FILE"
-        elif [[ "$CURRENT_OPERATION" == "start" ]]; then
+        if [[ "$CURRENT_OPERATION" == "start" ]]; then
             rm -f "$DEPENDENCY_HASH_FILE"
             terminate_request_server "${ST_OPERATION_REQUEST_ID:-}"
         fi
@@ -823,6 +821,7 @@ operation_cleanup() {
         final_error_code="$(manager_error_code "$CURRENT_OPERATION" "$code")"
         printf 'error_code=%s\n' "$final_error_code" >&2
     fi
+    if (( INSTALL_STAGE_ACTIVE )); then clean_install_stage || true; fi
     cleanup_current_work_dir
     cleanup_temporary_package_source
     stop_progress_monitor
@@ -1649,6 +1648,25 @@ doctor() {
     echo "log_file=$LOG_FILE"
 }
 
+# The live installation is NEVER a cleanup candidate, not even when an old
+# version left its empty install-owned marker. Only our randomly named private
+# stage (matching device AND inode) can be removed, under the operation lock.
+clean_install_stage() {
+    [[ -e "$INSTALL_MARKER" || -L "$INSTALL_MARKER" ]] || return 0
+    [[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] || return 1
+    if [[ ! -s "$INSTALL_MARKER" ]]; then rm -- "$INSTALL_MARKER"; return; fi
+    local name identity extra path
+    read -r name identity extra < "$INSTALL_MARKER" || return 1
+    [[ "$name" =~ ^install-stage\.[a-zA-Z0-9]{8}$ && "$identity" =~ ^[0-9]+:[0-9]+$ && -z "$extra" ]] || return 1
+    path="$RUN_DIR/$name"
+    if [[ -e "$path" || -L "$path" ]]; then
+        [[ -d "$path" && ! -L "$path" && "$(restore_file_identity "$path")" == "$identity" ]] || return 1
+        rm -rf -- "$path" || return 1
+    fi
+    rm -- "$INSTALL_MARKER"
+    INSTALL_STAGE_ACTIVE=0
+}
+
 install_st() {
     local branch="${1:-release}"
     if [[ "$branch" != "release" && "$branch" != "staging" ]]; then
@@ -1656,16 +1674,14 @@ install_st() {
         echo "지원하지 않는 브랜치입니다: $branch" >&2
         exit 2
     fi
-    if [[ -f "$INSTALL_MARKER" ]] && ! operation_active; then
-        rm -rf "$ST_HOME"
-        rm -f "$INSTALL_MARKER" "$DEPENDENCY_HASH_FILE"
-    fi
-    if [[ -e "$ST_HOME" ]]; then
+    begin_operation "install"
+    clean_install_stage || { echo "이전 설치 임시 폴더를 확인하지 못했습니다. 기존 파일은 변경하지 않았습니다." >&2; exit 3; }
+    if [[ -e "$ST_HOME" || -L "$ST_HOME" ]]; then
         write_progress 0 "설치 중단" "기존 SillyTavern 폴더가 있어 덮어쓰지 않았습니다." error install
         echo "설치 경로가 이미 존재합니다: $ST_HOME" >&2
         exit 3
     fi
-    begin_operation "install"
+    ensure_restore_target_stopped
     if ! refresh_package_indexes; then
         write_progress 0 "패키지 확인 실패" "Termux 패키지 목록을 갱신하지 못했습니다. 로그를 확인해 주세요." error
         echo "Termux 공식 저장소에서도 패키지 목록 갱신에 실패했습니다. 네트워크를 확인하거나 termux-change-repo를 실행해 주세요." >&2
@@ -1692,23 +1708,39 @@ install_st() {
         fi
     fi
     write_progress 35 "SillyTavern 다운로드" "$branch 브랜치를 내려받고 있습니다."
-    : > "$INSTALL_MARKER"
-    if ! run_cancellable git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$ST_HOME" >> "$LOG_FILE" 2>&1; then
+    local stage identity
+    [[ "$(stat -c %d -- "$RUN_DIR")" == "$(stat -c %d -- "$(dirname -- "$ST_HOME")")" ]] || { echo "설치 폴더와 임시 폴더의 저장소가 달라 안전하게 설치할 수 없습니다." >&2; exit 3; }
+    stage="$(mktemp -d "$RUN_DIR/install-stage.XXXXXXXX")" || exit 3
+    identity="$(restore_file_identity "$stage")" || exit 3
+    (umask 077; printf '%s %s\n' "${stage##*/}" "$identity" > "$stage/receipt") || exit 3
+    mv -nT -- "$stage/receipt" "$INSTALL_MARKER" && [[ ! -e "$stage/receipt" ]] || exit 3
+    INSTALL_STAGE_ACTIVE=1
+    if ! ST_HOME="$stage/install" run_cancellable git clone --progress --branch "$branch" --single-branch https://github.com/SillyTavern/SillyTavern.git "$stage/install" >> "$LOG_FILE" 2>&1; then
         write_progress 0 "다운로드 실패" "SillyTavern을 내려받지 못했습니다. 부분 설치를 정리했습니다." error
-        rm -rf "$ST_HOME"
-        rm -f "$INSTALL_MARKER"
+        clean_install_stage || true
         echo "SillyTavern 다운로드에 실패했습니다." >&2
         tail -n 40 "$LOG_FILE" >&2 || true
         exit 17
     fi
     local dependency_status=0
-    install_dependencies || dependency_status=$?
+    ST_HOME="$stage/install" DEPENDENCY_HASH_FILE="$stage/dependency-lock.sha256" install_dependencies || dependency_status=$?
     if (( dependency_status != 0 )); then
-        rm -rf "$ST_HOME"
-        rm -f "$DEPENDENCY_HASH_FILE" "$INSTALL_MARKER"
+        clean_install_stage || true
         exit "$dependency_status"
     fi
-    rm -f "$INSTALL_MARKER"
+    ensure_restore_target_stopped
+    enter_cancellation_guard
+    # GNU mv -n can return success when it skipped a collision; verify the
+    # staged inode actually moved. Never delete or merge with the destination.
+    identity="$(restore_file_identity "$stage/install")" || exit 3
+    [[ "$identity" != none && ! -L "$stage/install" && -d "$stage/install" ]] || exit 3
+    if ! mv -nT -- "$stage/install" "$ST_HOME" || [[ -e "$stage/install" || "$(restore_file_identity "$ST_HOME")" != "$identity" ]]; then
+        echo "설치 위치가 바뀌어 기존 폴더를 보존하고 중단했습니다." >&2; exit 3
+    fi
+    CANCELLATION_COMMITTED=1
+    mv -fT -- "$stage/dependency-lock.sha256" "$DEPENDENCY_HASH_FILE" || true
+    clean_install_stage || true
+    leave_cancellation_guard
     write_progress 100 "설치 완료" "SillyTavern을 시작할 준비가 됐습니다." success
     echo "installed=1"
     echo "branch=$branch"
@@ -4121,6 +4153,7 @@ repair_st() {
     fi
 
     begin_operation "repair"
+    ensure_restore_target_stopped
     write_progress 3 "설치 점검" "Termux 도구와 SillyTavern 패키지를 확인하고 있습니다."
     if ! refresh_package_indexes; then
         write_progress 0 "복구 실패" "Termux 패키지 목록을 갱신하지 못했습니다." error
@@ -4159,6 +4192,7 @@ repair_st() {
     else
         record_processing "npm 캐시 검사가 실패했습니다. 실행 패키지 재설치로 복구를 계속합니다."
     fi
+    ensure_restore_target_stopped
     install_dependencies
     write_progress 100 "복구 완료" "사용자 데이터는 유지하고 실행 패키지를 다시 구성했습니다." success
     echo "repaired=1"
@@ -4187,6 +4221,7 @@ reset_installation() {
     }
 
     begin_operation "reset-installation"
+    ensure_restore_target_stopped
     local work="$BACKUP_DIR/reset-work-$$"
     mkdir -m 700 -- "$work" || exit 25
     track_current_work_dir "$work"
@@ -4270,6 +4305,7 @@ update_st() {
         exit 10
     fi
     begin_operation "update"
+    ensure_restore_target_stopped
     write_progress 0 "업데이트 준비 검사" "서버 종료 상태와 Git 수정 파일을 확인하고 있습니다."
     local dirty_files
     dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || true)"
@@ -4337,6 +4373,7 @@ update_st() {
         modified_backup="$SAFETY_BACKUP_PATH"
         echo "[launcher] Modified files saved to $modified_backup" >> "$LOG_FILE"
     fi
+    ensure_restore_target_stopped
     (( CANCELLATION_GUARD > 0 )) || enter_cancellation_guard
     prepare_git_transaction update "$branch" "$remote_commit" || exit 25
     if [[ -n "$dirty_files" ]]; then
@@ -4423,6 +4460,7 @@ switch_branch() {
     fi
     [[ "$allow_dirty" == "0" || "$allow_dirty" == "1" ]] || { echo "수정 파일 진행 설정이 올바르지 않습니다." >&2; exit 64; }
     begin_operation "switch-branch"
+    ensure_restore_target_stopped
     write_progress 0 "브랜치 변경 준비 검사" "Git 수정 파일을 검사하고 있습니다. 검사 명령의 완료를 기다립니다."
     local dirty_files
     dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || true)"
@@ -4448,6 +4486,7 @@ switch_branch() {
     local safety_backup="$BACKUP_DIR/before-branch-$(date +%Y%m%d-%H%M%S).tar.gz"
     SAFETY_PHASE="브랜치 변경 안전 백업" safety_backup "$safety_backup" directory || exit $?
     safety_backup="$SAFETY_BACKUP_PATH"
+    ensure_restore_target_stopped
     enter_cancellation_guard
     prepare_git_transaction branch "$branch" "$target_commit" || exit 25
     record_processing "브랜치 변경 전 안전 백업 생성 완료"
