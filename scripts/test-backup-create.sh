@@ -196,6 +196,20 @@ NODE
     unzip -tq "$archive" >/dev/null
     validate_restore_archive "$archive" "$CASE_ROOT/append-index.json" >/dev/null
 }
+automatic_fixture() {
+    setup "$1"
+    export ST_BACKUP_REQUEST_ID=12345678-1234-1234-1234-123456789abc
+    is_running() { return 0; }
+    backup_selected user_data 0 '' auto
+    [[ -z "$(find "$DOWNLOAD_DIR" -name '*.zip' -print -quit)" ]] || fail 'running server was backed up'
+    is_running() { return 1; }; installation_server_running() { return 1; }; curl() { return 1; }
+    backup_selected user_data 0 '' auto
+    local saved="$LAUNCHER_HOME/auto-receipts/$ST_BACKUP_REQUEST_ID/done"
+    [[ -s "$saved" ]] && grep -Eq '^backup_receipt=.+\|[a-f0-9]{64}$' "$saved" || fail 'missing automatic receipt'
+    backup_selected user_data 0 '' auto
+    [[ "$(find "$DOWNLOAD_DIR" -name '*.zip' | wc -l)" -eq 1 ]] || fail 'redelivery duplicated ZIP'
+}
+run_case 0 automatic automatic_fixture automatic
 run_case 0 happy happy happy
 run_case 0 config-only config_export config-only config 0
 run_case 0 update-config config_export update-config user_data,extensions,config 0

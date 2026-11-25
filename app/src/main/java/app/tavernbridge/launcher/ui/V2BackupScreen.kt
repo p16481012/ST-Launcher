@@ -111,6 +111,7 @@ internal fun V2BackupScreen(
     val stopToImport = rememberStopToContinue(state, pane to selectedName)
     val canImport = connected && !busy && !state.environment.recoveryPending && (!running || stopToImport != null)
     val pickImport = { enterStoppedAction(running, stopToImport, "백업 ZIP 선택", onImport) }
+    val auto = rememberBackupJobs()
     val archives = state.backups
     val listFailed = state.backupListError.isNotBlank()
     var retryingError by rememberSaveable { mutableStateOf(false) }
@@ -178,12 +179,13 @@ internal fun V2BackupScreen(
                         Spacer(Modifier.height(if (dual) 4.dp else 8.dp))
                         Text(headline, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.semantics { heading() })
                         Spacer(Modifier.height(8.dp))
-                        val reminder = if (state.backupReminder.enabled) "${state.backupReminder.interval.label} 알림" else "알림 꺼짐"
+                        val reminder = (if (state.backupReminder.enabled) "${state.backupReminder.interval.label} 알림" else "알림 꺼짐") + (if (auto.enabled) " · 자동 백업 켜짐" else "")
                         Text(if (state.backupsLoaded && state.backupStorageReady == true)
                             "${archives.size}개 · ${formatBackupBytes(archives.sumOf { it.sizeBytes })} · $reminder"
                             else if (firstLoad && showSkeleton) "확인하고 있어요" else reminder,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium, fontFamily = V2Mono)
                         Spacer(Modifier.height(20.dp))
+                        AutoBackupNotice(auto, openScope, { pane = BackupPane.SPACE })
                         BackupGroupHeader(if (dual) "백업 목록" else "최근",
                             if (dual) "파일에서 가져오기" else if (state.backupsLoaded && !listFailed) "전체 ${archives.size}개" else "", if (dual) canImport else state.backupsLoaded,
                             if (dual) pickImport else ({ pane = BackupPane.ALL }),
@@ -254,7 +256,7 @@ internal fun V2BackupScreen(
                             SettingsDivider(52)
                             SettingsRow("Download 폴더 열기", caption = "파일 앱이 열려요.", icon = Icons.Outlined.FolderOpen, onClick = onOpenFolder)
                             SettingsDivider(52)
-                            SettingsRow("백업 알림", caption = "백업할 때가 되면 백업 탭에 점이 떠요. 자동 백업은 하지 않아요.",
+                            SettingsRow("백업 알림", caption = "백업할 때가 되면 알려줘요. 충전 중 자동 백업은 설정에서 따로 켜요.",
                                 icon = Icons.Outlined.Notifications, checked = state.backupReminder.enabled,
                                 onClick = { onReminderChange(!state.backupReminder.enabled) })
                         }
@@ -388,7 +390,7 @@ private fun BackupArchiveRow(archive: BackupArchive, first: Boolean, last: Boole
     val bottom = if (last) 18.dp else 0.dp
     Column(Modifier.clip(RoundedCornerShape(top, top, bottom, bottom))
         .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)) {
-        BackupEntry(Icons.Outlined.FileDownload, archiveHeading(archive), formatBackupBytes(archive.sizeBytes), click = click)
+        BackupEntry(Icons.Outlined.FileDownload, autoArchiveHeading(archive), formatBackupBytes(archive.sizeBytes), click = click)
         if (!last) HorizontalDivider(Modifier.padding(start = 52.dp, end = 18.dp), color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
@@ -530,7 +532,7 @@ private fun BackupAll(state: LauncherUiState, busy: Boolean, scroll: LazyListSta
                 val id = BackupDeleteSelection.key(archive)
                 Checkbox(checked = id in selectedKeys, enabled = id in allowed && !busy && (id in selectedKeys || selectedKeys.size < 200),
                     onCheckedChange = { checked -> keys = if (checked) (selectedKeys + id).toList() else (selectedKeys - id).toList() })
-                Text(archiveHeading(archive), Modifier.weight(1f))
+                Text(autoArchiveHeading(archive), Modifier.weight(1f))
                 Text(if (id !in allowed) "삭제 보호" else formatBackupBytes(archive.sizeBytes), style = MaterialTheme.typography.labelMedium)
             }
         }

@@ -905,6 +905,10 @@ begin_operation() {
     OPERATION_STARTED_EPOCH="$(date +%s)"
     export ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH"
     acquire_operation
+    if [[ "${AUTO_BACKUP_DISPATCH:-0}" == 1 ]]; then
+        inspect_restore_recovery
+        if (( ${#RESTORE_PENDING_WORKS[@]} )); then echo "auto_skip=busy"; exit 11; fi
+    fi
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
     if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
@@ -1934,7 +1938,20 @@ backup_selected() {
         exit 64
     fi
 
+    if [[ "${4:-}" == auto ]]; then AUTO_BACKUP_DISPATCH=1; fi
     if [[ "$BACKUP_PARENT_OPERATION" != change-version ]]; then begin_operation "backup"; fi
+    if [[ "${4:-}" == auto ]]; then
+        [[ "$ST_BACKUP_REQUEST_ID" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || exit 64
+        if is_running || installation_server_running "$ST_HOME" || curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+            echo 'auto_skip=server'; return 0
+        fi
+        mkdir -p -m 700 -- "$LAUNCHER_HOME/auto-receipts"
+        local claim="$LAUNCHER_HOME/auto-receipts/$ST_BACKUP_REQUEST_ID"
+        if ! mkdir -m 700 -- "$claim"; then
+            if [[ -f "$claim/done" ]]; then cat "$claim/done"; else echo 'auto_skip=unconfirmed'; fi
+            return 0
+        fi
+    fi
     BACKUP_CREATED_PATH=""
     ensure_archive_tools
     ensure_import_runtime
@@ -2098,6 +2115,10 @@ backup_selected() {
     published_revision="$(bash "$(dirname "$MANAGER_SCRIPT_PATH")/backup-catalog.sh" revision "$DOWNLOAD_DIR" "${output##*/}" 2>/dev/null || true)"
     if [[ "$published_revision" =~ ^[a-f0-9]{64}$ ]]; then printf 'backup_receipt=%s|%s\n' "${output##*/}" "$published_revision"; fi
     echo "size=$size"
+    if [[ "${4:-}" == auto && "$published_revision" =~ ^[a-f0-9]{64}$ ]]; then
+        printf 'backup_receipt=%s|%s\nsize=%s\n' "${output##*/}" "$published_revision" "$size" > "$claim/done.tmp" &&
+            mv -- "$claim/done.tmp" "$claim/done" || exit 1
+    fi
 }
 
 list_backups() {
@@ -4728,6 +4749,12 @@ case "${1:-doctor}" in
     wake-lock-off) set_termux_wake_lock 0 ;;
     backup) backup_st ;;
     backup-select) backup_selected "${2:-}" "${3:-0}" "${4:-}" ;;
+    backup-auto) backup_selected "${2:-}" "${3:-0}" "${4:-}" auto ;;
+    auto-backup-status)
+        [[ "${2:-}" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || exit 64
+        if [[ -f "$LAUNCHER_HOME/auto-receipts/$2/done" ]]; then cat "$LAUNCHER_HOME/auto-receipts/$2/done"
+        elif [[ -d "$LAUNCHER_HOME/auto-receipts/$2" ]]; then echo 'auto_skip=unconfirmed'
+        else echo 'auto_status=unknown'; fi ;;
     list-backups) list_backups "${2:-}" ;;
     import-backup) import_backup "${2:-}" ;;
     inspect-install) inspect_install "${2:-}" ;;
