@@ -69,16 +69,7 @@ echo 'PASS: preflight reports the pinned target; missing engines differs from in
 
 # Create an npm-shaped system bundle and confirm that discovery uses its semver,
 # not the host fallback. No npm package is downloaded or installed here.
-node --input-type=commonjs - "$TEST_ROOT" "$npm_path" <<'NODE'
-const fs=require('fs'),path=require('path'),root=process.argv[2],exe=fs.realpathSync(process.argv[3]);
-const roots=[path.resolve(path.dirname(exe),'..'),path.join(path.dirname(exe),'node_modules/npm'),path.join(path.dirname(process.execPath),'node_modules/npm')];
-const npm=roots.find(p=>{try{return JSON.parse(fs.readFileSync(path.join(p,'package.json'))).name==='npm';}catch{return false;}});
-if(!npm)throw Error('test host npm bundle not found');
-const target=path.join(root,'prefix/lib/node_modules/npm');fs.mkdirSync(path.join(target,'bin'),{recursive:true});
-fs.copyFileSync(path.join(npm,'package.json'),path.join(target,'package.json'));
-fs.cpSync(path.join(npm,'node_modules/semver'),path.join(target,'node_modules/semver'),{recursive:true});
-fs.writeFileSync(path.join(target,'bin/npm-cli.js'),'// never executed fixture');
-NODE
+node "$ROOT_DIR/scripts/fixture-npm-bundle.cjs" "$TEST_ROOT/prefix" "$npm_path"
 export NODE_OPTIONS="--require=$(native_path "$TEST_ROOT/trace-parser.cjs")" VALIDATION_TRACE="$(native_path "$TEST_ROOT/parser-trace")"
 bash "$HELPER" runtime "$TEST_ROOT/ranges/exact" "$TEST_ROOT/prefix/lib/node_modules/npm/bin/npm-cli.js" "$TEST_ROOT/prefix" > /dev/null
 grep -Fq 'prefix' "$TEST_ROOT/parser-trace" || fail 'npm-cli discovery did not use fixture bundle'

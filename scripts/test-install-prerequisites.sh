@@ -7,6 +7,11 @@ cleanup() { case "$TEST_ROOT" in "${TMPDIR:-/tmp}"/st-install-prerequisites.*) r
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+# npm invocations below are mocked as a shell function, so 'command -v npm'
+# returns just 'npm', not Linux's real npm-cli.js path. Supply the actual
+# bundled semver in this case's private prefix, just as Termux would.
+node "$ROOT_DIR/scripts/fixture-npm-bundle.cjs" "$TEST_ROOT/incompatible/prefix" "$(type -P npm)"
+
 # No network or package-manager binary is executed: all platform programs are
 # shell functions confined to this fixture. Real install ordering, runtime
 # checks, error mapping, cancellation guards and dependency cleanup are used.
