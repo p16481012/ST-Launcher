@@ -16,6 +16,11 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.ui.theme.LocalLauncherColors
 
+/** Borderless labels on the snackbar's inverse surface; keep the normal touch target. */
+@Composable internal fun V2NoticeTextAction(label: String, ink: Color, onClick: () -> Unit) {
+    TextButton(onClick = onClick) { Text(label, color = ink) }
+}
+
 /** Supplemental navigation. The underline remains a cue even without hue. */
 @Composable internal fun V2LinkAction(label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     leadingIcon: (@Composable () -> Unit)? = null) {
