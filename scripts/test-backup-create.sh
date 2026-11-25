@@ -192,6 +192,8 @@ if [[ "$OSTYPE" != msys* ]]; then
     assert_failure_cleanup unsafe-link BACKUP_CREATE_FAILED
 else echo 'SKIP: Unix symlink creation (covered on Linux)'; fi
 grep -Fq 'No space left on device' "$TEST_ROOT/real-compression-space/launcher/logs/operation.log" || fail 'ZIP reason lost from persistent log'
+grep -Eq 'Download 저장 공간이 부족합니다\. 필요 [1-9][0-9]*바이트, 여유 0바이트' "$TEST_ROOT/no-space.output" || fail 'Download shortage did not report the measured volume'
+grep -Eq 'Termux 임시 검사 공간이 부족합니다\. 필요 [1-9][0-9]*바이트, 여유 0바이트' "$TEST_ROOT/scratch-space.output" || fail 'Private scratch shortage did not report the measured volume'
 grep -Fq 'No space left on device' "$TEST_ROOT/real-metadata-space.output" || fail 'Metadata reason lost from result'
 run_case 0 append-classic append_probe append-classic classic
 run_case 0 append-zip64 append_probe append-zip64 zip64

@@ -76,7 +76,12 @@ class LauncherBackNavigationTest {
         compose.onNodeWithText("내부 저장소 폴더 선택").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("백업·복원").assertDoesNotExist()
         compose.runOnIdle { assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage) }
+        val split = compose.onAllNodesWithTag("tools-index").fetchSemanticsNodes().isNotEmpty()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        if (split) {
+            compose.runOnIdle { assertEquals(MainSection.HOME, vm.state.value.section) }
+            compose.onNode(hasText("도구") and hasClickAction()).performClick()
+        }
         openTool("업데이트")
         compose.onNodeWithText("설치 정보·가져오기·브랜치").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(ToolPage.INSTALLATION, vm.state.value.toolPage) }
@@ -117,12 +122,16 @@ class LauncherBackNavigationTest {
         compose.onNodeWithText("대화 열기").assertIsDisplayed()
         compose.onNode(hasText("도구") and hasClickAction()).performClick()
         compose.onNode(hasText("서버 로그") and hasClickAction()).performScrollTo().performClick()
+        val split = compose.onAllNodesWithTag("tools-index").fetchSemanticsNodes().isNotEmpty()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
-        compose.runOnIdle {
-            assertEquals(MainSection.LOGS, vm.state.value.section)
-            assertEquals(ToolPage.INDEX, vm.state.value.toolPage)
+        if (!split) {
+            compose.runOnIdle {
+                assertEquals(MainSection.LOGS, vm.state.value.section)
+                assertEquals(ToolPage.INDEX, vm.state.value.toolPage)
+                compose.activity.onBackPressedDispatcher.onBackPressed()
+            }
         }
-        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { assertEquals(MainSection.HOME, vm.state.value.section) }
         compose.onNodeWithText("대화 열기").assertIsDisplayed()
     }
 

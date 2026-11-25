@@ -102,14 +102,14 @@ class ModalGeometryTest {
     @Test fun actualExplanationAndBackupSheetsUseTheWindowWidthAndPinnedActions() {
         val vm = launcher()
         compose.onNodeWithText("외부 접속").performScrollTo().performClick()
-        compose.onNodeWithText("확인").assertIsDisplayed()
+        compose.onNodeWithText("서버 연결 설정 열기").assertIsDisplayed()
         val expected = safeWidth().coerceAtMost(640f)
         val info = bounds("v2-sheet-surface")
         assertEquals(expected, info.width.value, 2f)
         val nav = compose.activity.windowManager.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.navigationBars()).bottom / density
         if (safeWidth() in 355f..365f) assertTrue("Short C3 explanation consumed too much space: $info", info.height.value - nav <= 324f)
         record("modal-info", "sheet")
-        compose.onNodeWithText("확인").performClick()
+        compose.onNodeWithText("닫기").performClick()
         compose.runOnIdle { vm.openBackups() }
         compose.onNodeWithText("지금 백업").assertIsEnabled().performClick()
         compose.onNodeWithText("백업 시작").assertIsDisplayed()

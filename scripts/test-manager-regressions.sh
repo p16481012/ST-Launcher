@@ -38,6 +38,8 @@ decimal_status=$?
 set -e
 [[ "$decimal_status" != 0 && -z "$decimal_result" ]] || fail "arithmetic metadata payload was evaluated"
 [[ "$(unsigned_decimal 000008)" == 8 ]] || fail "numeric metadata was interpreted as octal"
+[[ "$(df() { printf 'header\nfs 999999999 0 123456789 0%% /data\n'; }; available_bytes_for .)" == 126419751936 ]] || fail "large df result was rounded to scientific notation"
+if (df() { printf 'header\nfs a b unknown\n'; }; available_bytes_for .); then fail "unknown free space was reported as zero"; fi
 if unsigned_decimal 9999999999999999999 >/dev/null; then fail "overflowing metadata was accepted"; fi
 list_result="$(
     : > "$DOWNLOAD_DIR/SillyTavern-Launcher-20260101-000000.zip"

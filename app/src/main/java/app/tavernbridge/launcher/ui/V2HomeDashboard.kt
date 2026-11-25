@@ -275,9 +275,10 @@ internal fun V2Explanation(title: String, detail: String, action: Pair<String, (
     V2BottomSheet(onClose = onDismiss, footer = {
         val close = LocalV2SheetDismiss.current ?: onDismiss
         if (action == null) V2SheetPrimaryButton("확인", onClick = close)
-        else Column(Modifier.fillMaxWidth()) {
-            V2SheetPrimaryButton(action.first, onClick = action.second)
-            TextButton(onClick = close, modifier = Modifier.fillMaxWidth()) { Text("닫기") }
+        else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = close) { Text("닫기") }
+            Box(Modifier.weight(1f)) { V2SheetPrimaryButton(action.first, onClick = action.second) }
         }
     }) {
         Text(title, style = MaterialTheme.typography.titleLarge)
