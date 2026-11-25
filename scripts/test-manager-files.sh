@@ -33,11 +33,9 @@ read_result="$(read_st_file "$(b64 data/settings.json)")"
 [[ "$(printf '%s\n' "$read_result" | sed -n 's/^content_b64=//p')" == "$(base64 -w 0 < "$ST_HOME/data/settings.json")" ]] || fail 'read changed exact bytes/trailing newlines'
 revision="$(printf '%s\n' "$read_result" | sed -n 's/^sha256=//p')"
 [[ "$revision" =~ ^[a-f0-9]{64}$ ]] || fail 'missing revision'
-st_file_action write "$(b64 data/settings.json)" "$(b64 '{"hello":"saved"}')" "$revision" >/dev/null
-[[ "$(cat "$ST_HOME/data/settings.json")" == '{"hello":"saved"}' ]] || fail 'text was not saved'
-expect_code 42 st_file_action write "$(b64 data/settings.json)" "$(b64 stale)" "$revision"
-[[ "$(cat "$ST_HOME/data/settings.json")" == '{"hello":"saved"}' ]] || fail 'conflict overwrote a newer edit'
-[[ -z "$(find "$ST_HOME" -name '.st-launcher-edit-*' -print -quit)" ]] || fail 'failed save left a temporary file'
+# Legacy callers must not be able to write editor contents via an argv payload.
+expect_code 64 st_file_action write "$(b64 data/settings.json)" "$(b64 '{"hello":"old-client"}')" "$revision"
+node "$ROOT_DIR/scripts/test-private-file-write.cjs"
 
 expect_code 64 read_st_file 'bad!'
 expect_code 64 read_st_file "$(b64 ../outside.txt)"

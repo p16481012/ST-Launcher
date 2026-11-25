@@ -65,6 +65,33 @@ class OneShotSecretInputTest {
         assertTrue(payload.all { it == 0.toByte() })
     }
 
+    @Test fun fileCommandContainsOnlyMetadataAndSingleUseEndpoint() {
+        val dummy = "password: fixture file contents 한글!!"
+        val bytes = dummy.toByteArray()
+        val revision = "a".repeat(64)
+        OneShotSecretInput.forFile(bytes).use { source ->
+            val command = privateFileWriteCommand("config.yaml", revision, source, bytes.size)
+            assertEquals("write-st-file '${encodeFileArgument("config.yaml")}' $revision ${source.port} ${source.token} ${bytes.size}", command)
+            assertFalse(command.contains(dummy))
+            assertFalse(command.contains(encodeFileArgument(dummy)))
+            assertEquals(dummy, request(source.port, source.token).substringAfter("\r\n\r\n"))
+        }
+        awaitCleared(bytes)
+    }
+
+    @Test fun fileTransferKeepsEmptyAnd64KiBEditsAndRejectsLargerInputs() {
+        listOf("", "a".repeat(TEXT_EDIT_LIMIT)).forEach { text ->
+            val bytes = text.toByteArray()
+            OneShotSecretInput.forFile(bytes).use { source ->
+                assertEquals(text, request(source.port, source.token).substringAfter("\r\n\r\n"))
+            }
+            awaitCleared(bytes)
+        }
+        val tooLarge = ByteArray(TEXT_EDIT_LIMIT + 1) { 1 }
+        assertTrue(runCatching { OneShotSecretInput.forFile(tooLarge) }.isFailure)
+        assertTrue(tooLarge.all { it == 0.toByte() })
+    }
+
     @Test fun oversizedHeadersNeverReceivePayload() {
         val payload = "fixture-secret".toByteArray()
         OneShotSecretInput.start(payload).use { source ->

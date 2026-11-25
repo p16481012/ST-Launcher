@@ -58,13 +58,14 @@ class DiagnosticReportTest {
                 DiagnosticItem("first", "ordinary", "ok", "normal detail\n".repeat(100), DiagnosticStatus.OK),
                 DiagnosticItem("last", "network", "Authorization: Basic dXNlcjpleGFtcGxl", status = DiagnosticStatus.WARNING),
             ),
-            copyOnlyDetails = mapOf("support" to "api_key_mistral: privateSecret"),
+            copyOnlyDetails = mapOf("support" to "api_key_mistral: privateSecret\ncustom_openai_api_key=fixture-private\nsilly_tavern_secret=fixture-private-again"),
         )
         val copied = report.copyText()
         assertTrue(copied.length > 600)
         assertTrue(copied.contains("network"))
         assertFalse(copied.contains("dXNlcjpleGFtcGxl"))
         assertFalse(copied.contains("privateSecret"))
+        assertFalse(copied.contains("fixture-private"))
     }
 
     @Test

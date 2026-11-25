@@ -2534,7 +2534,11 @@ begin_st_file_mutation() {
 
 write_st_file() {
     begin_st_file_mutation write-st-file
-    st_file_action write "${1:-}" "${2:-}" "${3:-}"
+    enter_cancellation_guard
+    ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \
+        st_file_action write "$@" || exit $?
+    CANCELLATION_COMMITTED=1
+    leave_cancellation_guard
     write_progress 100 "파일 저장 완료" "다른 변경 사항과 충돌하지 않는지 확인하고 저장했습니다." success
 }
 
@@ -2582,8 +2586,7 @@ import_st_folder() {
 
 st_file_action() {
     command -v node >/dev/null 2>&1 || { echo "파일 관리에 필요한 Node.js를 찾을 수 없습니다." >&2; return 12; }
-    # Keep the text limit below Linux's per-argument limit after base64 expansion
-    # and below the Termux result transport budget. No text contents enter logs.
+    # Editor writes carry endpoint metadata only; never pass file content in argv.
     ST_PROGRESS_HELPER="$PROGRESS_HELPER" ST_PROGRESS_FILE="$PROGRESS_FILE" ST_PROGRESS_LOG="$LOG_FILE" \
         ST_PROGRESS_HISTORY="$HISTORY_LOG" ST_PROGRESS_OPERATION="$CURRENT_OPERATION" ST_OPERATION_STARTED_EPOCH="$OPERATION_STARTED_EPOCH" \
         ST_PROGRESS_PHASE="SillyTavern에 파일 저장" ST_PROGRESS_DETAIL="실제 기록한 용량을 세며 선택한 파일을 가져옵니다." \
@@ -2594,7 +2597,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 const { TextDecoder } = require('util');
-const [rootArgument, launcherArgument, downloadArgument, homeArgument, sharedArgument, action, encoded = '', value = '', revision = ''] = process.argv.slice(2);
+const [rootArgument, launcherArgument, downloadArgument, homeArgument, sharedArgument, action, encoded = '', value = '', arg2 = '', token = '', length = ''] = process.argv.slice(2);
 const MAX_TEXT_BYTES = 65536;
 const MAX_PREVIEW_BYTES = 24576;
 const fail = (code, message) => { const error = new Error(message); error.fileCode = code; throw error; };
@@ -2610,6 +2613,28 @@ function decode(encodedValue) {
 function utf8(bytes) {
     try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
     catch (_) { fail(41, 'UTF-8 텍스트 파일만 앱에서 편집할 수 있습니다.'); }
+}
+function receiveEdit(port, token, size) {
+    if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535 || !/^[a-f0-9]{64}$/.test(token) ||
+        !/^(?:0|[1-9]\d{0,4})$/.test(size) || Number(size) > MAX_TEXT_BYTES) {
+        fail(64, '파일을 저장하려면 런처에서 파일을 다시 열어 주세요.');
+    }
+    let bytes;
+    try {
+        // No external URL, proxy, redirect, curlrc, response logging, disk staging, or secret in argv.
+        bytes = execFileSync('curl', ['--disable', '--noproxy', '*', '--proto', '=http', '--http1.1', '--fail', '--silent',
+            '--connect-timeout', '2', '--max-time', '12', '--max-filesize', String(MAX_TEXT_BYTES), '--config', '-'], {
+            input: 'url = "http://127.0.0.1:' + port + '/' + token + '"\n',
+            maxBuffer: MAX_TEXT_BYTES, timeout: 13000, stdio: ['pipe', 'pipe', 'ignore']
+        });
+    } catch (_) { fail(45, '편집 내용을 안전하게 받지 못했습니다. 원본 파일은 변경하지 않았습니다. 다시 저장해 주세요.'); }
+    if (bytes.length !== Number(size)) fail(45, '편집 내용의 길이를 확인하지 못해 원본 파일을 변경하지 않았습니다.');
+    return bytes;
+}
+function checkEditCancelled() {
+    if ([process.env.ST_CANCEL_REQUEST_FILE, process.env.ST_CANCEL_REQUEST_ID_FILE].some(p => p && exists(p))) {
+        fail(130, '파일 저장을 취소했습니다. 원본 파일은 변경하지 않았습니다.');
+    }
 }
 function relativePath(encodedValue, allowRoot = false) {
     const relative = utf8(decode(encodedValue));
@@ -2910,11 +2935,13 @@ try {
             console.log(`content_b64=${snapshot.bytes.toString('base64')}\nsha256=${snapshot.sha256}\nsize=${snapshot.bytes.length}`);
         } else if (action === 'write') {
             writable(relative);
-            const bytes = decode(value);
-            if (bytes.length > MAX_TEXT_BYTES) fail(40, '앱 내 텍스트 편집은 64 KiB 이하 파일만 지원합니다.');
-            if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(utf8(bytes))) fail(41, '바이너리 내용은 저장할 수 없습니다.');
+            const revision = value;
+            if (!/^[a-f0-9]{64}$/.test(revision)) fail(64, '올바르지 않은 파일 저장 요청입니다.');
             const snapshot = readText(target);
-            if (!/^[a-f0-9]{64}$/.test(revision) || snapshot.sha256 !== revision) fail(42, '파일이 다른 곳에서 변경되었습니다. 다시 열어 확인해 주세요.');
+            if (snapshot.sha256 !== revision) fail(42, '파일이 다른 곳에서 변경되었습니다. 다시 열어 확인해 주세요.');
+            checkEditCancelled();
+            const bytes = receiveEdit(arg2, token, length);
+            if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(utf8(bytes))) fail(41, '바이너리 내용은 저장할 수 없습니다.');
             const temporary = path.join(path.dirname(target), `.st-launcher-edit-${crypto.randomUUID()}`);
             let fd;
             try {
@@ -2924,6 +2951,7 @@ try {
                 fs.closeSync(fd); fd = undefined;
                 const current = readText(resolve(relative));
                 if (current.sha256 !== revision || current.stat.ino !== snapshot.stat.ino || current.stat.dev !== snapshot.stat.dev) fail(42, '저장 중 원본이 변경되어 덮어쓰지 않았습니다.');
+                checkEditCancelled();
                 fs.renameSync(temporary, target);
             } finally {
                 if (fd !== undefined) fs.closeSync(fd);
@@ -4706,7 +4734,7 @@ case "${1:-doctor}" in
     list-st-trash) st_file_action list-trash "${2:-}" ;;
     read-st-file) read_st_file "${2:-}" ;;
     preview-st-file) preview_st_file "${2:-}" ;;
-    write-st-file) write_st_file "${2:-}" "${3:-}" "${4:-}" ;;
+    write-st-file) write_st_file "${@:2}" ;;
     create-st-file) create_st_file "${2:-}" ;;
     import-st-file) import_st_file "${2:-}" "${3:-}" ;;
     import-st-folder) import_st_folder "${2:-}" "${3:-}" ;;

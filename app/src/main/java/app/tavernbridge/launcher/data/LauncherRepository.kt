@@ -527,16 +527,14 @@ class LauncherRepository(private val context: Context) {
         return FileManagementProtocol.textFile(relativePath, result.stdout)
     }
 
-    suspend fun saveSillyTavernTextFile(file: TavernTextFile, content: String): TermuxCommandResult {
-        require(content.toByteArray(Charsets.UTF_8).size <= TEXT_EDIT_LIMIT) { "앱 안에서는 64 KiB 이하의 텍스트만 수정할 수 있습니다." }
+    suspend fun saveSillyTavernTextFile(file: TavernTextFile, content: String): TermuxCommandResult = withContext(Dispatchers.IO) {
         require(file.revision.matches(Regex("[0-9a-f]{64}"))) { "파일을 다시 열어 주세요." }
-        // The script bootstrap plus 64 KiB content could exceed Linux's per-argument limit.
-        val connected = connectManager("write-st-file")
-        if (!connected.isSuccess) return connected
-        return runExistingManager(
-            "write-st-file ${shellQuote(encodeFileArgument(file.relativePath))} ${shellQuote(encodeFileArgument(content))} ${shellQuote(file.revision)}",
-            30_000,
-        )
+        requireManagerAccess("write-st-file")
+        ensureManagerDeployed() // A first-time deployment must not consume the one-shot transfer's deadline.
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        OneShotSecretInput.forFile(bytes).use { source ->
+            runExistingManager(privateFileWriteCommand(file.relativePath, file.revision, source, bytes.size), 30_000)
+        }
     }
 
     suspend fun createSillyTavernFolder(parent: String, name: String): TermuxCommandResult =

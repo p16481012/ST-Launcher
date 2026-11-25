@@ -5,11 +5,6 @@ import app.tavernbridge.launcher.model.TavernTextFile
 import app.tavernbridge.launcher.model.validTavernEntryName
 import java.util.Base64
 
-internal const val TEXT_EDIT_LIMIT = 65_536
-
-internal fun encodeFileArgument(value: String): String =
-    Base64.getEncoder().encodeToString(value.toByteArray(Charsets.UTF_8))
-
 internal fun fileChildPath(parent: String, name: String): String {
     require(validTavernEntryName(name)) { "파일 이름에는 경로 구분자나 제어 문자를 사용할 수 없습니다." }
     require(!parent.startsWith('/') && parent.split('/').none { it == ".." || it == "." }) {

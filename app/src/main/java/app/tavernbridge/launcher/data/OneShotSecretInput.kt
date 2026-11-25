@@ -13,6 +13,7 @@ import kotlin.concurrent.thread
 /** One short-lived loopback transfer. Never put the payload itself in Termux's logged Intent/stdin. */
 class OneShotSecretInput private constructor(private val payload: ByteArray, lifetimeMillis: Long) : AutoCloseable {
     private val closed = AtomicBoolean(false)
+    private val payloadLock = Any()
     private val finished = CountDownLatch(1)
     private val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(lifetimeMillis)
     private val server = ServerSocket().apply {
@@ -42,8 +43,10 @@ class OneShotSecretInput private constructor(private val payload: ByteArray, lif
                 while (!closed.get() && attempts++ < 16) {
                     val remaining = remainingMillis()
                     if (remaining <= 0) break
-                    server.soTimeout = remaining
-                    val socket = try { server.accept() } catch (_: Exception) { break }
+                    val socket = try {
+                        server.soTimeout = remaining
+                        server.accept()
+                    } catch (_: Exception) { break } // close() may race either call, including setSoTimeout.
                     activeSocket = socket
                     try {
                         socket.use {
@@ -59,10 +62,14 @@ class OneShotSecretInput private constructor(private val payload: ByteArray, lif
                             // Consume the only authorized request before writing anything.
                             server.close()
                             val output = socket.getOutputStream()
-                            output.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${payload.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
-                            output.write(payload)
-                            output.flush()
-                            delivered = !closed.get()
+                            synchronized(payloadLock) {
+                                if (!closed.get()) {
+                                    output.write("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: ${payload.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                                    output.write(payload)
+                                    output.flush()
+                                    delivered = !closed.get()
+                                }
+                            }
                         }
                     } catch (_: Exception) {
                         // Network/parser failures never contain credentials in diagnostics.
@@ -95,7 +102,8 @@ class OneShotSecretInput private constructor(private val payload: ByteArray, lif
         if (closed.compareAndSet(false, true)) {
             runCatching { server.close() }
             runCatching { activeSocket?.close() }
-            payload.fill(0)
+            // Closing the socket first unblocks a stalled writer; never clear its buffer mid-write.
+            synchronized(payloadLock) { payload.fill(0) }
             finished.countDown()
         }
     }
@@ -104,9 +112,14 @@ class OneShotSecretInput private constructor(private val payload: ByteArray, lif
 
     companion object {
         /** Takes ownership of bytes and clears them on success, failure, expiry or explicit close. */
-        fun start(payload: ByteArray, lifetimeMillis: Long = 15_000): OneShotSecretInput {
+        fun start(payload: ByteArray, lifetimeMillis: Long = 15_000): OneShotSecretInput =
+            startBounded(payload, lifetimeMillis, 1..16_384)
+
+        fun forFile(payload: ByteArray): OneShotSecretInput = startBounded(payload, 15_000, 0..TEXT_EDIT_LIMIT)
+
+        private fun startBounded(payload: ByteArray, lifetimeMillis: Long, sizes: IntRange): OneShotSecretInput {
             try {
-                require(payload.size in 1..16_384)
+                require(payload.size in sizes) { "일회성 전송 크기 제한을 초과했습니다." }
                 require(lifetimeMillis in 100..15_000)
                 return OneShotSecretInput(payload, lifetimeMillis)
             } catch (failure: Throwable) {

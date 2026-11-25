@@ -65,6 +65,26 @@ class SecretRedactionTest {
     }
 
     @Test
+    fun redactsProviderAndUserDefinedPrefixesWithoutRemovingAdjacentDiagnosis() {
+        val raw = """{"custom_openai_api_key":"fixture-one", "silly_tavern_secret":"two words", "code":"NODE_RUNTIME_FAILED"}""" +
+            "\nlocal-adapter-service-refresh-token=fixture-three&model=normal"
+        val safe = redactSensitiveText(raw, maxLength = null)
+        listOf("fixture-one", "two words", "fixture-three").forEach { assertFalse(safe.contains(it)) }
+        listOf("custom_openai_api_key", "silly_tavern_secret", "NODE_RUNTIME_FAILED", "model=normal").forEach { assertTrue(safe.contains(it)) }
+        assertEquals(safe, redactSensitiveText(safe, maxLength = null))
+    }
+
+    @Test fun redactsCookieContentsPassphrasesAndStandaloneCredentialShapes() {
+        val lines = listOf("Set-Cookie: session=fixture; token=never-share", "COOKIE: a=first; b=second",
+            "service_passphrase: 'two words'", "Basic Zml4dHVyZTp0ZXN0", "Git: ghp_fakeFixtureOnly",
+            "Git: github_pat_fakeFixtureOnly", "JWT: eyJmaXh0dXJl.eyJ0ZXN0.signature", "Basic configuration")
+        val safe = redactSensitiveText(lines.joinToString("\n"), maxLength = null)
+        assertEquals(listOf("Set-Cookie: [숨김]", "COOKIE: [숨김]", "service_passphrase: [숨김]",
+            "Basic [숨김]", "Git: [숨김]", "Git: [숨김]", "JWT: [숨김]", "Basic configuration").joinToString("\n"), safe)
+        assertEquals(safe, redactSensitiveText(safe, maxLength = null))
+    }
+
+    @Test
     fun redactsJsonAuthorizationAndUrlCredentials() {
         val safe = redactSensitiveText("""{"authorization":"Basic dXNlcjpleGFtcGxl", "url":"https://user:private@example.test/path"}""")
         assertFalse(safe.contains("dXNlcjpleGFtcGxl"))
