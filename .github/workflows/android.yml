@@ -64,6 +64,7 @@ jobs:
           bash -n app/src/main/assets/server-config.sh
           ST_TEST_YAML_ROOT="$RUNNER_TEMP/st-lan-yaml" node scripts/test-server-config.cjs
           node scripts/test-extensions.cjs
+          node scripts/test-share-character.cjs
           node scripts/test-selective-restore.cjs
           bash scripts/test-selective-restore-journal.sh
           node scripts/test-version-state.cjs

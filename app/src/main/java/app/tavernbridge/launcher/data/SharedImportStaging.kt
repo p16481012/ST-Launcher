@@ -185,6 +185,29 @@ internal class SharedImportStaging(private val context: Context) {
         }
     }
 
+    /** Only the private snapshots made by the share screen, never paths from an incoming Intent. */
+    suspend fun stageCard(file: java.io.File): Transfer = withContext(Dispatchers.IO) {
+        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "공유로 가져오기는 Android 10 이상에서 지원해요." }
+        val base = java.io.File(context.cacheDir, "share-import").canonicalFile
+        require(file.canonicalFile.parentFile?.parentFile == base && file.isFile &&
+            file.length() in 1L..(20L*1024*1024)) { "공유한 임시 파일을 확인할 수 없어요." }
+        BackupTransferLimits.checkDownloadStagingSpace(file.length(), StatFs(Environment.getExternalStorageDirectory().path).availableBytes)
+        val resolver = context.contentResolver
+        val name = "SillyTavern-File-${UUID.randomUUID()}.tmp"
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name); put(MediaStore.Downloads.MIME_TYPE,"application/octet-stream")
+            put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS); put(MediaStore.Downloads.IS_PENDING,1)
+        }) ?: error("Download 임시 파일을 만들지 못했어요.")
+        val transfer = Transfer(uri,name)
+        try {
+            check(pending.edit().putString(uri.toString(), "${System.currentTimeMillis()}|$name").commit())
+            resolver.openOutputStream(uri,"w")?.use { out -> file.inputStream().use { it.copyTo(out) } }
+                ?: error("임시 파일에 쓰지 못했어요.")
+            check(resolver.update(uri,ContentValues().apply { put(MediaStore.Downloads.IS_PENDING,0) },null,null)==1)
+            transfer
+        } catch (e: Throwable) { remove(transfer); throw e }
+    }
+
     /** Never clean a live transfer. Called only after doctor confirms the manager is idle. */
     suspend fun cleanAbandoned() = withContext(Dispatchers.IO) {
         val cutoff = System.currentTimeMillis() - 24 * 60 * 60_000L
