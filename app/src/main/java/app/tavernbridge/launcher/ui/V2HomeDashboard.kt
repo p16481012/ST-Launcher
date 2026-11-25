@@ -4,7 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -158,7 +158,7 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(listOfNotNull(env.branch?.value, env.sillyTavernVersion.takeIf(String::isNotBlank)).joinToString(" · ").ifBlank { "설치됨" },
             Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, fontFamily = V2Mono, color = cs.onSurfaceVariant)
-        V2LinkAction("서버 정보 설명", onInfo)
+        IconButton(onClick = onInfo) { Icon(Icons.Outlined.Info, "서버 정보 설명", Modifier.size(20.dp)) }
     }
     Spacer(Modifier.height(20.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -187,7 +187,7 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
     Spacer(Modifier.height(6.dp))
     Text("127.0.0.1:${env.port}", fontFamily = V2Mono, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
     Spacer(Modifier.height(26.dp))
-    Row {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         val primary = actions.primary
         val mainModifier = Modifier.weight(1f).heightIn(min = 52.dp)
         val shape = RoundedCornerShape(14.dp)
@@ -199,8 +199,7 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
             }
             !actions.canPrimary -> Text(if (actions.stop == HomeStop.STOPPING) "서버가 꺼질 때까지 기다려 주세요." else "다른 작업이 끝나면 시작할 수 있어요.",
                 mainModifier, style = MaterialTheme.typography.bodyMedium)
-            primary == HomePrimary.CHAT -> V2NavigationRow("대화 열기", onOpen, mainModifier,
-                description = "선택한 브라우저 앱이 열려요.")
+            primary == HomePrimary.CHAT -> Button(onOpen, mainModifier, shape = shape) { Text("대화 열기") }
             primary == HomePrimary.LOGS -> V2NavigationRow("로그 보기", onLogs, mainModifier)
             primary == HomePrimary.PORT -> V2NavigationRow("포트 바꾸기", onChangePort, mainModifier)
             else -> Button(onStart, mainModifier, shape = shape) { Text("서버 시작") }
@@ -211,23 +210,45 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
             Row { Spacer(Modifier.width(8.dp))
             if (actions.stop == HomeStop.STOPPING) {
                 Text("서버 종료 중", Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium)
-            } else V2OutlineAction(if (actions.stop == HomeStop.CANCEL_START) "시작 취소" else "서버 종료",
-                when (actions.stop) { HomeStop.CANCEL_START -> onCancelStart; HomeStop.BLOCKED -> onBlocked; else -> onStop }) }
+            } else Surface(onClick = when (actions.stop) {
+                HomeStop.CANCEL_START -> onCancelStart; HomeStop.BLOCKED -> onBlocked; else -> onStop
+            }, modifier = Modifier.size(52.dp), shape = RoundedCornerShape(14.dp), color = cs.surface,
+                border = BorderStroke(1.dp, cs.outlineVariant)) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Outlined.Stop, if (actions.stop == HomeStop.CANCEL_START) "시작 취소" else "서버 종료",
+                        tint = if (actions.stop == HomeStop.BLOCKED) cs.onSurfaceVariant else cs.error)
+                }
+            } }
         }
     }
+    if (actions.primary == HomePrimary.CHAT && actions.canPrimary)
+        Text("선택한 브라우저 앱이 열려요.", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
     if (ready == ServerReadiness.UNRESPONSIVE || ready == ServerReadiness.PORT_CONFLICT)
         Text(if (ready == ServerReadiness.PORT_CONFLICT) "다른 앱이 포트 ${env.port}을 쓰고 있어요." else "서버가 응답하지 않아요. 재시작해 보세요.",
             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
     Spacer(Modifier.height(28.dp))
-    if (env.processRunning && (!locked || actions.otherWork)) V2OutlineAction("재시작", if (locked) onBlocked else onRestart, Modifier.fillMaxWidth())
-    Surface(shape = RoundedCornerShape(20.dp), color = cs.surface) {
-        Column {
-            if (!locked) {
-                HomeRow(Icons.Outlined.FileDownload, "백업", "", onBackups)
-                HomeRule()
+    Surface(shape = RoundedCornerShape(20.dp), color = cs.surface, border = BorderStroke(1.dp, cs.outlineVariant)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (env.processRunning && (!locked || actions.otherWork)) {
+                HomeAction(Modifier.weight(1f), Icons.Outlined.RestartAlt, "재시작", if (locked) onBlocked else onRestart)
+                VerticalDivider(Modifier.height(28.dp), color = cs.outlineVariant)
             }
-            HomeRow(Icons.Outlined.Subject, "로그", "", onLogs)
+            if (!locked) {
+                HomeAction(Modifier.weight(1f), Icons.Outlined.FileDownload, "백업", onBackups)
+                VerticalDivider(Modifier.height(28.dp), color = cs.outlineVariant)
+            }
+            HomeAction(Modifier.weight(1f), Icons.Outlined.Subject, "로그", onLogs)
         }
+    }
+}
+
+@Composable
+private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(modifier.v2RowTap("home-action:$label", role = Role.Button, click = onClick)
+        .heightIn(min = 72.dp).padding(4.dp), verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, Modifier.size(21.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -244,7 +265,7 @@ private fun HomeRow(icon: ImageVector?, label: String, value: String, onClick: (
             if (LocalDensity.current.fontScale >= 1.3f && value.isNotBlank()) Text(value, style = MaterialTheme.typography.bodyMedium) }
         if (value.isNotBlank() && LocalDensity.current.fontScale < 1.3f)
             Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-        Icon(Icons.Outlined.ChevronRight,
+        Icon(if (label == "외부 접속") Icons.Outlined.Info else Icons.Outlined.ChevronRight,
             if (label == "외부 접속") "외부 접속 설명" else null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
     }
 }

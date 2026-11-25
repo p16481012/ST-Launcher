@@ -278,7 +278,9 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
             listOf(DiagnosticPanel.SERVER_LOG to "현재 실행", DiagnosticPanel.PREVIOUS_SERVER_LOG to "이전 실행").forEach { (choice, label) ->
                 FilterChip(panel == choice, { vm.openDiagnostics(choice) }, { Text(label) }, Modifier.weight(1f).padding(end = 4.dp))
             }
-            V2OutlineAction("로그 옵션", { menu = true })
+            IconButton(onClick = { menu = true }) {
+                Icon(Icons.Outlined.MoreVert, "로그 옵션")
+            }
         }
         if (menu) V2BottomSheet(onClose = { menu = false }) {
             Text("로그 옵션", style = MaterialTheme.typography.titleLarge)

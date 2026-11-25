@@ -219,8 +219,12 @@ internal fun V2BackupScreen(
                         else if (state.environment.recoveryPending) SettingsCaption("점검·복구를 마친 뒤 백업 ZIP을 가져올 수 있어요.")
                         else if (state.environment.processRunning) Text(if (canImport) "가져오기를 누르면 서버를 끈 뒤 백업 ZIP을 선택해요." else "백업을 가져오려면 서버를 먼저 종료해 주세요.",
                             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (dual) V2LinkAction("전체 관리", { pane = BackupPane.ALL })
-                        if (connected && !busy && !state.backupListLoading) V2OutlineAction("백업 목록 새로고침", onRefresh)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                            if (dual) V2LinkAction("전체 관리", { pane = BackupPane.ALL })
+                            if (connected && !busy && !state.backupListLoading) IconButton(onClick = onRefresh) {
+                                Icon(Icons.Outlined.Refresh, "백업 목록 새로고침")
+                            }
+                        }
                     }
                     item(key = "backup-storage-actions") {
                         Spacer(Modifier.height(16.dp))
@@ -379,6 +383,7 @@ private fun BackupDetail(
     val openRestore = { enterStoppedAction(running, stop, "선택한 백업 복원 확인") { onRestore(archive) } }
     val selectParts = { enterStoppedAction(running, stop, "복원할 항목 선택") { onSelective(archive) } }
     BoxWithConstraints(Modifier.fillMaxSize()) {
+        val singleRow = maxWidth >= 640.dp && LocalDensity.current.fontScale <= 1.3f
         val stack = maxWidth < 300.dp || LocalDensity.current.fontScale >= 1.5f
         Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
@@ -412,24 +417,29 @@ private fun BackupDetail(
         }
         V2BottomActions {
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-            if (canSelect) {
-                if (stack) {
-                    if (canRestore) V2SheetPrimaryButton("이 백업으로 복원", onClick = openRestore)
-                    V2OutlineAction("일부만 복원", selectParts, Modifier.fillMaxWidth())
-                } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    if (canRestore) Button(onClick = openRestore, shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
-                    V2OutlineAction("일부만 복원", selectParts)
+            val fileActions: @Composable () -> Unit = {
+                IconButton(onClick = { onTransfer(archive, BackupTransferAction.EXPORT) }) {
+                    Icon(Icons.Outlined.SaveAlt, "다른 위치에 저장", Modifier.size(20.dp))
                 }
-            }
-            if (!busy) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                V2OutlineAction("다른 위치에 저장", { onTransfer(archive, BackupTransferAction.EXPORT) })
                 V2OutlineAction("공유", { onTransfer(archive, BackupTransferAction.SHARE) })
                 if (BackupDeleteSelection.identifiable(archive) && annotation.trusted && !annotation.pinned)
                     V2DangerAction("삭제", { onDelete(listOf(archive)) })
-            } else SettingsCaption("진행 중인 작업이 끝난 뒤 백업 파일을 관리할 수 있어요.")
+            }
+            if (stack && canSelect) {
+                if (canRestore) V2SheetPrimaryButton("이 백업으로 복원", onClick = openRestore)
+                V2OutlineAction("일부만 복원", selectParts, Modifier.fillMaxWidth())
+            } else if (canSelect) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                if (canRestore) Button(onClick = openRestore, shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("이 백업으로 복원") }
+                V2OutlineAction("일부만 복원", selectParts)
+                if (singleRow) fileActions()
+            }
+            if (busy) SettingsCaption("진행 중인 작업이 끝난 뒤 백업 파일을 관리할 수 있어요.")
+            else if (!singleRow || !canSelect) FlowRow(Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                fileActions()
+            }
         }
         }
         }

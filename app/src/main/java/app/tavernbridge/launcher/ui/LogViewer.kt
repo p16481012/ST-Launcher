@@ -98,7 +98,7 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                 }
                 androidx.compose.animation.AnimatedVisibility(showJump, Modifier.align(Alignment.BottomEnd).padding(10.dp),
                     enter = fadeIn(tween(if (reduced) 0 else 150)), exit = fadeOut(tween(if (reduced) 0 else 150))) {
-                    Button({ scope.launch {
+                    IconButton({ scope.launch {
                         if (reduced) scroll.scrollToItem(lines.size) else scroll.scroll {
                             val layout = LazyLayoutScrollScope(scroll, this)
                             val target = lines.size.coerceAtMost((layout.itemCount - 1).coerceAtLeast(0))
@@ -109,8 +109,10 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                             layout.snapToItem(target, 0)
                         }
                         following = true
-                    } }, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "맨 아래로" }) {
-                        Icon(Icons.Outlined.ArrowDownward, null, Modifier.size(16.dp)); Text("맨 아래로")
+                    } }, Modifier.size(48.dp).semantics { contentDescription = "맨 아래로" }) {
+                        Surface(Modifier.size(40.dp), shape = CircleShape, color = cs.onSurface, contentColor = cs.surface) {
+                            Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ArrowDownward, null) }
+                        }
                     }
                 }
             }

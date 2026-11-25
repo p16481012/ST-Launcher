@@ -147,6 +147,32 @@ class V2VisualTest {
         capture("home")
     }
 
+    @Test fun homeQuickActionsShareOneRowAndKeepOriginalHandlersWhenLocked() {
+        val clicks = mutableListOf<String>()
+        var shown by mutableStateOf(fixture)
+        compose.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, prefs) {
+            V2HomeDashboard(shown, onOpen = {}, onStart = {}, onStop = { clicks += "stop" },
+                onRestart = { clicks += "restart" }, onBackups = { clicks += "backup" },
+                onUpdate = {}, onLogs = { clicks += "logs" }, onHistory = {}, onReadHistory = {},
+                onRefresh = {}, onRetry = {}, onSnooze = {}, onOpenArchive = {}, onBlocked = { clicks += "blocked" })
+        } }
+        val actions = listOf("재시작", "백업", "로그").map { compose.onNodeWithText(it) }
+        val bounds = actions.map { it.fetchSemanticsNode().boundsInRoot }
+        assertTrue(bounds.zipWithNext().all { (left, right) -> left.top == right.top && left.right <= right.left })
+        actions.forEach { it.assertHasClickAction().performClick() }
+        compose.onNodeWithContentDescription("서버 종료").performClick()
+        compose.onNodeWithText("선택한 브라우저 앱이 열려요.").assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(listOf("restart", "backup", "logs", "stop"), clicks)
+            shown = fixture.copy(environment = fixture.environment.copy(operationActive = true))
+        }
+        compose.onNodeWithText("백업").assertDoesNotExist()
+        compose.onNodeWithText("재시작").performClick()
+        compose.onNodeWithContentDescription("서버 종료").performClick()
+        compose.onNodeWithText("로그").performClick()
+        compose.runOnIdle { assertEquals(listOf("blocked", "blocked", "logs"), clicks.takeLast(3)) }
+    }
+
     @Test fun setupDoesNotProbeUntilExplicitlyRequested() {
         var probes = 0
         var copied = 0

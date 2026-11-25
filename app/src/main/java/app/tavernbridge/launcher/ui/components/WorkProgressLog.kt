@@ -20,7 +20,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Icon
-import app.tavernbridge.launcher.ui.V2OutlineAction
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -71,8 +71,10 @@ internal fun WorkProgressLog(logText: String, initiallyExpanded: Boolean = true,
                 Text(if (expanded) "기록 접기" else "기록 보기", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             actions()
-            if (logText.isNotBlank()) V2OutlineAction("복사", { clipboard.setText(AnnotatedString(logText)) },
-                Modifier.semantics { contentDescription = "전체 로그 복사" })
+            if (logText.isNotBlank()) IconButton(
+                onClick = { clipboard.setText(AnnotatedString(logText)) },
+                modifier = Modifier.size(48.dp),
+            ) { Icon(Icons.Outlined.ContentCopy, contentDescription = "전체 로그 복사") }
         }
         if (expanded) {
             Surface(

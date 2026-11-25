@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -68,7 +69,7 @@ fun ExtensionManagerDialog(
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("설치된 확장", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                            V2LinkAction("확장 프로그램 설명", { info = true })
+                            IconButton(onClick = { info = true }) { Icon(Icons.Outlined.Info, "확장 프로그램 설명") }
                         }
                         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                         if (inventory?.recoveryStatus != null && inventory.recoveryStatus != "none") Text(inventory.recoveryMessage, color = MaterialTheme.colorScheme.error)

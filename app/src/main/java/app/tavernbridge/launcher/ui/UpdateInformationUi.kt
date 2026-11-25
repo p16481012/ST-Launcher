@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -68,7 +69,7 @@ internal fun UpdateInformationCard(state: LauncherUiState, onCheck: () -> Unit) 
         SettingsCaption("이 앱 안에서 런처와 Node.js 버전 정보를 조회해요. 자동으로 설치하지 않아요.")
         SettingsGroup {
             V2NavigationRow("GitHub 릴리스 열기", { linkFailed = runCatching { uriHandler.openUri(LauncherReleaseClient.RELEASE_URL) }.isFailure },
-                description = "브라우저 앱이 열려요")
+                description = "브라우저 앱이 열려요", leadingIcon = { Icon(Icons.Outlined.OpenInNew, null, Modifier.size(18.dp)) })
         }
         if (linkFailed) Text("릴리스 페이지를 열 수 없어요. 브라우저 앱을 확인해 주세요.", color = MaterialTheme.colorScheme.error)
     }

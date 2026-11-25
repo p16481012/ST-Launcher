@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,6 +40,6 @@ internal fun FileLogSearchField(query: String, change: (String) -> Unit, hint: S
         shape = RoundedCornerShape(12.dp),
         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = cs.onSurface, cursorColor = cs.secondary),
         trailingIcon = if (query.isEmpty()) emptyTrailing else ({
-            V2OutlineAction("검색어 지우기", { change("") }, Modifier.padding(end = 4.dp))
+            IconButton(onClick = { change("") }) { Icon(Icons.Outlined.Close, "검색어 지우기") }
         }))
 }

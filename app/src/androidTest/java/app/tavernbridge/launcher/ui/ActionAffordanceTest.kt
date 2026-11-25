@@ -19,6 +19,20 @@ import org.junit.Test
 
 class ActionAffordanceTest {
     @get:Rule val ui = createComposeRule()
+    @Test fun logCopyStaysAnAccessibleCompactIconBesideTheTextToggle() {
+        var log by mutableStateOf("테스트 로그")
+        ui.setContent {
+            app.tavernbridge.launcher.ui.components.WorkProgressLog(log, initiallyExpanded = false)
+        }
+        ui.onNodeWithContentDescription("전체 로그 복사").assertHasClickAction()
+            .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
+        ui.onNodeWithText("복사").assertDoesNotExist()
+        ui.onNodeWithText("기록 보기").performClick()
+        ui.onNodeWithText("테스트 로그").assertIsDisplayed()
+        ui.runOnIdle { log = "" }
+        ui.onNodeWithContentDescription("전체 로그 복사").assertDoesNotExist()
+    }
+
     @Test fun blockedShortcutShowsOnlyCloseAndCannotDispatchStart() {
         var closed = 0
         var started = 0

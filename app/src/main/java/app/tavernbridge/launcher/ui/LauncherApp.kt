@@ -1125,7 +1125,7 @@ internal fun BackupStorageSetupCard(
                 checkOnReturn = true
                 onOpenTermux()
             }, description = "Termux 앱이 열려요.")
-            V2OutlineAction("연결 확인", onRefresh, Modifier.fillMaxWidth())
+            V2OutlineAction("연결 확인", onRefresh, Modifier.fillMaxWidth(), leadingIcon = { Icon(Icons.Outlined.Refresh, null) })
         }
     }
 }

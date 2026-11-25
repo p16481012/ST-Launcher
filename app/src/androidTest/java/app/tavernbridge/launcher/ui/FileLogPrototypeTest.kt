@@ -31,6 +31,32 @@ class FileLogPrototypeTest {
         assertEquals(null, links.returning)
     }
     private fun entry(name: String) = TavernFileEntry(name, name, false, 100, "", false, "a".repeat(64))
+    @Test fun searchClearIconIsOnlyShownWithTextAndClearsTheField() {
+        val query = mutableStateOf("")
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) {
+            FileLogSearchField(query.value, { query.value = it }, "이 폴더에서 찾기")
+        } }
+        ui.onNodeWithContentDescription("검색어 지우기").assertDoesNotExist()
+        ui.onNode(hasSetTextAction()).performTextInput("notes")
+        ui.onNodeWithContentDescription("검색어 지우기").assertHasClickAction().performClick()
+        ui.onNodeWithContentDescription("검색어 지우기").assertDoesNotExist()
+        ui.runOnIdle { assertEquals("", query.value) }
+    }
+
+    @Test fun folderOverflowOpensActionsWithoutNavigatingIntoIt() {
+        val visits = mutableListOf<String>()
+        val state = LauncherUiState(fileBrowserOpen = true, isWorking = false,
+            environment = EnvironmentStatus(managerConnected = true),
+            fileBrowserEntries = listOf(entry("data").copy(isDirectory = true)))
+        ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT) {
+            TavernFileManagerDialog(state, { visits += it }, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {},
+                {}, {}, {}, {}, {}, null, {}, embedded = true)
+        } }
+        ui.onNodeWithContentDescription("data 작업").performClick()
+        ui.onNodeWithText("이름 변경").assertIsDisplayed()
+        ui.runOnIdle { assertEquals(emptyList<String>(), visits) }
+    }
+
     @Test fun createConflictNamesTheExistingTypeAndOffersANewNameBeforeSubmitting() {
         val created = mutableListOf<String>()
         val state = LauncherUiState(fileBrowserOpen = true, isWorking = false, environment = EnvironmentStatus(managerConnected = true),
@@ -82,7 +108,8 @@ class FileLogPrototypeTest {
             }
         } }
         ui.onNodeWithText("가져오기").assertHasClickAction().assertIsDisplayed()
-        ui.onNodeWithText("작업").assertHasClickAction().assertIsDisplayed()
+        ui.onNodeWithContentDescription("data 작업").assertHasClickAction().assertIsDisplayed()
+        ui.onNodeWithContentDescription("config.yaml 작업").assertHasClickAction().assertIsDisplayed()
         ui.captureManagementScreen("files-browser", "새로 만들기")
         ui.mainClock.autoAdvance = false
         ui.onNodeWithText("data").performClick()

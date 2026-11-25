@@ -130,7 +130,9 @@ internal fun SafetyInventoryScreen(
             if (!locked && !busy && !state.loading && state.items.isNotEmpty()) {
                 if (selecting) V2TopBarAction(if (selection.size == state.items.size) "선택 해제" else "모두 선택", {
                     selection = if (selection.size == state.items.size) emptyMap() else indexed.mapValues { it.value.revision }
-                }) else V2TopBarAction("항목 선택", { selecting = true })
+                }) else IconButton(onClick = { selecting = true }) {
+                    ReviewGlyph(R.drawable.rv_select, description = "항목 선택")
+                }
             }
             Spacer(Modifier.width(10.dp))
         }
@@ -199,7 +201,7 @@ internal fun SafetyInventoryScreen(
                                     if (row.unconfirmed) Text("확인 필요", color = colors.onAccentWash, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                 }
                             }
-                            if (!selecting && !locked && !busy && !state.loading) ReviewGlyph(R.drawable.rv_chevron, 18.dp, colors.ink2)
+                            if (!selecting && !locked && !busy && !state.loading) ReviewGlyph(R.drawable.rv_more, 18.dp, colors.ink2)
                         }
                         if (index < rows.lastIndex) HorizontalDivider(Modifier.padding(start = if (selecting) 86.dp else 52.dp, end = 20.dp), color = colors.hairline)
                     }
@@ -270,7 +272,9 @@ internal fun SafetyInventoryScreen(
 }
 
 @Composable private fun SafetySheetAction(label: String, icon: Int, danger: Boolean = false, onClick: () -> Unit) {
-    if (danger) V2DangerAction(label, onClick, Modifier.fillMaxWidth())
+    if (danger) V2DangerAction(label, onClick, Modifier.fillMaxWidth()) {
+        ReviewGlyph(icon, 18.dp, LocalContentColor.current)
+    }
     else OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
         ReviewGlyph(icon, 18.dp)
         Spacer(Modifier.width(8.dp))

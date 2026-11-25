@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -33,7 +34,6 @@ import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.contentDescription
 import app.tavernbridge.launcher.ui.theme.LocalV2ReducedMotion
 import kotlinx.coroutines.delay
 import androidx.compose.ui.text.font.FontWeight
@@ -61,8 +61,10 @@ internal fun ExistingInstallationImportCard(
             Text("내부 저장소 또는 Termux에 있는 SillyTavern 설치 폴더를 가져옵니다. 프로그램을 다시 내려받지 않고, 실행 패키지만 이 환경에 맞게 구성합니다.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (enabled) {
-                V2NavigationRow("내부 저장소 폴더 선택", onPickFolder, description = "Android 파일 앱이 열려요.")
-                V2NavigationRow("Termux 폴더 경로 입력", { pathPrompt = true })
+                V2NavigationRow("내부 저장소 폴더 선택", onPickFolder, description = "Android 파일 앱이 열려요.",
+                    leadingIcon = { Icon(Icons.Outlined.FolderOpen, null) })
+                V2NavigationRow("Termux 폴더 경로 입력", { pathPrompt = true },
+                    leadingIcon = { Icon(Icons.Outlined.Terminal, null) })
             }
             Text("서버를 종료한 뒤 진행하세요. 검사 후 원본 유지 또는 이동을 선택합니다.", style = MaterialTheme.typography.bodySmall)
         }
@@ -282,7 +284,8 @@ internal fun TavernFileManagerDialog(
                             if (selectedPaths.isEmpty()) selectionMode = false
                         })
                     } else if (!state.fileBrowserMutating) {
-                        V2TopBarAction("휴지통", { trashOpen = true })
+                        V2TopBarAction("휴지통", { trashOpen = true },
+                            leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(18.dp)) })
                         Box {
                             IconButton(onClick = { moreMenu = true }) { Icon(Icons.Outlined.MoreVert, "파일 더보기") }
                             DropdownMenu(moreMenu, { moreMenu = false }) {
@@ -323,7 +326,9 @@ internal fun TavernFileManagerDialog(
                 if (canEnter) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Box(Modifier.weight(1f)) {
-                        V2OutlineAction("새로 만들기", { openAction("파일·폴더 만들기") { actionMenu = FileActionMenu.CREATE } }, Modifier.fillMaxWidth())
+                        FileToolbarAction("새로 만들기", Icons.Outlined.Add, Modifier.fillMaxWidth()) {
+                            openAction("파일·폴더 만들기") { actionMenu = FileActionMenu.CREATE }
+                        }
                         DropdownMenu(expanded = actionMenu == FileActionMenu.CREATE && canModify,
                             onDismissRequest = { actionMenu = null }) {
                             DropdownMenuItem(text = { Text("새 파일") },
@@ -335,7 +340,9 @@ internal fun TavernFileManagerDialog(
                         }
                     }
                     Box(Modifier.weight(1f)) {
-                        V2OutlineAction("가져오기", { openAction("파일·폴더 가져오기") { actionMenu = FileActionMenu.IMPORT } }, Modifier.fillMaxWidth())
+                        FileToolbarAction("가져오기", Icons.Outlined.FileDownload, Modifier.fillMaxWidth()) {
+                            openAction("파일·폴더 가져오기") { actionMenu = FileActionMenu.IMPORT }
+                        }
                         DropdownMenu(expanded = actionMenu == FileActionMenu.IMPORT && canModify,
                             onDismissRequest = { actionMenu = null }) {
                                 DropdownMenuItem(text = { Column { Text("파일 가져오기"); Text("Android 파일 앱이 열려요.", style = MaterialTheme.typography.bodySmall) } },
@@ -346,8 +353,11 @@ internal fun TavernFileManagerDialog(
                                 onClick = { actionMenu = null; onImportFolder() })
                         }
                     }
-                    if (visibleEntries.any(::canSelectTavernFileForTrash)) V2OutlineAction("선택",
-                        { openAction("파일 선택") { selectionMode = true; selected = null; onClosePreview() } }, Modifier.weight(1f))
+                    if (visibleEntries.any(::canSelectTavernFileForTrash)) {
+                        FileToolbarAction("선택", Icons.Outlined.Checklist, Modifier.weight(1f)) {
+                            openAction("파일 선택") { selectionMode = true; selected = null; onClosePreview() }
+                        }
+                    }
                 }
                 }
                 if (state.environment.processRunning || state.environment.operationActive) {
@@ -416,8 +426,11 @@ internal fun TavernFileManagerDialog(
                                     if (!selectionMode && !state.fileBrowserLoading && !state.fileBrowserMutating)
                                         Icon(Icons.Outlined.ChevronRight, null, Modifier.size(20.dp))
                                 }
-                                if (entry.isDirectory && !selectionMode && !state.fileBrowserLoading && !state.fileBrowserMutating)
-                                    V2OutlineAction("작업", { selectEntry(entry) }, Modifier.semantics { contentDescription = "${entry.name} 작업" })
+                                if (!selectionMode && !state.fileBrowserLoading && !state.fileBrowserMutating) {
+                                    IconButton(onClick = { selectEntry(entry) }) {
+                                        Icon(Icons.Outlined.MoreVert, "${entry.name} 작업")
+                                    }
+                                }
                                 }
                                 }
                             }
@@ -530,6 +543,17 @@ internal fun TavernFileManagerDialog(
 }
 
 private enum class FileActionMenu { CREATE, IMPORT }
+
+@Composable
+private fun FileToolbarAction(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick, modifier = modifier.heightIn(min = 64.dp),
+        shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, null)
+            Text(label, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -93,7 +93,7 @@ class ReviewSafetyScreenTest {
     }
     @Test fun selectedBytesExcludeNothingSilentlyAndChangedArchiveIsNeverDeleted() {
         show()
-        ui.onNodeWithText("항목 선택").performClick()
+        ui.onNodeWithContentDescription("항목 선택").performClick()
         ui.onAllNodesWithText("업데이트 전 보호 사본")[0].performClick()
         ui.onAllNodesWithText("업데이트 전 보호 사본")[1].performClick()
         val del = "영구 삭제 (2) · 5.4 GB"
@@ -103,7 +103,7 @@ class ReviewSafetyScreenTest {
         ui.runOnIdle { model.value = model.value.copy(items = listOf(a.copy(revision = "new"), b, cfg, file, folder)) }
         ui.onNodeWithText("영구 삭제할까요?").assertDoesNotExist()
         ui.runOnIdle { assertEquals(listOf("notice"), events) }
-        ui.onNodeWithText("항목 선택").performClick()
+        ui.onNodeWithContentDescription("항목 선택").performClick()
         ui.onNodeWithText("모두 선택").performClick()
         ui.onNodeWithText("영구 삭제 (5) · 전체 용량 미확인").performClick()
         ui.onNodeWithText("영구 삭제").performClick()
@@ -113,7 +113,7 @@ class ReviewSafetyScreenTest {
         model.value = model.value.copy(mutationBlocked = true)
         show()
         ui.captureManagementScreen("review-safety-locked", "복구가 끝나지 않은 자료가 있어요")
-        ui.onNodeWithText("항목 선택").assertDoesNotExist()
+        ui.onNodeWithContentDescription("항목 선택").assertDoesNotExist()
         ui.onAllNodesWithText("업데이트 전 보호 사본").onFirst().assertHasNoClickAction()
         ui.onNodeWithText("영구 삭제").assertDoesNotExist()
         ui.onNodeWithText("점검·복구").performClick()
