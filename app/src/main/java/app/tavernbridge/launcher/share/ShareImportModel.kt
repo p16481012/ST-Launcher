@@ -52,6 +52,13 @@ private fun sharedUris(intent: Intent): List<Uri> {
     }
     require(uris.isNotEmpty() && (intent.action != Intent.ACTION_SEND || uris.size == 1))
     require(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0) { "파일 읽기 권한이 없어요. 원래 앱에서 다시 공유해 주세요." }
+    // Android migrates standard EXTRA_STREAM shares to ClipData when they leave the sending process.
+    // A crafted, different EXTRA_STREAM must not borrow old SAF grants held by the launcher.
+    val grants = intent.clipData
+    require(grants != null && grants.itemCount in 1..MAX_SHARED_CARDS &&
+        uris.all { uri -> uri.toString().length <= 8192 && (0 until grants.itemCount).any { grants.getItemAt(it).uri == uri } }) {
+        "공유한 파일과 읽기 권한이 일치하지 않아요. 원래 앱에서 다시 공유해 주세요."
+    }
     return uris.distinct()
 }
 
