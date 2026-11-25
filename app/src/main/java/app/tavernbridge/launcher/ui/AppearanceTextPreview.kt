@@ -14,7 +14,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.R
 
-private const val DEFAULT_SAMPLE = "비 오는 오후, 창가에 앉아 어제 나눈 대화를 읽었어요."
+internal const val DEFAULT_SAMPLE = "깡통 커뮤니티에서 배포된 실리태번 런처 입니다."
+internal const val SAMPLE_HINT = "사용 중 오류, 기능에 대한 질문이나 건의가 있을 시 제작자에게 알려주세요."
 private fun previewLength(value: String) = value.codePointCount(0, value.length)
 private fun limitPreview(value: String): String =
     if (previewLength(value) <= 80) value else value.substring(0, value.offsetByCodePoints(0, 80))
@@ -49,7 +50,7 @@ internal fun AppearanceTextPreview() {
         Text("자주 보는 대화 한 줄을 넣으면 글자 크기를 고르기 쉬워요. 이 기기에만 저장돼요.")
         Text("문장", style = MaterialTheme.typography.labelMedium)
         OutlinedTextField(draft, { draft = limitPreview(it.replace('\n', ' ')) }, Modifier.fillMaxWidth().heightIn(min = 96.dp).semantics { contentDescription = "미리보기 문장 입력" },
-            placeholder = { Text("오늘도 늦게까지 이야기 나눠 줘서 고마워.") },
+            placeholder = { Text(SAMPLE_HINT) },
             shape = RoundedCornerShape(12.dp), maxLines = 3)
         SettingsCaption("${previewLength(draft)}/80 · 비우면 기본 문장을 써요")
     }
