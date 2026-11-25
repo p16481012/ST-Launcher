@@ -143,6 +143,18 @@ manager_error_code() {
         import-backup:22) echo "IMPORT_ZIP_SYMLINK_REJECTED" ;;
         import-backup:23) echo "IMPORT_FORMAT_UNSUPPORTED" ;;
         import-backup:29) echo "IMPORT_NO_SPACE" ;;
+        import-preview:20|import-merge:20) echo "IMPORT_ZIP_DAMAGED" ;;
+        import-preview:21|import-merge:21) echo "IMPORT_ZIP_UNSAFE_PATH" ;;
+        import-preview:22|import-merge:22) echo "IMPORT_ZIP_SYMLINK_REJECTED" ;;
+        import-preview:29|import-merge:29) echo "IMPORT_NO_SPACE" ;;
+        import-*:72) echo "IMPORT_ARCHIVE_CHANGED" ;;
+        import-*:73) echo "IMPORT_DESTINATION_CHANGED" ;;
+        import-*:150) echo "IMPORT_MERGE_UNSUPPORTED" ;;
+        import-*:151) echo "IMPORT_MERGE_PROFILE_MISSING" ;;
+        import-*:152) echo "IMPORT_MERGE_ROLLED_BACK" ;;
+        import-*:153) echo "IMPORT_MERGE_ROLLBACK_INCOMPLETE" ;;
+        library-*:140|library-*:144) echo "LIBRARY_READ_FAILED" ;;
+        library-*:141|library-*:145) echo "LIBRARY_ITEM_CHANGED" ;;
         inspect-install:50|import-install:50) echo "INSTALL_IMPORT_INVALID_PATH" ;;
         inspect-install:51|import-install:51) echo "INSTALL_IMPORT_OVERLAP" ;;
         inspect-install:52|import-install:52) echo "INSTALL_IMPORT_INVALID_INSTALLATION" ;;
@@ -283,7 +295,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        import-character) return 0 ;;
+        import-character|library-trash|library-undo|library-import|import-preview|import-merge) return 0 ;;
         chat-repair|chat-undo|chat-scan|install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
             return 0
             ;;
@@ -924,14 +936,14 @@ begin_operation() {
     fi
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
-    if [[ "$CURRENT_OPERATION" == server-config-write || "$CURRENT_OPERATION" == import-character || "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
+    if [[ "$CURRENT_OPERATION" == library-* || "$CURRENT_OPERATION" == import-preview || "$CURRENT_OPERATION" == import-merge || "$CURRENT_OPERATION" == server-config-write || "$CURRENT_OPERATION" == import-character || "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
         # A targeted card/chat/settings action cannot authorize replaying an unrelated installation journal.
         inspect_restore_recovery
         if (( ${#RESTORE_PENDING_WORKS[@]} )); then
             RESTORE_RECOVERY_GUARD_FAILED=1
             if [[ "$CURRENT_OPERATION" == server-config-write ]]; then echo "error_code=RESTORE_ROLLBACK_REQUIRED" >&2
             elif [[ "$CURRENT_OPERATION" == import-character ]]; then echo "점검·복구를 먼저 마친 뒤 다시 공유해 주세요." >&2
-            else echo "이전 작업의 점검·복구를 마친 뒤 채팅을 다시 검사해 주세요." >&2; fi
+            else echo "이전 작업의 점검·복구를 마친 뒤 다시 시도해 주세요." >&2; fi
             exit 25
         fi
     elif [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose && "$CURRENT_OPERATION" != inspect-install && "$CURRENT_OPERATION" != safety-* &&
@@ -2226,6 +2238,7 @@ import_backup() {
         exit 10
     fi
     begin_operation "import-backup"
+    if [[ -n "${2:-}" ]]; then pc_merge_check_archive "$file_name" "$2" || return $?; fi
     CURRENT_IMPORT_ARCHIVE="$archive"
     ensure_import_runtime
     ensure_archive_tools
@@ -3833,6 +3846,7 @@ inspect_restore_recovery() {
         RESTORE_PENDING_WORKS+=("$work")
     done
     inspect_git_transaction_recovery
+    pc_merge_inspect_pending
     if (( ${#RESTORE_PENDING_WORKS[@]} )); then
         RESTORE_PENDING_DETAIL="중단된 작업의 복구 기록이 있습니다. 다음 변경 작업 전에 이전 설치를 복구합니다. 보호 사본: ${RESTORE_PENDING_WORKS[*]}"
         if (( RESTORE_PENDING_BLOCKED || ${#RESTORE_PENDING_WORKS[@]} > 1 )); then
@@ -3849,6 +3863,10 @@ recover_pending_restore() {
     if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
         echo "중단된 복원을 복구하려면 먼저 서버를 종료해 주세요. 보호 사본: ${RESTORE_PENDING_WORKS[0]}" >&2
         return 25
+    fi
+    if [[ "${RESTORE_PENDING_WORKS[0]}" == "$BACKUP_DIR/pc-merge-pending" ]]; then
+        pc_merge_rollback_pending
+        return $?
     fi
     if [[ -f "${RESTORE_PENDING_WORKS[0]}/git-recovery.env" ]]; then
         GIT_TRANSACTION_DIR="${RESTORE_PENDING_WORKS[0]}"
@@ -4816,6 +4834,7 @@ chat_operation() {
 # Keep transaction implementation separate without changing the restore format.
 source "$(dirname "$MANAGER_SCRIPT_PATH")/transaction-recovery.sh"
 source "$(dirname "$MANAGER_SCRIPT_PATH")/selective-restore.sh"
+source "$(dirname "$MANAGER_SCRIPT_PATH")/pc-merge.sh"
 source "$(dirname "$MANAGER_SCRIPT_PATH")/extension-manager.sh"
 source "$(dirname "$MANAGER_SCRIPT_PATH")/version-manager.sh"
 
@@ -4846,7 +4865,17 @@ case "${1:-doctor}" in
     backup-auto) backup_selected "${2:-}" "${3:-0}" "${4:-}" auto ;;
     auto-backup-status) automatic_backup_status "${2:-}" ;;
     list-backups) list_backups "${2:-}" ;;
-    import-backup) import_backup "${2:-}" ;;
+    import-backup) import_backup "${2:-}" "${3:-}" ;;
+    import-preview|import-merge) pc_merge_command "$@" ;;
+    library-list|library-duplicates|library-usage|library-history)
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-data.sh" "$1" "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "${@:2}" ;;
+    library-trash|library-undo|library-import)
+        if [[ "$1" == library-import ]]; then begin_operation "$1"; else begin_st_file_mutation "$1"; fi
+        write_progress 0 "자료 관리" "선택한 사용자와 파일을 확인하고 있어요."
+        ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \
+            bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-data.sh" "$1" "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "${@:2}" || exit $?
+        CANCELLATION_COMMITTED=1
+        write_progress 100 "자료 관리 완료" "변경 결과를 확인했어요." success ;;
     inspect-install) inspect_install "${2:-}" ;;
     import-install) import_install "${2:-}" "${3:-keep}" "${4:-empty}" ;;
     list-user-folders) list_user_folders ;;

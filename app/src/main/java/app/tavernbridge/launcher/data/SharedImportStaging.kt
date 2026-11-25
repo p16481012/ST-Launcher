@@ -56,7 +56,14 @@ internal class SharedImportStaging(private val context: Context) {
         }
     }
 
-    suspend fun copy(source: Uri, backup: Boolean, onProgress: (CopyProgress) -> Unit = {}): Transfer = withContext(Dispatchers.IO) {
+    suspend fun copy(source: Uri, backup: Boolean, onProgress: (CopyProgress) -> Unit = {}): Transfer =
+        copyLimited(source, backup, BackupTransferLimits.MAX_BYTES, null, onProgress)
+
+    /** Library imports apply a smaller per-format cap even if a document provider omits SIZE.
+     * Hash exactly the original bytes being copied, not a subsequent read of shared Download. */
+    suspend fun copyLimited(source: Uri, backup: Boolean, maxBytes: Long, digest: java.security.MessageDigest?,
+        onProgress: (CopyProgress) -> Unit = {}): Transfer = withContext(Dispatchers.IO) {
+        require(maxBytes in 1L..BackupTransferLimits.MAX_BYTES)
         val operation = currentCoroutineContext().operationCancellationControl()
         operation?.checkpoint()
         val providerCancellation = CancellationSignal()
@@ -80,8 +87,9 @@ internal class SharedImportStaging(private val context: Context) {
             if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
         } ?: -1L
         onProgress(CopyProgress(0, declaredSize, sourceName))
-        val maxBytes = BackupTransferLimits.MAX_BYTES
-        require(declaredSize <= maxBytes) { "가져올 파일은 8 GiB 이하여야 합니다." }
+        val limitMessage = if (maxBytes == BackupTransferLimits.MAX_BYTES) "가져올 파일은 8 GiB 이하여야 합니다."
+            else "파일은 ${maxBytes / (1024 * 1024)} MiB 이하여야 해요."
+        require(declaredSize <= maxBytes) { limitMessage }
         fun available() = StatFs(Environment.getExternalStorageDirectory().path).availableBytes
         if (declaredSize >= 0) BackupTransferLimits.checkDownloadStagingSpace(declaredSize, available())
         val name = if (backup) "SillyTavern-Import-${UUID.randomUUID()}.zip" else "SillyTavern-File-${UUID.randomUUID()}.tmp"
@@ -111,7 +119,7 @@ internal class SharedImportStaging(private val context: Context) {
                         operation?.checkpoint()
                         val count = input.read(buffer)
                         if (count < 0) break
-                        require(total + count <= maxBytes) { "가져올 파일은 8 GiB 이하여야 합니다." }
+                        require(total + count <= maxBytes) { limitMessage }
                         sinceCheck += count
                         if (sinceCheck >= 8 * 1024 * 1024) {
                             BackupTransferLimits.checkDownloadStagingSpace(
@@ -119,6 +127,7 @@ internal class SharedImportStaging(private val context: Context) {
                             sinceCheck = 0
                         }
                         writeToDownload { output.write(buffer, 0, count) }
+                        digest?.update(buffer, 0, count)
                         operation?.checkpoint()
                         total += count
                         val now = System.currentTimeMillis()

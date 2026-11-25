@@ -63,6 +63,9 @@ jobs:
       - name: Check manager and transfer helper shell syntax
         run: |
           bash -n app/src/main/assets/manager.sh
+          bash -n app/src/main/assets/pc-merge.sh
+          bash -n app/src/main/assets/pc-merge-data.sh
+          bash -n app/src/main/assets/library-data.sh
           bash -n app/src/main/assets/progress.sh
           bash -n app/src/main/assets/archive-progress.sh
           bash -n app/src/main/assets/safe-backup.sh
@@ -89,6 +92,9 @@ jobs:
           ST_TEST_YAML_ROOT="$RUNNER_TEMP/st-lan-yaml" node scripts/test-server-config.cjs
           node scripts/test-extensions.cjs
           node scripts/test-share-character.cjs
+          node scripts/test-library-data.cjs
+          node scripts/test-pc-merge.cjs
+          bash scripts/test-pc-merge.sh
           node scripts/test-selective-restore.cjs
           bash scripts/test-selective-restore-journal.sh
           node scripts/test-version-state.cjs

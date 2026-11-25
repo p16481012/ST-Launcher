@@ -76,6 +76,7 @@ class LauncherRepository(private val context: Context) {
     private val executor = TermuxCommandExecutor(context)
     private val preferences = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
     private val importStaging = SharedImportStaging(context)
+    internal val dataLibrary by lazy { DataLibraryAccess(context, ::cardUsers) { args, timeout -> runManager(args, timeout) } }
     private val backupRequestStore = BackupRequestStore(context)
     @Volatile private var localOperationProgress: WorkProgress? = null
     @Volatile private var termuxSetup = TermuxSetupState()
@@ -753,6 +754,33 @@ class LauncherRepository(private val context: Context) {
         return dispatchStagedTransfer(transfer, "import-backup ${shellQuote(transfer.name)}", 45 * 60_000L)
     }
 
+    internal suspend fun stagePcZip(uri: Uri) = stageTransfer(uri, backup = true, progressOperation = "import-preview")
+    internal suspend fun pcZipName(uri: Uri) = importStaging.displayNameCancellable(uri).filterNot { it.isISOControl() }.take(180)
+    internal fun discardPcZip(file: SharedImportStaging.Transfer) = importStaging.remove(file)
+
+    private fun pcZipMapping(values: Map<String, String>): String {
+        val json = org.json.JSONObject()
+        for ((key, value) in values) json.put(key, value)
+        return Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    }
+
+    internal suspend fun previewPcZip(file: SharedImportStaging.Transfer, map: Map<String, String>?):
+        Pair<PcZipPreview, TermuxCommandResult> {
+        val mappingArg = map?.let { " " + shellQuote(pcZipMapping(it)) }.orEmpty()
+        val result = runManager("import-preview ${shellQuote(file.name)}$mappingArg", 45 * 60_000L)
+        check(result.isSuccess) { result.readableError() }
+        check(!result.stdoutTruncated) { "ZIP 미리보기 응답이 잘렸어요. 아무 파일도 바꾸지 않았어요." }
+        return parsePcZipPreview(result.stdout) to result
+    }
+
+    internal suspend fun applyPcZip(file: SharedImportStaging.Transfer, preview: PcZipPreview, replace: Boolean): TermuxCommandResult {
+        val args = if (replace) "import-backup ${shellQuote(file.name)} ${shellQuote(preview.archive)}" else {
+            require(preview.canAdd)
+            "import-merge ${shellQuote(file.name)} ${shellQuote(preview.archive)} ${shellQuote(preview.installation)} ${shellQuote(pcZipMapping(preview.profiles))}"
+        }
+        return dispatchStagedTransfer(file, args, 90 * 60_000L)
+    }
+
     private suspend fun dispatchStagedTransfer(transfer: SharedImportStaging.Transfer, arguments: String, timeout: Long): TermuxCommandResult {
         try {
             operationCheckpoint()
@@ -1383,7 +1411,7 @@ class LauncherRepository(private val context: Context) {
         managerDeployed = true
     }
 
-    private suspend fun stageTransfer(uri: Uri, backup: Boolean): SharedImportStaging.Transfer {
+    private suspend fun stageTransfer(uri: Uri, backup: Boolean, progressOperation: String = if (backup) "import-backup" else "import-st-file"): SharedImportStaging.Transfer {
         operationCheckpoint()
         // Fail before copying gigabytes if Android's per-file access rules block Termux.
         verifySharedStorageRead()
@@ -1414,7 +1442,7 @@ class LauncherRepository(private val context: Context) {
                     percent = 0,
                     phase = "가져올 파일 복사",
                     detail = "선택한 원본은 그대로 두고 Termux에 전달할 임시 파일을 복사합니다.",
-                    operation = if (backup) "import-backup" else "import-st-file",
+                    operation = progressOperation,
                     progressMode = if (progress.total > 0) "bytes" else "indeterminate",
                     completedBytes = progress.bytes,
                     totalBytes = progress.total.coerceAtLeast(0),

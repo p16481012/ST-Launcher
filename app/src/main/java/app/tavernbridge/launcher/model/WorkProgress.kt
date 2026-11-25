@@ -46,7 +46,9 @@ internal fun WorkProgress.belongsToStartedOperation(expectedOperation: String, s
     return operation == expectedOperation || when (expectedOperation) {
         "restart" -> operation in setOf("stop", "start")
         "update" -> operation in setOf("stop", "backup", "start")
-        "restore", "restore-selected", "import-backup", "import-install", "reset-installation", "change-version" -> operation == "backup"
+        "import-merge", "import-backup" -> operation in setOf("stop", "backup", "start")
+        "library-trash", "library-undo" -> operation in setOf("stop", "start")
+        "restore", "restore-selected", "import-install", "reset-installation", "change-version" -> operation == "backup"
         "backup", "save-server-connection", "save-lan-security", "server-config-write" -> operation in setOf("stop", "start")
         "switch-branch" -> operation in setOf("stop", "start")
         "delete-backup" -> operation == "delete-backups"

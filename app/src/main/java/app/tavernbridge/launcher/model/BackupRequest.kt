@@ -18,7 +18,7 @@ data class BackupRequest(
 
 internal object BackupRequestCodec {
     private val identifier = Regex("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-    private val parentOperations = setOf("update", "restore", "restore-selected", "change-version", "import-backup", "import-install", "reset-installation")
+    private val parentOperations = setOf("update", "restore", "restore-selected", "change-version", "import-backup", "import-merge", "import-install", "reset-installation")
 
     fun encode(request: BackupRequest): String {
         val folders = request.customFolders.sorted().joinToString(",") {

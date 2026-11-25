@@ -109,8 +109,8 @@ internal fun V2BackupScreen(
     // A separate "can Termux write a new backup ZIP?" check must not gate the picker.
     val running = state.environment.processRunning
     val stopToImport = rememberStopToContinue(state, pane to selectedName)
-    val canImport = connected && !busy && !state.environment.recoveryPending && (!running || stopToImport != null)
-    val pickImport = { enterStoppedAction(running, stopToImport, "백업 ZIP 선택", onImport) }
+    val canImport = connected && !busy && !state.environment.recoveryPending
+    val pickImport = onImport
     val auto = rememberBackupJobs()
     val archives = state.backups
     val listFailed = state.backupListError.isNotBlank()

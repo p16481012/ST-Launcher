@@ -119,6 +119,17 @@ import java.util.UUID
 
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LauncherRepository(application)
+    private val pcZipScreen = MutableStateFlow<app.tavernbridge.launcher.data.PcZipPreview?>(null)
+    internal val pcZipPreview = pcZipScreen.asStateFlow()
+    private var pcZipFile: app.tavernbridge.launcher.data.SharedImportStaging.Transfer? = null
+    private var pcZipGeneration = 0L
+    internal val dataLibrary get() = repository.dataLibrary
+    internal fun runLibrary(action: app.tavernbridge.launcher.data.LibraryWrite) {
+        perform(operation = action.operation, label = action.label, successMessage = action.label,
+            successMessageForResult = { maintenanceMessage(action.message(it), it) }) {
+            if (action.pause) maintainServer(action.execute) else action.execute()
+        }
+    }
     private val operationResultStore = OperationResultStore(application)
     private val guidePreferences = application.getSharedPreferences("setup_navigation", android.content.Context.MODE_PRIVATE)
     private val safetyDeleteStore = app.tavernbridge.launcher.data.SafetyDeleteReceiptStore(application)
@@ -1676,6 +1687,83 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                     it.copy(backupListLoading = false, backupListError = detail,
                         backupListErrorCode = errorCodeFrom(detail).ifBlank { "BACKUP_LIST_FAILED" })
                 }
+            }
+        }
+    }
+
+    internal fun closePcZip() {
+        pcZipGeneration++
+        pcZipScreen.value = null
+        val file = pcZipFile ?: return
+        pcZipFile = null
+        viewModelScope.launch(Dispatchers.IO) { repository.discardPcZip(file) }
+    }
+
+    internal fun beginPcZip(uri: Uri) {
+        if (commandEntryBlocked() || state.value.environment.operationActive) return
+        closePcZip()
+        val generation = pcZipGeneration
+        perform("import-preview", "ZIP 미리보기", "ZIP 내용을 확인했어요. 아직 휴대폰 파일은 바꾸지 않았어요.") {
+            val name = repository.pcZipName(uri)
+            val file = repository.stagePcZip(uri)
+            var retained = false
+            try {
+                val (preview, result) = repository.previewPcZip(file, null)
+                if (generation == pcZipGeneration) {
+                    pcZipFile = file
+                    pcZipScreen.value = preview.copy(name = name)
+                    retained = true
+                }
+                result
+            } finally {
+                if (!retained) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { repository.discardPcZip(file) }
+            }
+        }
+    }
+
+    internal fun mapPcZip(source: String, target: String) {
+        val file = pcZipFile ?: return
+        val current = pcZipScreen.value ?: return
+        if (source !in current.profiles || target.isNotEmpty() && target !in current.targets || commandEntryBlocked()) return
+        if (target.isNotEmpty() && current.profiles.any { it.key != source && it.value == target }) {
+            showMessage("이 휴대폰 사용자는 다른 원본 사용자와 이미 연결되어 있어요."); return
+        }
+        perform("import-preview", "넣을 곳 확인", "선택한 사용자의 합치기 내용을 확인했어요.") {
+            val (preview, result) = repository.previewPcZip(file, current.profiles + (source to target))
+            if (file == pcZipFile) pcZipScreen.value = preview.copy(name = current.name)
+            result
+        }
+    }
+
+    internal fun applyPcZip(replace: Boolean, backupBefore: Boolean) {
+        val preview = pcZipScreen.value ?: return
+        val file = pcZipFile ?: return
+        if (commandEntryBlocked() || state.value.environment.operationActive || state.value.environment.recoveryPending) return
+        if (!replace && !preview.canAdd || preview.layout in setOf("legacy_public", "unknown")) return
+        pcZipGeneration++
+        pcZipFile = null
+        pcZipScreen.value = null
+        val op = if (replace) "import-backup" else "import-merge"
+        perform(op, if (replace) "ZIP으로 교체" else "PC ZIP 안전하게 합치기", "ZIP 처리를 마쳤어요.",
+            successMessageForResult = { result ->
+                val counts = result.stdout.lineSequence().associate { it.substringBefore('=') to it.substringAfter('=', "") }
+                val text = if (replace) "확인한 ZIP으로 교체했어요."
+                    else "파일 ${counts["added"]?.toIntOrNull() ?: preview.added}개를 추가했어요. 기존 파일은 덮어쓰지 않았어요."
+                maintenanceMessage(text, result)
+            }) {
+            var handedOff = false
+            try {
+                val result = maintainServer {
+                    protectBeforeReplacement(backupBefore, { backupBeforeReplacement(op) }) {
+                        handedOff = true
+                        repository.applyPcZip(file, preview, replace)
+                    }
+                }
+                if (result.isSuccess && backupBefore) refreshBackupListAfterOperation()
+                result
+            } finally {
+                // A dispatched job may still own its staging ZIP after a lost callback.
+                if (!handedOff) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { repository.discardPcZip(file) }
             }
         }
     }
@@ -3255,7 +3343,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                 // Refresh read-only state without replacing the actual error.
                 val recoveryEnvironment = if (state.value.environment.recoveryPending ||
                     errorCode == "RESTORE_ROLLBACK_REQUIRED" ||
-                    operation in setOf("restore", "restore-selected", "change-version", "import-backup", "import-install", "repair", "backup", "save-server-connection", "save-lan-security", "safety-restore", "server-config-write")) {
+                    operation in setOf("restore", "restore-selected", "change-version", "import-backup", "import-merge", "import-install", "repair", "backup", "save-server-connection", "save-lan-security", "safety-restore", "server-config-write")) {
                     progressJob.cancel()
                     try { repository.inspect() }
                     catch (cancelled: CancellationException) { throw cancelled }
@@ -3331,6 +3419,11 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
             state.value.lastOperationResult.isUnfinishedDeleteStep(operation, startedAt)
 
     private fun operationLabel(operation: String): String = when (operation) {
+        "import-preview" -> "ZIP 내용 확인"
+        "import-merge" -> "PC ZIP 안전하게 합치기"
+        "library-trash" -> "자료를 휴지통으로 옮기기"
+        "library-undo" -> "휴지통에서 자료 되돌리기"
+        "library-import" -> "선택한 자료 가져오기"
         "connect-manager" -> "런처 연결"
         "install" -> "SillyTavern 설치"
         "start" -> "SillyTavern 시작"

@@ -274,6 +274,13 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     }
     val setupFullScreen = section in setOf(MainSection.SETUP, MainSection.BACKUPS) &&
         (showWelcome || state.shouldShowSetupGuide || state.environmentChecked && !state.environment.sillyTavernInstalled)
+    val pcZip by viewModel.pcZipPreview.collectAsState()
+    LaunchedEffect(section) {
+        if (section !in setOf(MainSection.SETUP, MainSection.BACKUPS)) viewModel.closePcZip()
+    }
+    if (!state.isWorking) pcZip?.let { preview ->
+        PcZipReviewScreen(preview, state.environment.processRunning, viewModel::closePcZip, viewModel::mapPcZip, viewModel::applyPcZip)
+    }
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -283,7 +290,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.data?.let { uri ->
-                confirmation = Confirmation(
+                if (state.environment.sillyTavernInstalled) viewModel.beginPcZip(uri)
+                else confirmation = Confirmation(
                     title = "이 ZIP에서 바로 복원할까요?",
                     description = "압축을 한 번만 풀어 구조와 용량을 검사한 뒤 복원합니다. 같은 항목의 현재 데이터는 백업 내용으로 교체되므로, 백업 이후 생긴 대화도 사라질 수 있습니다. 실패 시 복구용 임시 사본은 성공 후 삭제됩니다. 원본 ZIP은 변경하지 않습니다. 서버를 먼저 종료해 주세요.",
                     confirmLabel = "검사 후 복원",
@@ -460,7 +468,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             val archive = if (op == "backup") state.backups.find { it.fileName == state.lastCreatedBackupName } else null
             val chatUndo = if (op == "chat-repair") state.chatUndo.firstOrNull() else null
+            val libraryUndo = if (op == "library-trash") viewModel.dataLibrary.lastMoved.value else null
             val action = when {
+                libraryUndo != null -> "실행 취소"
                 chatUndo != null -> if (state.chatCompletion.contains("개 중 ")) "마지막 1개 실행 취소" else "실행 취소"
                 op == "start" -> "대화 열기"
                 op == "save-lan-security" && state.environment.externalAccessEnabled -> "주소 보기"
@@ -477,6 +487,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             )
             viewModel.consumeNotice()
             if (result == SnackbarResult.ActionPerformed) when {
+                libraryUndo != null -> {
+                    viewModel.dataLibrary.requestUndo(libraryUndo)
+                    viewModel.selectTool(ToolPage.DATA_LIBRARY)
+                }
                 chatUndo != null -> {
                     val now = viewModel.state.value
                     if (now.chatUndo.firstOrNull()?.id == chatUndo.id && !now.environment.processRunning && !now.isWorking &&

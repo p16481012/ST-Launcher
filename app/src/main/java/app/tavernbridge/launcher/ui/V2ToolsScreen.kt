@@ -60,7 +60,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                     .fillMaxHeight().testTag("tools-index").verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     Text("도구", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-                    val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.INSTALLATION, ToolPage.EXTENSIONS, ToolPage.FILES),
+                    val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.INSTALLATION, ToolPage.EXTENSIONS, ToolPage.FILES, ToolPage.DATA_LIBRARY),
                         "문제 해결" to listOf(ToolPage.DIAGNOSTICS, ToolPage.LOGS, ToolPage.REPAIR), "주의" to listOf(ToolPage.RESET))
                     groups.forEach { (label, pages) ->
                         ToolGroup(label) { pages.forEachIndexed { index, page ->
@@ -87,7 +87,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                     val hasDetailOrigin = selected != ToolPage.INDEX && state.navigation.splitToolsRoot == null &&
                         state.navigation.previous.lastOrNull()?.let { it.section != MainSection.LOGS || it.tool != ToolPage.INDEX } == true
                     val nested = page == ToolPage.UPDATE && allChanges
-                    if (page != ToolPage.FILES && (!wide || hasDetailOrigin || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                    if (page != ToolPage.FILES && page != ToolPage.DATA_LIBRARY && (!wide || hasDetailOrigin || nested)) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { if (nested) allChanges = false else goBack() }) { ReviewGlyph(app.tavernbridge.launcher.R.drawable.rv_arrow_left, 24.dp, description = "뒤로") }
                         if (page == ToolPage.DIAGNOSTICS) Spacer(Modifier.width(12.dp))
@@ -134,6 +134,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                             onCheckDetail = viewModel::loadExtensionDetailVersion,
                             onUpdateAll = viewModel::updateCheckedExtensions, stopState = state)
                         ToolPage.FILES -> ToolFolder(state, viewModel, goBack, twoFileColumns)
+                        ToolPage.DATA_LIBRARY -> DataLibraryScreen(state, viewModel.dataLibrary, viewModel::runLibrary, goBack)
                         ToolPage.INDEX -> Unit
                     }
                 }
@@ -147,6 +148,7 @@ private fun toolIcon(page: ToolPage): ImageVector = when (page) {
     ToolPage.UPDATE -> Icons.Outlined.VerticalAlignTop
     ToolPage.EXTENSIONS -> Icons.Outlined.Extension
     ToolPage.FILES -> Icons.Outlined.FolderOpen
+    ToolPage.DATA_LIBRARY -> Icons.Outlined.Inventory2
     ToolPage.DIAGNOSTICS -> Icons.Outlined.MonitorHeart
     ToolPage.CHAT_INTEGRITY -> Icons.Outlined.MonitorHeart
     ToolPage.LOGS -> Icons.Outlined.Subject

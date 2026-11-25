@@ -11,6 +11,7 @@ import java.io.DataInputStream
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.io.InputStreamReader
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
@@ -28,11 +29,15 @@ internal data class IncomingCard(val label: String, val card: SharedCard? = null
 private fun bad(): Nothing = throw IllegalArgumentException("캐릭터 정보가 없는 그림이에요")
 private val signature = byteArrayOf(0x89.toByte(),80,78,71,13,10,26,10)
 
-internal fun readPngCard(file: File): Pair<String,String> {
-    require(file.length() <= MAX_CARD_BYTES) { "파일이 너무 커요. 20 MB 이하만 넣을 수 있어요." }
-    DataInputStream(file.inputStream().buffered()).use { input ->
-        require(file.length() >= 8 && ByteArray(8).also { input.readFully(it) }.contentEquals(signature)) { "캐릭터 카드는 PNG만 넣을 수 있어요." }
-        var left = file.length() - 8
+internal fun readPngCard(file: File): Pair<String,String> =
+    file.inputStream().use { readPngCard(it,file.length()) }
+
+/** Handles providers without SIZE without loading an image or trusting unbounded chunk lengths. */
+internal fun readPngCard(source: InputStream, size: Long?): Pair<String,String> {
+    require(size == null || size in 8L..MAX_CARD_BYTES.toLong()) { "PNG 파일 크기를 확인해 주세요. 20 MiB 이하만 넣을 수 있어요." }
+    DataInputStream(source.buffered()).use { input ->
+        require(ByteArray(8).also { input.readFully(it) }.contentEquals(signature)) { "캐릭터 카드는 PNG만 넣을 수 있어요." }
+        var left = (size ?: MAX_CARD_BYTES.toLong()) - 8
         var chunks = 0
         var data = false
         var end = false
@@ -64,7 +69,7 @@ internal fun readPngCard(file: File): Pair<String,String> {
             if (crc.value.toInt() != input.readInt()) bad()
             left -= n+12L
             if (kind == "IDAT") data = true
-            if (kind == "IEND") { end = n == 0 && left == 0L; break }
+            if (kind == "IEND") { end = n == 0 && (size == null || left == 0L) && input.read() == -1; break }
         }
         if (!end || !data) bad()
         val encoded = tags["ccv3"] ?: tags["chara"] ?: bad()

@@ -82,6 +82,9 @@ jobs:
           mkdir -p visual-results
           adb shell am instrument -w -r -e package app.tavernbridge.launcher.ui app.tavernbridge.stlauncher.debug.test/androidx.test.runner.AndroidJUnitRunner | tee visual-results/instrumentation.txt
           grep -Eq '^OK \([1-9][0-9]* tests?\)' visual-results/instrumentation.txt
+          for required in selectingAnArchiveNeverStopsServerOrReplacesPhoneFiles hubNeverRunsDeepChecksAndOrphanTrashNeedsSelectionAndConfirmation duplicatesIsAnExplicitScanAndIncompleteCandidatesAreVisible; do
+            grep -Fq "test=$required" visual-results/instrumentation.txt
+          done
           for required in installedManagementActionsAreRealDestinationsAndBackReturnsToTheirOrigin homeLogReturnsHomeAndToolsLogReturnsTools briefReadNeverFlashesAndLongReadShowsUntilCompletion tapOnlyHandleFoldsAndMiniBarReopens runningServerAllowsOpeningAndSavingFromLabelAfterAcknowledgement onlyVerifiedStopOpensOriginalConfirmationOnce leavingSelectedArchiveDropsEvenSuccessfulInFlightStop; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done
