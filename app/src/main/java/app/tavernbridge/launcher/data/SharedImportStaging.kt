@@ -187,7 +187,7 @@ internal class SharedImportStaging(private val context: Context) {
 
     /** Only the private snapshots made by the share screen, never paths from an incoming Intent. */
     suspend fun stageCard(file: java.io.File): Transfer = withContext(Dispatchers.IO) {
-        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "공유로 가져오기는 Android 10 이상에서 지원해요." }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) error("공유로 가져오기는 Android 10 이상에서 지원해요.")
         val base = java.io.File(context.cacheDir, "share-import").canonicalFile
         require(file.canonicalFile.parentFile?.parentFile == base && file.isFile &&
             file.length() in 1L..(20L*1024*1024)) { "공유한 임시 파일을 확인할 수 없어요." }

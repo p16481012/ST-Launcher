@@ -97,4 +97,15 @@ class ShareCardIntentTest {
             ui.onNodeWithText("한 번에 20개까지 넣을 수 있어요.").assertExists()
         }
     }
+
+    @Test fun unrelatedClipGrantCannotOpenUnsharedExtraStream() {
+        val intent = Intent(ctx,ShareImportActivity::class.java).setAction(Intent.ACTION_SEND).setType("image/png")
+            .putExtra(Intent.EXTRA_STREAM,Uri.parse("content://untrusted.shared/other")).apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = android.content.ClipData.newPlainText("not a grant for other", "fixture")
+            }
+        ActivityScenario.launch<ShareImportActivity>(intent).use {
+            ui.onNodeWithText("공유한 파일과 읽기 권한이 일치하지 않아요. 원래 앱에서 다시 공유해 주세요.").assertExists()
+        }
+    }
 }
