@@ -125,13 +125,17 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
     val keepCount = prefs.keepBackups.count
     var retention by rememberSaveable { mutableStateOf(false) }
     var secretsConfirm by rememberSaveable { mutableStateOf(false) }
-    SettingsGroup { SettingsRow("백업 알림 받기", caption = "백업할 때가 되면 백업 탭에 점이 뜨고 홈의 마지막 백업 날짜가 강조돼요. 휴대폰 알림은 보내지 않아요.",
+    BackupAutomationSettings(state, vm)
+    SettingsHeading("알림")
+    SettingsGroup { SettingsRow("백업 알림 받기", caption = "백업할 때가 되면 홈과 백업 탭에 표시해요.",
         checked = reminder.enabled, onClick = { vm.setBackupReminderEnabled(!reminder.enabled) }) }
     if (reminder.enabled) {
         SettingsHeading("알림 주기")
         SettingsSegments(BackupInterval.entries, reminder.interval, { it.label }, vm::setBackupReminderInterval)
     } else SettingsCaption("백업 알림을 켜면 알림 주기를 고를 수 있어요.")
-    SettingsHeading("자동 백업과 보관")
+    BackupPhoneSettings(state)
+    SettingsHeading("보관")
+    AutoRetentionSettings()
     SettingsGroup {
         SettingsRow("업데이트 전에 자동 백업", checked = state.autoBackupBeforeUpdate,
             onClick = { vm.setAutoBackupBeforeUpdate(!state.autoBackupBeforeUpdate) })
@@ -141,15 +145,15 @@ internal fun V2BackupPreferences(state: LauncherUiState, vm: LauncherViewModel) 
                       else stringResource(R.string.backup_cleanup_recommendation, keepCount),
             onClick = { retention = true })
         SettingsDivider()
-        SettingsRow("API 키 포함", caption = "직접 만드는 백업의 기본 선택이에요", checked = prefs.includeSecretsByDefault,
+        SettingsRow("API 키 포함", caption = "직접 백업과 충전 중 자동 백업의 기본 선택이에요", checked = prefs.includeSecretsByDefault,
             onClick = { if (prefs.includeSecretsByDefault) vm.setDisplayPreferences(prefs.copy(includeSecretsByDefault = false)) else secretsConfirm = true })
     }
     if (prefs.includeSecretsByDefault) SettingsCaption("API 키를 포함한 백업은 다른 사람에게 보내지 마세요.")
     if (retention) SettingsChoice(cleanupTitle, BackupKeep.entries, prefs.keepBackups, { it.label },
         { vm.setDisplayPreferences(prefs.copy(keepBackups = it)); retention = false },
         hint = stringResource(R.string.backup_cleanup_exempt)) { retention = false }
-    if (secretsConfirm) V2AlertDialog(onDismissRequest = { secretsConfirm = false }, title = { Text("수동 백업에 API 키를 포함할까요?") },
-        text = { Text("사용자 데이터 또는 전체 설치를 직접 백업하면 비밀 설정이 암호화되지 않은 ZIP에 포함될 수 있어요. 백업할 때마다 변경할 수 있어요.") },
+    if (secretsConfirm) V2AlertDialog(onDismissRequest = { secretsConfirm = false }, title = { Text("백업에 API 키를 포함할까요?") },
+        text = { Text("직접 백업과 충전 중 자동 백업의 ZIP에 비밀 설정이 암호화되지 않고 들어갈 수 있어요. 다른 사람에게 보내지 마세요.") },
         confirmButton = { V2DialogAction(onClick = { secretsConfirm = false; vm.setDisplayPreferences(prefs.copy(includeSecretsByDefault = true)) }) { Text("포함") } },
         dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = { secretsConfirm = false }) { Text("취소") } })
 }

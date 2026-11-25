@@ -3,11 +3,17 @@ const helper=fs.readFileSync(path.join(__dirname,'../app/src/main/assets/backup-
 const code=helper.split("<<'NODE'\n")[1].split('\nNODE')[0];
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'st-catalog-test-'));
 const name='SillyTavern-Launcher-20261124-000000.zip', source=path.join(root,name);
-function run(action,arg,inject='',env={}) {return spawnSync(process.execPath,['-e',inject+code,'--','-',action,root,arg],{encoding:'utf8',env:{...process.env,...env},timeout:10000});}
+function run(action,arg,inject='',env={},guard='') {return spawnSync(process.execPath,['-e',inject+code,'--','-',action,root,arg,guard],{encoding:'utf8',env:{...process.env,...env},timeout:10000});}
 function create(){fs.writeFileSync(source,'fixture'); return run('revision',name).stdout.trim();}
 function request(rev,n=name){return Buffer.from(JSON.stringify([{name:n,revision:rev}])).toString('base64');}
 try {
  let rev=create(); assert.match(rev,/^[a-f0-9]{64}$/);
+ const newName='SillyTavern-Launcher-20261125-000000.zip', replacement=path.join(root,newName);
+ fs.writeFileSync(replacement,'new backup');
+ const guard=Buffer.from(JSON.stringify({name:newName,revision:run('revision',newName).stdout.trim()})).toString('base64');
+ fs.appendFileSync(replacement,'changed'); assert.notEqual(run('delete',request(rev),'',{},guard).status,0); assert(fs.existsSync(source));
+ fs.unlinkSync(replacement); assert.notEqual(run('delete',request(rev),'',{},guard).status,0); assert(fs.existsSync(source));
+ console.log('PASS automatic retention preserves older backups when replacement is missing or changed');
  assert.equal(run('delete',request(rev)).status,0); assert(!fs.existsSync(source)); console.log('PASS exact selected backup removal');
  rev=create(); fs.appendFileSync(source,'changed'); assert.notEqual(run('delete',request(rev)).status,0); assert(fs.existsSync(source)); console.log('PASS stale revision preserves backup');
  rev=create(); assert.notEqual(run('delete',request(rev,'../'+name)).status,0); assert(fs.existsSync(source)); console.log('PASS traversal and malformed request rejected');

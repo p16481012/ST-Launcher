@@ -194,7 +194,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun onAppForegrounded() {
         appInForeground = true
         mutableState.update {
-            it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRunning),
+it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRunning), backupReminder = backupReminderStore.load(),
                 backupReminderNowMillis = System.currentTimeMillis())
         }
     }
@@ -368,6 +368,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun setBackupReminderEnabled(enabled: Boolean) {
         val reminder = backupReminderStore.setEnabled(enabled)
+        app.tavernbridge.launcher.data.BackupJobs.reconcile(getApplication())
         mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
     }
 
@@ -375,6 +376,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val reminder = backupReminderStore.snooze()
         mutableState.update { it.copy(backupReminder = reminder, backupReminderNowMillis = System.currentTimeMillis()) }
     }
+
+    internal suspend fun checkAutoBackupStorage(): Boolean = state.value.environment.managerConnected &&
+        state.value.termuxSetup.verified && repository.backupStorageReady()
 
     fun openBackups() {
         selectSection(MainSection.BACKUPS)
@@ -608,6 +612,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 cancellableOperation("refresh", started) {
                 val environment = repository.inspect(::publishProgress)
                 mutableState.update { it.copy(termuxSetup = repository.termuxSetupState()) }
+                if (environment.managerConnected && environment.sillyTavernInstalled) {
+                    try {
+                        app.tavernbridge.launcher.data.BackupJobs.recoverPublished(getApplication(),repository)
+                    } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) {
+                        // Optional receipt refresh must never invalidate a successful environment inspection.
+                    }
+                }
                 if (environment.processRunning && repository.wakeLockEnabled()) {
                     journal.phase("백그라운드 실행 설정 확인", "실행 중인 서버의 Termux Wake lock 설정을 적용합니다.")
                     repository.setTermuxWakeLock(true).requireSuccess()
@@ -2171,9 +2182,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun saveBackupAnnotation(fileName: String, pinned: Boolean, memo: String) {
         if (state.value.isWorking) return
-        runCatching { backupMetadataStore.save(fileName, pinned, memo) }
+        val gate = app.tavernbridge.launcher.data.BackupJobState.annotationGate
+        if (!gate.tryLock()) { showMessage("자동 백업 정리를 마친 뒤 다시 시도해 주세요."); return }
+        try { runCatching { backupMetadataStore.save(fileName, pinned, memo) }
             .onSuccess { annotation -> mutableState.update { it.copy(backupAnnotations = it.backupAnnotations + (fileName to annotation), backupCleanupPreview = null) } }
             .onFailure { showMessage(it.userMessage()) }
+        } finally { gate.unlock() }
     }
 
     fun previewBackupCleanup(keepLatest: Int, olderThanDays: Int) {
