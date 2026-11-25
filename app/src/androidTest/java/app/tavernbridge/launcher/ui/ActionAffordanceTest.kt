@@ -19,6 +19,20 @@ import org.junit.Test
 
 class ActionAffordanceTest {
     @get:Rule val ui = createComposeRule()
+    @Test fun blockedShortcutShowsOnlyCloseAndCannotDispatchStart() {
+        var closed = 0
+        var started = 0
+        ui.setContent {
+            SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+                EntryRequestDialog(app.tavernbridge.launcher.entry.LauncherEntryRequest("fixture", app.tavernbridge.launcher.entry.LauncherEntryAction.START),
+                    app.tavernbridge.launcher.entry.LauncherEntryGate.BUSY, { started++ }, { closed++ })
+            }
+        }
+        ui.onNodeWithText("확인 후 실행").assertDoesNotExist()
+        ui.onNodeWithText("닫기").assertHasClickAction().performClick()
+        ui.runOnIdle { assertEquals(0, started); assertEquals(1, closed) }
+    }
+
     @Test fun commonShapesShowRealLabelsAndDispatchOnlyTheirOwnActions() {
         val events = mutableListOf<String>()
         ui.setContent {

@@ -191,23 +191,19 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
         val primary = actions.primary
         val mainModifier = Modifier.weight(1f).heightIn(min = 52.dp)
         val shape = RoundedCornerShape(14.dp)
-        if (primary == HomePrimary.LOGS || primary == HomePrimary.PORT) {
-            OutlinedButton(onClick = if (primary == HomePrimary.LOGS) onLogs else onChangePort,
-                modifier = mainModifier, enabled = actions.canPrimary, shape = shape) {
-                Text(if (primary == HomePrimary.LOGS) "로그 보기" else "포트 바꾸기")
+        when {
+            primary == HomePrimary.STARTING -> Row(mainModifier, verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                VisibleBusyIndicator(Modifier.size(22.dp), false, 2.dp)
+                Text("서버 시작 중")
             }
-        } else Button(onClick = if (primary == HomePrimary.CHAT) onOpen else onStart,
-            modifier = mainModifier, shape = shape, enabled = actions.canPrimary) {
-            Crossfade(primary, animationSpec = tween(if (reduced) 0 else 120), label = "서버 동작") {
-                when (it) {
-                    HomePrimary.STARTING -> VisibleBusyIndicator(Modifier.size(22.dp).semantics {
-                        contentDescription = "서버 시작 중"
-                    }, false, 2.dp)
-                    HomePrimary.CHAT -> Text("대화 열기")
-                    HomePrimary.START -> Text("서버 시작")
-                    else -> Unit
-                }
-            }
+            !actions.canPrimary -> Text(if (actions.stop == HomeStop.STOPPING) "서버가 꺼질 때까지 기다려 주세요." else "다른 작업이 끝나면 시작할 수 있어요.",
+                mainModifier, style = MaterialTheme.typography.bodyMedium)
+            primary == HomePrimary.CHAT -> V2NavigationRow("대화 열기", onOpen, mainModifier,
+                description = "선택한 브라우저 앱이 열려요.")
+            primary == HomePrimary.LOGS -> V2NavigationRow("로그 보기", onLogs, mainModifier)
+            primary == HomePrimary.PORT -> V2NavigationRow("포트 바꾸기", onChangePort, mainModifier)
+            else -> Button(onStart, mainModifier, shape = shape) { Text("서버 시작") }
         }
         AnimatedVisibility(visible = actions.stop != HomeStop.HIDDEN,
             enter = fadeIn(tween(if (reduced) 0 else 120)) + expandHorizontally(tween(if (reduced) 0 else 200)),
@@ -223,23 +219,15 @@ private fun HomeServer(state: LauncherUiState, onOpen: () -> Unit, onStart: () -
         Text(if (ready == ServerReadiness.PORT_CONFLICT) "다른 앱이 포트 ${env.port}을 쓰고 있어요." else "서버가 응답하지 않아요. 재시작해 보세요.",
             Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
     Spacer(Modifier.height(28.dp))
+    if (env.processRunning && (!locked || actions.otherWork)) V2OutlineAction("재시작", if (locked) onBlocked else onRestart, Modifier.fillMaxWidth())
     Surface(shape = RoundedCornerShape(20.dp), color = cs.surface) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            if (env.processRunning) HomeAction(Modifier.weight(1f), Icons.Outlined.RestartAlt, "재시작", !locked, onRestart, onBlocked.takeIf { actions.otherWork })
-            HomeAction(Modifier.weight(1f), Icons.Outlined.FileDownload, "백업", !locked, onBackups, onBlocked.takeIf { locked })
-            HomeAction(Modifier.weight(1f), Icons.Outlined.Subject, "로그", true, onLogs)
+        Column {
+            if (!locked) {
+                HomeRow(Icons.Outlined.FileDownload, "백업", "", onBackups)
+                HomeRule()
+            }
+            HomeRow(Icons.Outlined.Subject, "로그", "", onLogs)
         }
-    }
-}
-
-@Composable
-private fun HomeAction(modifier: Modifier, icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit, blocked: (() -> Unit)? = null) {
-    if (!enabled && blocked == null) return
-    OutlinedButton(onClick = if (enabled) onClick else blocked ?: return, modifier = modifier.padding(2.dp).heightIn(min = 48.dp),
-        shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 4.dp)) {
-        Icon(icon, null, Modifier.size(16.dp))
-        Spacer(Modifier.width(3.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
 

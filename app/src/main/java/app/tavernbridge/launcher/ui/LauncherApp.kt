@@ -403,10 +403,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
         } else if (runtimeIssue != null) {
             V2BottomSheet(onClose = { failedResult = -1L }, footer = {
                 Column(Modifier.fillMaxWidth()) {
-                    V2SheetPrimaryButton(if (offerRepair) "점검·복구 열기" else "Termux 열기") {
+                    V2NavigationRow(if (offerRepair) "점검·복구 열기" else "Termux 열기", {
                         failedResult = -1L
                         if (offerRepair) viewModel.selectTool(ToolPage.REPAIR) else viewModel.openTermux()
-                    }
+                    }, description = if (offerRepair) "" else "Termux 앱이 열려요.")
                     if (summary.canRetry) V2OutlineAction("다시 시도", { failedResult = -1L; viewModel.retryLastOperation() }, Modifier.fillMaxWidth())
                     V2NavigationRow("작업 기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
                 }
@@ -419,10 +419,9 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
         } else V2BottomSheet(onClose = { failedResult = -1L }, footer = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                V2SheetPrimaryButton(if (summary.canRetry) "다시 시도" else "진단 열기") {
-                    failedResult = -1L
-                    if (summary.canRetry) viewModel.retryLastOperation() else viewModel.selectTool(ToolPage.DIAGNOSTICS)
-                }
+                if (summary.canRetry) V2SheetPrimaryButton("다시 시도") {
+                    failedResult = -1L; viewModel.retryLastOperation()
+                } else V2NavigationRow("진단 열기", { failedResult = -1L; viewModel.selectTool(ToolPage.DIAGNOSTICS) })
                 V2NavigationRow("기록 보기", { failedResult = -1L; viewModel.openDiagnostics(DiagnosticPanel.WORK_HISTORY) })
             }
         }) {
@@ -1037,12 +1036,10 @@ internal fun EnvironmentCheckingCard(
                 V2NavigationRow("런처 실행 권한 설정", onOpenPermissionSettings, description = "Android 설정 앱이 열려요.")
             }
             if (state.termuxSetup.status == TermuxSetupStatus.EXTERNAL_APPS_DISABLED) {
-                Button(onClick = {
+                V2NavigationRow("연결 설정 명령 복사·Termux 열기", {
                     clipboard.setText(AnnotatedString(setupCommand))
                     onOpenTermux()
-                }, modifier = Modifier.fillMaxWidth()) {
-                    Text("연결 설정 명령 복사·Termux 열기")
-                }
+                }, description = "명령을 복사하고 Termux 앱이 열려요.")
             }
             V2NavigationRow("Termux 한 번 열기", onOpenTermux, description = "Termux 앱이 열려요.")
             V2OutlineAction("설치 상태 다시 확인", onRefresh, Modifier.fillMaxWidth())
@@ -1124,15 +1121,10 @@ internal fun BackupStorageSetupCard(
                 Text(if (copiedAt > 0) "복사됨" else command, Modifier.padding(12.dp), fontFamily = V2Mono,
                     color = if (copiedAt > 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface)
             }
-            Button(
-                onClick = {
-                    checkOnReturn = true
-                    onOpenTermux()
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Termux 열기")
-            }
+            V2NavigationRow("Termux 열기", {
+                checkOnReturn = true
+                onOpenTermux()
+            }, description = "Termux 앱이 열려요.")
             V2OutlineAction("연결 확인", onRefresh, Modifier.fillMaxWidth())
         }
     }

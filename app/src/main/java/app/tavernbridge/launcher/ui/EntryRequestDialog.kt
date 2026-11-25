@@ -21,5 +21,8 @@ internal fun EntryRequestDialog(request: LauncherEntryRequest?, gate: LauncherEn
             else -> "런처 화면에서 상태를 확인해 주세요."
         }) },
         confirmButton = { if (allowed) V2DialogAction(onClick = onConfirm) { Text("확인 후 실행") } },
-        dismissButton = { V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") } })
+        dismissButton = {
+            if (allowed) V2DialogAction(tone = V2DialogTone.Quiet, onClick = onClose) { Text("닫기") }
+            else V2OutlineAction("닫기", onClose)
+        })
 }

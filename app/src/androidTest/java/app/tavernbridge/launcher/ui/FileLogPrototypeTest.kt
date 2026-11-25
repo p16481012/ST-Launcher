@@ -72,12 +72,18 @@ class FileLogPrototypeTest {
 
     @Test fun navigatingToFolderNeverShowsALinearBarAndSlowReadsShowInlineStatus() {
         val state = mutableStateOf(LauncherUiState(fileBrowserOpen = true, isWorking = false,
-            environment = EnvironmentStatus(managerConnected = true), fileBrowserEntries = listOf(entry("data").copy(isDirectory = true))))
+            environment = EnvironmentStatus(managerConnected = true),
+            fileBrowserEntries = listOf(entry("data").copy(isDirectory = true), entry("config.yaml"))))
         ui.setContent { SillyTavernLauncherTheme(AppTheme.LIGHT, DisplayPreferences(reducedMotion = true)) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
             TavernFileManagerDialog(state.value, { path -> state.value = state.value.copy(fileBrowserPath = path,
                 fileBrowserEntries = emptyList(), fileBrowserLoading = true) }, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {},
                 {}, {}, {}, {}, {}, null, {}, embedded = true)
+            }
         } }
+        ui.onNodeWithText("가져오기").assertHasClickAction().assertIsDisplayed()
+        ui.onNodeWithText("작업").assertHasClickAction().assertIsDisplayed()
+        ui.captureManagementScreen("files-browser", "새로 만들기")
         ui.mainClock.autoAdvance = false
         ui.onNodeWithText("data").performClick()
         ui.mainClock.advanceTimeBy(128)

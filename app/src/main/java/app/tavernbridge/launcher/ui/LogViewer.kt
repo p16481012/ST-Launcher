@@ -115,7 +115,9 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                 }
             }
         }
-        if (visible.isNotBlank()) V2BottomActions { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (visible.isNotBlank()) V2BottomActions { Column {
+            Text("공유를 누르면 앱을 고르는 Android 창이 열려요.", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton({ clipboard.setText(AnnotatedString(redactSensitiveText(visible, maxLength = 60_000))) },
                 Modifier.weight(1f).heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Text("복사") }
             OutlinedButton({
@@ -124,6 +126,6 @@ internal fun LogViewer(log: String, panelKey: String, modifier: Modifier = Modif
                     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "로그 공유"))
                 }.isFailure
             }, Modifier.weight(1f).heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Text("공유") }
-        } }
+        } } }
     }
 }
