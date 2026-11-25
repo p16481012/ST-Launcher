@@ -29,7 +29,9 @@ class SettingsFeedbackTest {
         compose.onNodeWithText("미리보기 문장 바꾸기").performClick()
         compose.onNode(hasSetTextAction()).performTextClearance()
         compose.onNodeWithText("적용").performClick()
-        compose.onNodeWithText("비 오는 오후", substring = true).assertIsDisplayed()
+        compose.onNodeWithText(DEFAULT_SAMPLE).assertIsDisplayed()
+        compose.onNodeWithText("미리보기 문장 바꾸기").performClick()
+        compose.onNodeWithText(SAMPLE_HINT).assertIsDisplayed()
     }
 
     @Test fun updateButtonsDoNotInstallOrLaunchTheOtherAction() {

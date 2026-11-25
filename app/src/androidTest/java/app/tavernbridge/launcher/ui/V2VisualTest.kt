@@ -235,7 +235,7 @@ class V2VisualTest {
     @Test fun displayChoicesSurviveAStoreReopen() {
         val testContext = InstrumentationRegistry.getInstrumentation().context
         val store = app.tavernbridge.launcher.data.ThemePreferences(testContext)
-        val saved = prefs.copy(textSize = LauncherTextSize.LARGE, accent = LauncherAccent.WINE, highContrast = true)
+        val saved = prefs.copy(textSize = LauncherTextSize.LARGE, accent = LauncherAccent.WINE, highContrast = true, systemFont = true)
         store.saveTheme(AppTheme.DARK)
         store.saveDisplay(saved)
         val reopened = app.tavernbridge.launcher.data.ThemePreferences(testContext)

@@ -27,6 +27,7 @@ data class DisplayPreferences(
     val reducedMotion: Boolean? = null,
     val keepBackups: BackupKeep = BackupKeep.TEN,
     val includeSecretsByDefault: Boolean = false,
+    val systemFont: Boolean = false,
 )
 
 internal fun readBrightness(name: String?): AppTheme = when (name) {

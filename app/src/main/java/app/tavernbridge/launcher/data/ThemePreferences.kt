@@ -30,6 +30,7 @@ class ThemePreferences(context: Context) {
         textSize = LauncherTextSize.entries.firstOrNull { it.name == preferences.getString("text_scale", null) } ?: LauncherTextSize.NORMAL,
         accent = readAccent(preferences.getString("accent", null), preferences.getString(KEY_THEME, null)),
         highContrast = preferences.getBoolean("high_contrast", false),
+        systemFont = preferences.getBoolean("system_font", false),
         reducedMotion = if (preferences.contains("reduced_motion")) preferences.getBoolean("reduced_motion", false) else null,
         keepBackups = BackupKeep.entries.firstOrNull { it.name == preferences.getString("keep_backups", null) } ?: BackupKeep.TEN,
         includeSecretsByDefault = preferences.getBoolean("manual_backup_secrets", false),
@@ -39,6 +40,7 @@ class ThemePreferences(context: Context) {
         preferences.edit().putString("text_scale", value.textSize.name).putString("accent", value.accent.name)
             .putBoolean("high_contrast", value.highContrast).putString("keep_backups", value.keepBackups.name)
             .putBoolean("manual_backup_secrets", value.includeSecretsByDefault)
+            .putBoolean("system_font", value.systemFont)
             .also { if (value.reducedMotion == null) it.remove("reduced_motion") else it.putBoolean("reduced_motion", value.reducedMotion) }
             .apply()
     }

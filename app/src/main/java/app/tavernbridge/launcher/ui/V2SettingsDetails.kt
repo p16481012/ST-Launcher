@@ -108,6 +108,9 @@ internal fun V2DisplaySettings(state: LauncherUiState, onTheme: (AppTheme) -> Un
     } else { themes(); accents() }
     SettingsHeading("읽기 편의")
     SettingsGroup {
+        SettingsRow("시스템 폰트 사용하기", checked = prefs.systemFont, caption = "휴대폰의 기본 글꼴로 표시해요",
+            onClick = { onDisplay(prefs.copy(systemFont = !prefs.systemFont)) })
+        SettingsDivider()
         SettingsRow("고대비", checked = prefs.highContrast, caption = "글자와 선을 더 진하게 표시해요",
             onClick = { onDisplay(prefs.copy(highContrast = !prefs.highContrast)) })
         SettingsDivider()
@@ -375,7 +378,6 @@ internal fun V2BackgroundSettings(state: LauncherUiState, vm: LauncherViewModel)
 @Composable
 internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, openDetail: (String) -> Unit) {
     val context = LocalContext.current
-    val uri = LocalUriHandler.current
     val termux by produceState<TermuxInstallationInfo?>(null, state.environment.termuxInstalled) {
         value = withContext(Dispatchers.IO) { TermuxInstallationInspector(context.applicationContext).inspect() }
     }
@@ -408,8 +410,6 @@ internal fun V2AboutSettings(state: LauncherUiState, vm: LauncherViewModel, open
                 openDetail(ABOUT_REPORT)
                 if (state.diagnosticReport == null && !state.isWorking) vm.makeSettingsReport()
             }) else null)
-        SettingsDivider()
-        SettingsRow("GitHub 저장소", caption = "브라우저 앱이 열려요", onClick = { runCatching { uri.openUri("https://github.com/p16481012/ST-Launcher") }.onFailure { vm.showMessage("저장소 링크를 열 수 없어요.") } })
         SettingsDivider()
         SettingsRow("오픈소스 라이선스", onClick = { openDetail(ABOUT_LICENSES) })
     }
