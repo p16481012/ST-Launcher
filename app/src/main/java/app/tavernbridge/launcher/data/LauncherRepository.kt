@@ -335,6 +335,19 @@ class LauncherRepository(private val context: Context) {
         )
     }
 
+    internal suspend fun automaticBackup(request: BackupRequest): TermuxCommandResult {
+        require(BackupRequestCodec.decode(BackupRequestCodec.encode(request)) == request && request.parentOperation.isEmpty())
+        val kinds = request.categories.joinToString(",") { it.key }
+        val folders = request.customFolders.joinToString(",")
+        return runManager("backup-auto ${shellQuote(kinds)} ${if (request.includeSecrets) 1 else 0} ${shellQuote(folders)}",
+            timeoutMillis = 6 * 60 * 60_000L, backupRequestId = request.id)
+    }
+
+    internal suspend fun automaticReceipt(id: String): TermuxCommandResult {
+        require(UUID.fromString(id).toString() == id)
+        return runManager("auto-backup-status $id", 30_000L)
+    }
+
     suspend fun listBackups(): List<BackupArchive> = readBackupCatalog(false).archives
 
     suspend fun readBackupCatalog(withSafetyCount: Boolean): BackupCatalogResult {

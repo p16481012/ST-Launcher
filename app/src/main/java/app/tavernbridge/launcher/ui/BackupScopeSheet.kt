@@ -29,8 +29,9 @@ internal fun BackupScopeSheet(
     onClose: () -> Unit,
     progress: @Composable ColumnScope.() -> Unit,
 ) {
-    var scope by rememberSaveable { mutableStateOf("data") }
-    var keys by rememberSaveable { mutableStateOf(listOf(BackupCategory.USER_DATA.key)) }
+    val defaultFull = rememberBackupJobs().full
+    var scope by rememberSaveable { mutableStateOf(if (defaultFull) "full" else "data") }
+    var keys by rememberSaveable { mutableStateOf(listOf(if (defaultFull) BackupCategory.FULL.key else BackupCategory.USER_DATA.key)) }
     var folders by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var secrets by rememberSaveable { mutableStateOf(state.displayPreferences.includeSecretsByDefault) }
     val selected = keys.mapNotNull(BackupCategory::fromKey).toSet()

@@ -50,7 +50,7 @@ import kotlinx.coroutines.delay
 internal enum class SettingsPage(val title: String, val icon: ImageVector) {
     DISPLAY("화면", Icons.Outlined.TextFields), SERVER("서버 연결", Icons.Outlined.Language),
     SERVER_CONFIG("실리태번 서버 설정", Icons.Outlined.Terminal),
-    BACKGROUND("백그라운드 실행", Icons.Outlined.VerifiedUser), BACKUP("백업 알림", Icons.Outlined.FileDownload),
+    BACKGROUND("백그라운드 실행", Icons.Outlined.VerifiedUser), BACKUP("백업 알림·자동 백업", Icons.Outlined.FileDownload),
     ABOUT("앱 정보", Icons.Outlined.Info),
 }
 
@@ -157,7 +157,7 @@ internal fun V2SettingsLayout(state: LauncherUiState, nested: String? = null, cl
                                 SettingsPage.SERVER -> if (state.environment.externalAccessEnabled) "같은 Wi-Fi" else "이 기기만"
                                 SettingsPage.SERVER_CONFIG -> state.serverConfig?.let { "${it.values.size}개 항목" } ?: if (state.serverConfigLoading) "확인 중" else "확인 필요"
                                 SettingsPage.BACKGROUND -> state.backgroundAssessment().label
-                                SettingsPage.BACKUP -> if (state.backupReminder.enabled) state.backupReminder.interval.label else "꺼짐"
+                                SettingsPage.BACKUP -> if (rememberBackupJobs().enabled) "자동 · 매주" else if (state.backupReminder.enabled) state.backupReminder.interval.label else "꺼짐"
                                 SettingsPage.ABOUT -> BuildConfig.VERSION_NAME
                             }
                             val active = wide && selected == page

@@ -8,7 +8,13 @@ import app.tavernbridge.launcher.model.BackupRequest
 import app.tavernbridge.launcher.model.WorkProgress
 
 /** Only dates, a request UUID and user preferences; no paths, ZIP contents or credentials. */
-internal class BackupReminderStore(context: Context) {
+internal class BackupReminderStore private constructor(private val context: Context) {
+    companion object {
+        @Volatile private var shared: BackupReminderStore? = null
+        operator fun invoke(context: Context): BackupReminderStore = shared ?: synchronized(this) {
+            shared ?: BackupReminderStore(context.applicationContext).also { shared = it }
+        }
+    }
     private val preferences = context.getSharedPreferences("backup_reminder", Context.MODE_PRIVATE)
 
     @Synchronized
@@ -51,6 +57,9 @@ internal class BackupReminderStore(context: Context) {
             .putString("last_request_id", state.lastBackupRequestId)
             .putLong("snoozed_until", state.snoozedUntilMillis)
             .apply()
+        if (state.notice(System.currentTimeMillis(),true) == null) {
+            context.getSystemService(android.app.NotificationManager::class.java).cancel(BackupJobs.REMINDER_ID)
+        }
         return state
     }
 }

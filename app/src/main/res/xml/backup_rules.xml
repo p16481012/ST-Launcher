@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="sharedpref" path="local_appearance_preview.xml" />
+    <exclude domain="sharedpref" path="backup_jobs.xml" />
 </full-backup-content>
