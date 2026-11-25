@@ -22,12 +22,16 @@ const header=put(base+'header.jsonl',['broken',m('h',10)].join('\n'));
 const legacy=put('data/alice/group chats/legacy.jsonl',[a,z].join('\n'));
 const uncertain=put(base+'legacy.jsonl',[head(''),a,tail].join('\n'));
 const headerless=put(base+'unknown.jsonl',[a,z].join('\n'));
+const changedHeader=JSON.parse(head('notes'));changedHeader.chat_metadata.note='new note';
+const notes=put(base+'notes.jsonl',[JSON.stringify(changedHeader),a,tail].join('\n'));
+put(bak+'chat_notes.jsonl',[head('notes'),a,z].join('\n'));
 const missing=put(base+'no-backup.jsonl',[head('z'),m('unique',90),tail].join('\n'));
 put('data/_private/chats/A/x.jsonl',tail);
 let link=false;try{fs.symlinkSync(path.join(root,target),path.join(root,base+'s.jsonl'));link=true;}catch(e){if(process.platform!=='win32'||e.code!=='EPERM')throw e;}
 let q=scan(), r=q.rows.get(target);assert.equal(r[2],'bad_tail');assert.equal(r[11],'verified');assert.equal(u(r[7]),backup);
 assert.ok(!q.rows.has(good)&&!q.rows.has(legacy));assert.equal(field(q.s,'ok_count'),'2');assert.equal(q.rows.get(headerless)[2],'unknown');if(link)assert.ok(!q.rows.has(base+'s.jsonl'));
 assert.equal(q.rows.get(uncertain)[11],'candidate');assert.equal(q.rows.get(header)[2],'bad_header');assert.equal(q.rows.get(mid)[2],'bad_middle');assert.equal(q.rows.get(missing)[11],'none');
+assert.equal(q.rows.get(notes)[11],'candidate');repair(q.rows.get(notes),'restore-backup',102);
 repair(q.rows.get(uncertain),'restore-backup',102);repair(q.rows.get(mid),'trim-tail',103);
 const initial=fs.readFileSync(path.join(root,target));let result=repair(r,'restore-backup'),id=field(result,'trash_id');
 assert.deepEqual(fs.readFileSync(path.join(root,target)),fs.readFileSync(path.join(root,backup)));assert.match(scan().s,new RegExp('chat_undo\\t'+id+'\\t'));
