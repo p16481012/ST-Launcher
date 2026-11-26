@@ -56,23 +56,46 @@ class DataLibraryFlowTest {
             if (request.getString(0) == "backgrounds/여름.png") null else "art\t$i\t$artPng"
         }.joinToString("\n")
     }
-    private fun launch() {
+    private val assetFolders = linkedMapOf("presets" to "OpenAI Settings","worlds" to "worlds",
+        "quickreplies" to "QuickReplies","themes" to "themes")
+    private fun previewOutput(args: String): String {
+        fun entry(title: String, summary: String = "", excerpt: String = "", argb: String = "-") =
+            listOf("peek",enc(title),enc(summary),enc(excerpt),argb).joinToString("\t")
+        return when {
+            "'${enc("OpenAI Settings/샘플.json")}'" in args -> entry("온도","0.8") + "\npreview\t0\t"
+            "'${enc("worlds/샘플.json")}'" in args -> entry("지도","왕국","읽기 전용 본문") + "\npreview\t1\t"
+            "'${enc("QuickReplies/샘플.json")}'" in args -> entry("인사",excerpt = "/echo 안녕") + "\npreview\t0\t"
+            "'${enc("themes/샘플.json")}'" in args -> entry("본문 글자","#556677",argb = "FF556677") + "\npreview\t0\t"
+            else -> error("예상하지 않은 미리보기 경로")
+        }
+    }
+    private fun launch(assetUse: String? = null, serverRunning: Boolean = false) {
         val library = DataLibraryAccess(InstrumentationRegistry.getInstrumentation().targetContext,{ listOf("default-user") }) { args,_ ->
             calls += args
-            val output = if (args.startsWith("library-artwork ")) artOutput(args) else when {
-                " 'orphans' " in args -> row("chats/남은 대화","남은 대화",1000,5)
-                " 'cards' " in args -> listOf(row("characters/가.png","가나다",200,4),
-                    row("characters/나.png","나라마",900,1)).joinToString("\n")
-                " 'backgrounds' " in args -> listOf("봄.jpg","여름.png","겨울.webp").mapIndexed { i, name ->
-                    row("backgrounds/$name",name,300-i)
-                }.joinToString("\n")
-                else -> ""
-            } + "\nnext_cursor="
+            val output = when {
+                args.startsWith("library-artwork ") -> artOutput(args)
+                args.startsWith("library-usage ") -> "state=" + assetUse + "\ndetail_b64=" + enc("검사 결과")
+                args.startsWith("library-preview ") -> previewOutput(args)
+                args.startsWith("library-list ") -> (when {
+                    " 'orphans' " in args -> row("chats/남은 대화","남은 대화",1000,5)
+                    " 'cards' " in args -> listOf(row("characters/가.png","가나다",200,4),
+                        row("characters/나.png","나라마",900,1)).joinToString("\n")
+                    " 'backgrounds' " in args -> listOf("봄.jpg","여름.png","겨울.webp").mapIndexed { i, name ->
+                        row("backgrounds/$name",name,300-i)
+                    }.joinToString("\n")
+                    assetUse != null -> assetFolders.entries.firstOrNull { " '${it.key}' " in args }?.let {
+                        row("${it.value}/샘플.json","샘플.json",1024)
+                    }.orEmpty()
+                    else -> ""
+                }) + "\nnext_cursor="
+                else -> error("테스트 중 예상하지 않은 명령: $args")
+            }
             TermuxCommandResult("",output,"",0,Activity.RESULT_OK,"")
         }
         ui.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT,DisplayPreferences(reducedMotion=true)) {
-                DataLibraryScreen(LauncherUiState(isWorking=false), library, { writes += it }, {})
+                DataLibraryScreen(LauncherUiState(isWorking=false,environment = EnvironmentStatus(processRunning = serverRunning)),
+                    library, { writes += it }, {})
             }
         }
     }
@@ -140,6 +163,97 @@ class DataLibraryFlowTest {
             }
             return result
         } finally { bitmap.recycle() }
+    }
+    private fun footer(text: String) =
+        ui.onNode(hasText(text) and hasAnyAncestor(hasTestTag("v2-sheet-footer")))
+    private fun sheetInput() =
+        ui.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("v2-sheet-body")))
+
+    @Test fun jsonAssetsPreviewOnlyWhenOpenedAndNeverExecuteTheirContents() {
+        launch("none")
+        for ((index,label) in listOf("채팅 완성 프리셋","로어북","빠른 답장(QR)","테마").withIndex()) {
+            ui.onNodeWithText(label).performScrollTo().performClick()
+            ui.onNodeWithText("샘플.json").assertExists()
+            ui.onNodeWithContentDescription("샘플.json 더보기").assertExists()
+            ui.runOnIdle { assertEquals(index,calls.count { it.startsWith("library-preview ") }) }
+            ui.onNodeWithText("샘플.json").performClick()
+            when(label) {
+                "채팅 완성 프리셋" -> ui.onNodeWithText("0.8").assertExists()
+                "로어북" -> {
+                    ui.onNodeWithText("지도").performScrollTo().performClick()
+                    ui.onNodeWithText("읽기 전용 본문").assertExists()
+                    ui.onNodeWithText("미리보기에서 1개 항목은 생략했어요.").assertExists()
+                }
+                "빠른 답장(QR)" -> {
+                    ui.onNodeWithText("인사").performScrollTo().performClick()
+                    ui.onNodeWithText("/echo 안녕").assertHasNoClickAction()
+                }
+                "테마" -> ui.onNodeWithText("이 테마의 대화 예시예요.").assertExists()
+            }
+            ui.onNodeWithContentDescription("시트 닫기").performClick()
+            ui.onNodeWithContentDescription("뒤로").performClick()
+        }
+        ui.runOnIdle {
+            assertEquals(4,calls.count { it.startsWith("library-preview ") })
+            assertFalse(calls.any { it.startsWith("library-usage ") }); assertTrue(writes.isEmpty())
+        }
+    }
+
+    @Test fun usedBackgroundIsNotMovedAndOpeningItsMenuDoesNotStartAnOperation() {
+        launch("used")
+        ui.onNodeWithText("배경 그림").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("봄.jpg 더보기").performClick()
+        ui.runOnIdle { assertTrue(writes.isEmpty()); assertFalse(calls.any { it.startsWith("library-usage ") }) }
+        ui.onNodeWithText("휴지통으로 옮기기").performClick()
+        ui.onNodeWithText("사용 중").assertExists()
+        footer("휴지통으로 옮기기").assertDoesNotExist()
+        footer("닫기").performClick()
+        ui.runOnIdle { assertEquals(1,calls.count { it.startsWith("library-usage ") }); assertTrue(writes.isEmpty()) }
+    }
+
+    @Test fun unreferencedAssetRenameRequiresValidStemAndExplainsServerRestart() {
+        launch("none",serverRunning = true)
+        ui.onNodeWithText("빠른 답장(QR)").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("샘플.json 더보기").performClick()
+        ui.onNodeWithText("이름 변경").performClick()
+        ui.onNodeWithText("확인된 사용처 없음").assertExists()
+        val confirm = footer("서버 끄고 이름 변경")
+        confirm.assertIsNotEnabled()
+        sheetInput().performTextReplacement("다른/이름")
+        confirm.assertIsNotEnabled()
+        sheetInput().performTextReplacement("새 답장")
+        ui.onNodeWithText("확정하면 서버를 잠시 끄고 작업을 마친 뒤 다시 켜요.").assertExists()
+        confirm.assertIsEnabled().performClick()
+        ui.runOnIdle { assertEquals("이름 변경",writes.single().label); assertTrue(writes.single().pause) }
+    }
+
+    @Test fun unknownReferencesDefaultToCopyAndRequireConsentToTrashOrRenameOriginal() {
+        launch("unconfirmed")
+        ui.onNodeWithText("로어북").performScrollTo().performClick()
+        fun open(action: String) {
+            ui.onNodeWithContentDescription("샘플.json 더보기").performClick()
+            ui.onNodeWithText(action).performClick()
+            ui.onNodeWithText("확인 못 함").assertExists()
+        }
+        open("이름 변경")
+        footer("새 이름으로 복사").assertIsNotEnabled()
+        sheetInput().performTextReplacement("내 사본")
+        footer("새 이름으로 복사").assertIsEnabled().performClick()
+        ui.runOnIdle { assertEquals("새 이름으로 복사",writes.single().label) }
+        open("이름 변경")
+        sheetInput().performTextReplacement("새 이름")
+        ui.onNodeWithText("원본 이름 변경").performScrollTo().performClick()
+        footer("이름 변경").assertIsNotEnabled()
+        ui.onNodeWithText("연결이 끊길 수 있음을 확인했어요").performScrollTo().performClick()
+        footer("이름 변경").assertIsEnabled().performClick()
+        open("휴지통으로 옮기기")
+        footer("휴지통으로 옮기기").assertIsNotEnabled()
+        ui.onNodeWithText("연결이 끊길 수 있음을 확인했어요").performScrollTo().performClick()
+        footer("휴지통으로 옮기기").assertIsEnabled().performClick()
+        ui.runOnIdle {
+            assertEquals(listOf("새 이름으로 복사","이름 변경","휴지통으로 옮기기"),writes.map { it.label })
+            assertTrue(writes.all { it.operation == "library-asset-change" && it.pause })
+        }
     }
     @Test fun backgroundsShareARowAndOpenTheUncroppedDetail() {
         launch()

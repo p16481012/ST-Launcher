@@ -104,6 +104,60 @@ try{
     assert.equal(readValue(answer(0,'library-usage',b64('backgrounds/Card.png')),'state'),'none');
     file('chats/A/broken.jsonl','{broken');assert.equal(readValue(answer(0,'library-usage',b64('backgrounds/Card.png')),'state'),'unconfirmed');
     file('group chats/g.jsonl',JSON.stringify({chat_metadata:{custom_background:'url("backgrounds/Card.png")'}})+'\n');assert.equal(readValue(answer(0,'library-usage',b64('backgrounds/Card.png')),'state'),'used');
+    const asset=(kind,r)=>inspect(kind).find(x=>x.path===r);
+    const argv=(x,mode,stem='',allow='0')=>[b64(x.path),x.revision,mode,b64(stem),allow];
+    const change=(code,x,...opts)=>answer(code,'library-asset-change',...argv(x,...opts));
+    const settings={background:{name:'Card.png'},power_user:{theme:'Night'},oai_settings:{preset_settings_openai:'Case'},
+        world_info_settings:{world_info:{globalSelect:['City']}},extension_settings:{quickReplyV2:{config:{setList:[{set:'Night'}]}}}};
+    file('settings.json',JSON.stringify(settings));
+    for(const [k,r] of [['backgrounds','backgrounds/Card.png'],['worlds','worlds/City.json'],['presets','OpenAI Settings/Case.json'],
+        ['themes','themes/Existing-file.json'],['quickreplies','QuickReplies/Existing-file.json']]){
+        const x=asset(k,r);change(144,x,'trash','','1');change(144,x,'rename','Blocked','1');
+        const result=change(0,x,'copy','Independent');assert.equal(decode(readValue(result,'name_b64')),'Independent'+path.extname(r));
+        const target=path.join(profile,path.dirname(r),'Independent'+path.extname(r));
+        if(['themes','quickreplies'].includes(k))assert.equal(JSON.parse(fs.readFileSync(target)).name,'Independent');
+        else assert.deepEqual(fs.readFileSync(target),fs.readFileSync(path.join(profile,r)));
+        change(145,x,'copy','Independent');fs.unlinkSync(target);
+    }
+    const firstQr=asset('quickreplies','QuickReplies/Existing-file.json');
+    delete settings.extension_settings.quickReplyV2.config;
+    settings.extension_settings.quickReplyV2.characterConfigs={A:{setList:[{set:'Night'}]}};file('settings.json',JSON.stringify(settings));
+    change(144,firstQr,'rename','Blocked','1');
+    settings.extension_settings.quickReplyV2.characterConfigs={};file('settings.json',JSON.stringify(settings));
+    file('chats/A/qr.jsonl',JSON.stringify({chat_metadata:{quickReply:{setList:[{set:'Night'}]}}}));
+    change(144,firstQr,'trash','','1');fs.unlinkSync(path.join(profile,'chats/A/qr.jsonl'));
+    file('QuickReplies/Menu.json',JSON.stringify({name:'Menu',qrList:[{contextList:[{set:'Night'}]}]}));
+    change(144,firstQr,'trash','','1');fs.unlinkSync(path.join(profile,'QuickReplies/Menu.json'));
+    change(144,firstQr,'trash');change(145,firstQr,'copy','Night (2)');
+    for(const [k,d,suffix,bytes] of [['backgrounds','backgrounds','.PNG',bg],['worlds','worlds','.json','{"entries":{}}'],
+        ['presets','OpenAI Settings','.json','{"prompts":[]}'],['themes','themes','.json','\ufeff{ "nested":{"name":"nested"}, "name" : "Original", "id":9007199254740993 }'],
+        ['quickreplies','QuickReplies','.json','{ "qrList":[], "name" : "Original", "id":9007199254740993 }']]){
+        const r=d+'/Fixture'+suffix,s=d+'/Changed'+suffix,src=path.join(profile,r),dst=path.join(profile,s);
+        file(r,bytes);const x=asset(k,r);
+        change(64,x,'rename','../nested','1');change(64,x,'rename','Fixture','1');change(64,x,'copy','bad:name','1');
+        file(s,'do not replace');change(145,x,'rename','Changed','1');assert.equal(fs.readFileSync(dst,'utf8'),'do not replace');fs.unlinkSync(dst);
+        const renamed=change(0,x,'rename','Changed','1');assert(!fs.existsSync(src));assert.equal(decode(readValue(renamed,'name_b64')),path.basename(s));
+        const structured=k==='themes'||k==='quickreplies';
+        assert.deepEqual(fs.readFileSync(dst),Buffer.from(structured?bytes.replace('"Original"','"Changed"'):bytes));
+        if(structured){assert.equal(readValue(answer(0,'library-undo',readValue(renamed,'group_id')),'restored'),'1');assert.deepEqual(fs.readFileSync(src),Buffer.from(bytes));fs.unlinkSync(src);}
+        const y=asset(k,s),origBytes=fs.readFileSync(dst),trashed=change(0,y,'trash','','1'),groupId=readValue(trashed,'group_id');
+        assert(!fs.existsSync(dst));assert(answer(0,'library-history').includes(groupId));
+        file(s,'replacement');assert.equal(readValue(answer(0,'library-undo',groupId),'restored'),'0');assert.equal(fs.readFileSync(dst,'utf8'),'replacement');fs.unlinkSync(dst);
+        if(structured){
+            const alias=d+'/Unrelated.json';file(alias,'{"name":"Changed"}');
+            assert.equal(readValue(answer(0,'library-undo',groupId),'restored'),'0');assert(!fs.existsSync(dst));fs.unlinkSync(path.join(profile,alias));
+        }
+        assert.equal(readValue(answer(0,'library-undo',groupId),'restored'),'1');assert.deepEqual(fs.readFileSync(dst),origBytes);
+        file(s,'changed since list');change(145,y,'trash','','1');answer(145,'library-usage',b64(y.path),y.revision);
+        fs.unlinkSync(dst);
+    }
+    // Termination after output publication and before original -> trash: neither version is lost.
+    file('themes/Recoverable.json','{"name":"Recoverable","main_text_color":"blue"}');
+    const before=asset('themes','themes/Recoverable.json');
+    const interrupted=invoke(['-r',fault],user,'library-asset-change',...argv(before,'rename','Published','1'));
+    assert.equal(interrupted.status,85,interrupted.stderr);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile,'themes/Recoverable.json'))).name,'Recoverable');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile,'themes/Published.json'))).name,'Published');
     if(process.platform!=='win32'){
         fs.symlinkSync(path.join(profile,'characters/A.png'),path.join(profile,'characters/linked.png'));assert(!inspect('cards').some(x=>x.path==='characters/linked.png'));
         fs.renameSync(path.join(profile,'OpenAI Settings'),path.join(profile,'openai-original'));
@@ -116,5 +170,5 @@ try{
     let cursor='',seen=new Set(),pages=0;
     do{const page=answer(0,'library-list','worlds',cursor);assert(Buffer.byteLength(page)<40*1024);for(const x of rows(page)){assert(!seen.has(x.path));seen.add(x.path);}cursor=readValue(page,'next_cursor');assert(++pages<20);}while(cursor);
     assert(pages>1);assert.equal(seen.size,482);
-    console.log('Library data: stable paging, separated imports, scoped names, grouped undo, revisions and tri-state usage passed.');
+    console.log('Library data: stable paging, separated imports, safe five-category rename/copy/trash, crash recovery, grouped undo, revisions and tri-state usage passed.');
 }finally{fs.rmSync(base,{recursive:true,force:true});}

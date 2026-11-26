@@ -59,13 +59,45 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
     }
     suspend fun groups(user: String) =
         LibraryProtocol.groups(run(wire("library-history", libraryEncode(user)), 60_000).verified().stdout)
-    suspend fun usage(user: String, path: String): String {
-        require(path.safeLibraryRelative())
-        val r = run(wire("library-usage", libraryEncode(user), libraryEncode(path)), 5 * 60_000L).verified()
-        val title = when (r.field("state")) {
-            "used" -> "사용 중"; "none" -> "확인된 사용처 없음"; else -> "확인 못 함"
+    suspend fun preview(user: String, row: LibraryItem): LibraryAssetPreview {
+        require(row.isManagedAsset() && !row.path.startsWith("backgrounds/"))
+        val result = run(wire("library-preview", libraryEncode(user), libraryEncode(row.path), row.revision), 35_000L).verified()
+        return LibraryAssetPreview.parse(result.stdout)
+    }
+    suspend fun assetUsage(user: String, row: LibraryItem): AssetUsage {
+        require(row.isManagedAsset())
+        val r = run(wire("library-usage", libraryEncode(user), libraryEncode(row.path), row.revision), 5 * 60_000L).verified()
+        val state = when (r.field("state")) {
+            "used" -> AssetUse.USED; "none" -> AssetUse.NONE; "unconfirmed" -> AssetUse.UNKNOWN
+            else -> error("사용처 검사 결과를 확인할 수 없어요. 다시 확인해 주세요.")
         }
-        return listOf(title, r.field("detail_b64")?.let(::libraryDecode).orEmpty()).filter(String::isNotBlank).joinToString(" · ")
+        return AssetUsage(state, r.field("detail_b64")?.let(::libraryDecode).orEmpty())
+    }
+
+    fun changeAsset(user: String, row: LibraryItem, action: AssetChange, newStem: String = "", allowUnknown: Boolean = false): LibraryWrite {
+        require(row.isManagedAsset())
+        val stem = if (action == AssetChange.TRASH) "" else {
+            assetNameError(row, newStem)?.let { throw IllegalArgumentException(it) }
+            assetStem(newStem)
+        }
+        val command = wire("library-asset-change", libraryEncode(user), libraryEncode(row.path), row.revision,
+            action.wire, libraryEncode(stem), if (allowUnknown) "1" else "0")
+        return LibraryWrite("library-asset-change", action.label, true, { result ->
+            val name = result.field("name_b64")?.let(::libraryDecode)
+            when (action) {
+                AssetChange.TRASH -> "휴지통으로 옮겼어요. 원래 위치로 되돌릴 수 있어요."
+                AssetChange.RENAME -> "이름을 바꿨어요 · ${name ?: stem}"
+                AssetChange.COPY -> "새 이름으로 복사했어요 · ${name ?: stem}\n원본은 그대로예요."
+            }
+        }) {
+            lastMoved.value = null
+            run(command, 5 * 60_000L).also { r ->
+                val id = r.field("group_id")
+                if (action == AssetChange.TRASH && r.isSuccess && !r.stdoutTruncated &&
+                    r.field("action") == "trash" && r.field("moved") == "1" && id != null && libraryGroupId.matches(id))
+                    lastMoved.value = user to LibraryGroup(id, System.currentTimeMillis(), 1)
+            }
+        }
     }
     fun trash(user: String, rows: List<LibraryItem>, chats: Boolean): LibraryWrite {
         require(rows.isNotEmpty() && rows.size <= 500 && rows.all { it.path.safeLibraryRelative() && librarySha.matches(it.revision) })

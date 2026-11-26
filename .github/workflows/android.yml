@@ -93,6 +93,7 @@ jobs:
           node scripts/test-extensions.cjs
           node scripts/test-share-character.cjs
           node scripts/test-library-data.cjs
+          node scripts/test-library-preview.cjs
           bash -n app/src/main/assets/library-artwork.sh
           npm install --prefix "$RUNNER_TEMP/st-artwork-codecs" --ignore-scripts --no-package-lock --no-audit --no-fund @jimp/core@1.6.0 @jimp/plugin-resize@1.6.0 @jimp/wasm-png@1.6.0 @jimp/wasm-jpeg@1.6.0 image-size@2.0.2
           ST_ARTWORK_CODEC_ROOT="$RUNNER_TEMP/st-artwork-codecs" node scripts/test-library-artwork.cjs

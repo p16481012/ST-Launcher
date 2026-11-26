@@ -295,7 +295,7 @@ attach_progress_result() {
 
 should_record_operation() {
     case "$1" in
-        import-character|library-trash|library-undo|library-import|import-preview|import-merge) return 0 ;;
+        import-character|library-trash|library-undo|library-import|library-asset-change|import-preview|import-merge) return 0 ;;
         chat-repair|chat-undo|chat-scan|install|start|stop|restart|backup|import-backup|import-install|delete-backup|restore|repair|reset-installation|update|update-preflight|switch-branch|diagnose|write-st-file|create-st-file|import-st-file|import-st-folder|mkdir-st|rename-st|delete-st|restore-st-trash|safety-export|safety-delete|safety-restore)
             return 0
             ;;
@@ -4867,12 +4867,15 @@ case "${1:-doctor}" in
     list-backups) list_backups "${2:-}" ;;
     import-backup) import_backup "${2:-}" "${3:-}" ;;
     import-preview|import-merge) pc_merge_command "$@" ;;
+    library-preview)
+        [[ "$#" == 4 ]] || exit 64
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-preview.sh" "$ST_HOME" "$2" "$3" "$4" ;;
     library-artwork)
         [[ "$#" == 4 ]] || exit 64
         bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-artwork.sh" "$ST_HOME" "$2" "$3" "$4" ;;
     library-list|library-usage|library-history)
         bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-data.sh" "$1" "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "${@:2}" ;;
-    library-trash|library-undo|library-import)
+    library-trash|library-undo|library-import|library-asset-change)
         if [[ "$1" == library-import ]]; then begin_operation "$1"; else begin_st_file_mutation "$1"; fi
         write_progress 0 "자료 관리" "선택한 사용자와 파일을 확인하고 있어요."
         ST_CANCEL_REQUEST_FILE="$(cancellation_request_path)" ST_CANCEL_REQUEST_ID_FILE="$RUN_DIR/cancel-request-${ST_OPERATION_REQUEST_ID:-}" \

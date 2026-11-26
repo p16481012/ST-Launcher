@@ -468,7 +468,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             }
             val archive = if (op == "backup") state.backups.find { it.fileName == state.lastCreatedBackupName } else null
             val chatUndo = if (op == "chat-repair") state.chatUndo.firstOrNull() else null
-            val libraryUndo = if (op == "library-trash") viewModel.dataLibrary.lastMoved.value else null
+            val libraryUndo = if (op == "library-trash" || op == "library-asset-change") viewModel.dataLibrary.lastMoved.value else null
             val action = when {
                 libraryUndo != null -> "실행 취소"
                 chatUndo != null -> if (state.chatCompletion.contains("개 중 ")) "마지막 1개 실행 취소" else "실행 취소"

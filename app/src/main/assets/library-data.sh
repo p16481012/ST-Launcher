@@ -89,6 +89,8 @@ function cardInfo(p){
 }
 const jsonFolders={presets:'OpenAI Settings',themes:'themes',quickreplies:'QuickReplies'};
 const bgTypes=new Set(['png','jpg','jpeg','webp','gif','bmp','avif']);
+const changeKinds=new Set(['backgrounds','worlds','presets','themes','quickreplies']);
+const named=k=>k==='themes'||k==='quickreplies';
 const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const ext=s=>path.extname(s).slice(1).toLowerCase();
 function category(r){
@@ -293,6 +295,12 @@ function historyOrUndo(){
                 count++;if(!undo)continue;
                 verifyLiveProfile();const dest=path.join(fixedParent(profile,m.r),path.basename(m.r));
                 if(stat(dest)){skipped++;continue;}
+                if(named(category(m.r))){
+                    // A newly added theme/QR may have the old internal name
+                    // under a different filename. Don't make ST choose between duplicates.
+                    let old;if(s.size<=50n*BigInt(MB)){try{old=json(stored,50*MB);}catch(e){if(!(e instanceof SyntaxError)&&e.code!=='ERR_ENCODING_INVALID_ENCODED_DATA')throw e;}}
+                    if(typeof old?.name==='string')checkInternalName(path.dirname(dest),old.name.normalize('NFC'),null);
+                }
                 // Never attach orphan/old conversations to a newly-created card.
                 if(category(m.r)==='orphans'){
                     const name=path.basename(m.r)+'.png',live=stat(path.join(dirpath(profile,'characters'),name)),card=plan.rows.find(z=>z.r==='characters/'+name&&z.selected===m.selected);
@@ -383,18 +391,15 @@ function importAsset(){
 // Usage is explicitly requested for one item. No index/settings/chat contents
 // are cached on Android, no queries run on Home/server start. Unknown input
 // never means unused. Results concern built-in references, not arbitrary code.
-function usage(){
-    const r=dec(args[0]),k=category(r);
+function usageState(r){
+    const k=category(r);
     if(!['backgrounds','worlds','presets','themes','quickreplies'].includes(k))fail(64,'사용처를 확인할 수 없는 종류예요.');
     const [folder,n]=r.split('/'),title=path.parse(n).name,p=path.join(dirpath(profile,folder),n);
     if(!stat(p)?.isFile())fail(145,'선택한 파일이 바뀌었어요.');
     let unknown=false,s={},checks=0;const hits=new Set(),start=Date.now();
     const guard=()=>{cancel();return ++checks<=15000&&Date.now()-start<20000;};
     try{s=json(path.join(profile,'settings.json'),8*MB);if(!obj(s))throw Error();}catch{unknown=true;s={};}
-    if(k==='quickreplies'){
-        // Sets may be active globally, per chat, or through other extensions.
-        unknown=true;
-    }else if(k==='presets'||k==='themes'){
+    if(k==='presets'||k==='themes'){
         const current=k==='themes'?s.power_user?.theme:s.oai_settings?.preset_settings_openai;
         let effective=title;
         if(k==='themes'){try{effective=json(p,50*MB)?.name;}catch{unknown=true;effective=null;}}
@@ -407,7 +412,34 @@ function usage(){
             const normalized=value.trim().replace(/^url\((.*)\)$/i,'$1').replace(/^['"]|['"]$/g,'').split(/[?#]/)[0];
             try{return decodeURIComponent(normalized.split('/').at(-1))===n;}catch{unknown=true;return false;}
         }
-        if(k==='backgrounds'){
+        let qrName=null;
+        const qrUses=config=>typeof qrName==='string'&&Array.isArray(config?.setList)&&config.setList.some(v=>v?.set===qrName);
+        if(k==='quickreplies'){
+            // 1.19.1 uses name (not the filename), including per-character and per-chat sets.
+            // Scripts/other extensions can also look up sets dynamically: never report "unused".
+            unknown=true;
+            try{qrName=json(p,50*MB)?.name;}catch{ /* unknown */ }
+            const qr=s.extension_settings?.quickReplyV2,legacy=s.extension_settings?.quickReply;
+            if(qrUses(qr?.config)||(!qr&&(legacy?.selectedPreset??legacy?.name??'Default')===qrName))hits.add('전역 빠른 답장');
+            if(Object.values(qr?.characterConfigs||{}).some(qrUses))hits.add('캐릭터 빠른 답장');
+            // QR sets can reference another set in their context menu. Do
+            // bounded I/O only on this explicit one-item usage/mutation check.
+            let budget=8*MB;
+            if(!hits.size&&qrName)for(const e of entries(dirpath(profile,folder))){
+                if(!guard()||budget<=0)break;
+                if(!e.isFile()||e.name===n||!e.name.endsWith('.json'))continue;
+                const other=path.join(profile,folder,e.name),st=stat(other);
+                if(!st?.isFile()||Number(st.size)>budget)continue;
+                budget-=Number(st.size);
+                try{
+                    const set=json(other,8*MB);
+                    if((Array.isArray(set.qrList)&&set.qrList.some(q=>Array.isArray(q?.contextList)&&q.contextList.some(link=>link?.set===qrName)))||
+                        (Array.isArray(set.quickReplySlots)&&set.quickReplySlots.some(q=>Array.isArray(q?.contextMenu)&&q.contextMenu.some(link=>link?.preset===qrName)))){
+                        hits.add('다른 빠른 답장의 메뉴');break;
+                    }
+                }catch(e){if(e.exit===130)throw e;}
+            }
+        }else if(k==='backgrounds'){
             if(typeof s.background?.name!=='string')unknown=true;else if(bgMatch(s.background.name))hits.add('지금 배경');
         }else{
             const world=s.world_info_settings?.world_info;
@@ -415,8 +447,9 @@ function usage(){
             if(Array.isArray(world?.globalSelect)&&world.globalSelect.includes(title))hits.add('전역 로어북');
             if(Array.isArray(world?.charLore)&&world.charLore.some(c=>Array.isArray(c?.extraBooks)&&c.extraBooks.includes(title)))hits.add('캐릭터 추가 로어북');
             if(Object.values(s.power_user?.persona_descriptions||{}).some(c=>c?.lorebook===title))hits.add('페르소나 로어북');
-            for(const cr of listFiles('cards')){if(!guard()){unknown=true;break;}const p=path.join(profile,cr),st=stat(p);const c=st?.isFile()?cachedCard(path.basename(cr),p,st):null;if(!c)unknown=true;else if(c.world===title)hits.add('캐릭터 로어북');}
+            if(!hits.size||action==='library-usage')for(const cr of listFiles('cards')){if(!guard()){unknown=true;break;}const p=path.join(profile,cr),st=stat(p);const c=st?.isFile()?cachedCard(path.basename(cr),p,st):null;if(!c)unknown=true;else if(c.world===title){hits.add('캐릭터 로어북');if(action!=='library-usage')break;}}
         }
+        if(hits.size&&action!=='library-usage')return {state:'used',detail:Array.from(hits).join(' · ')};
         function firstHeader(p){
             return withFile(p,Number.MAX_SAFE_INTEGER,(fd,st)=>{
                 const chunks=[];let off=0,ended=false;
@@ -429,7 +462,9 @@ function usage(){
         function inspectChats(d){for(const e of entries(d)){if(!e.name.endsWith('.jsonl'))continue;
             if(!guard()){unknown=true;return false;}if(!e.isFile()){unknown=true;continue;}
             try{const m=firstHeader(path.join(d,e.name));
-                if(k==='worlds'?m.world_info===title:bgMatch(m.custom_background)||(Array.isArray(m.chat_backgrounds)&&m.chat_backgrounds.some(bgMatch)))hits.add(k==='worlds'?'채팅 로어북':'채팅 배경');
+                if(k==='quickreplies'){if(qrUses(m.quickReply))hits.add('채팅 빠른 답장');}
+                else if(k==='worlds'?m.world_info===title:bgMatch(m.custom_background)||(Array.isArray(m.chat_backgrounds)&&m.chat_backgrounds.some(bgMatch)))hits.add(k==='worlds'?'채팅 로어북':'채팅 배경');
+                if(hits.size&&action!=='library-usage')return false;
             }catch(e){if(e.exit===130)throw e;unknown=true;}}
             return true;
         }
@@ -437,7 +472,100 @@ function usage(){
         if(guard())inspectChats(dirpath(profile,'group chats',true));else unknown=true;
     }
     const state=hits.size?'used':unknown?'unconfirmed':'none';
-    console.log('state='+state+'\ndetail_b64='+b64(hits.size?Array.from(hits).join(' · ')+(unknown?' · 일부 확인 못 함':''):unknown?'일부 설정·채팅에서 사용 여부를 확인하지 못했어요.':'검사한 실리태번 기본 설정에서 사용처를 찾지 못했어요.'));
+    return {state,detail:hits.size?Array.from(hits).join(' · ')+(unknown?' · 일부 확인 못 함':''):unknown?'일부 설정·채팅에서 사용 여부를 확인하지 못했어요.':'검사한 실리태번 기본 설정에서 사용처를 찾지 못했어요.'};
+}
+function usage(){
+    const r=dec(args[0]);
+    if(args.length>2||!changeKinds.has(category(r)))fail(64,'지원하지 않는 자료예요.');
+    const check=()=>{if(args.length===2&&item(r,null).rev!==args[1])fail(145,'자료가 바뀌었어요. 다시 확인해 주세요.');};
+    check();const result=usageState(r);check();
+    console.log('state='+result.state+'\ndetail_b64='+b64(result.detail));
+}
+// JSON.parse/stringify of a whole profile document could change large integers,
+// formatting and extension-owned values. Replace only the top-level name token.
+function renamedDocument(source,stem){
+    const raw=read(source,50*MB),bom=raw.subarray(0,3).toString('hex')==='efbbbf',text=utf(raw);
+    let doc;try{doc=JSON.parse(text);}catch{fail(144,'파일 안의 이름을 안전하게 바꿀 수 없는 JSON이에요.');}
+    if(!obj(doc))fail(144,'자료의 JSON 형식을 확인할 수 없어요.');
+    const endString=i=>{for(let j=i+1;j<text.length;j++){if(text[j]==='\\')j++;else if(text[j]==='"')return j+1;}fail(144,'JSON 문자열을 읽을 수 없어요.');};
+    const afterSpace=i=>{while(i<text.length&&/\s/.test(text[i]))i++;return i;};
+    let depth=0,range=null;
+    for(let i=0;i<text.length;){
+        const c=text[i];if(c!=='"'){if(c==='{'||c==='[')depth++;else if(c==='}'||c===']')depth--;i++;continue;}
+        const end=endString(i),colon=depth===1?afterSpace(end):end;
+        if(depth===1&&text[colon]===':'&&JSON.parse(text.slice(i,end))==='name'){
+            const begin=afterSpace(colon+1);
+            if(range||text[begin]!=='"')fail(144,'이름 항목이 중복되었거나 올바른 문자열이 아니에요.');
+            range=[begin,endString(begin)];i=range[1];
+        }else i=end;
+    }
+    const token=JSON.stringify(stem),at=text.indexOf('{')+1;
+    return (bom?'\ufeff':'')+(range?text.slice(0,range[0])+token+text.slice(range[1]):text.slice(0,at)+'"name":'+token+(Object.keys(doc).length?',':'')+text.slice(at));
+}
+function checkInternalName(folder,stem,ignore){
+    for(const e of entries(folder)){cancel();if(e.name===ignore||!e.name.endsWith('.json'))continue;
+        if(!e.isFile())fail(145,'목록에 확인할 수 없는 JSON 파일이 있어 이름을 바꾸지 않았어요.');
+        let doc;try{doc=json(path.join(folder,e.name),50*MB);}catch(error){if(error instanceof SyntaxError)continue;throw error;}
+        if(typeof doc?.name==='string'&&doc.name.normalize('NFC')===stem)fail(145,'파일 이름은 달라도 실리태번에서 같은 이름을 쓰는 자료가 있어요.');
+    }
+}
+function stashAsset(r,source,check){
+    const created=Date.now(),gid=crypto.randomUUID(),id=created+'-'+crypto.randomUUID();
+    const s=check(),rows=[{r,selected:r,id,identity:ino(s),version:partId(s),chatRevision:''}];
+    const journal=pin(path.join(owner,'library-undo'),true),base=pin(path.join(owner,'file-trash'),true);
+    writeEx(path.join(journal,gid+'.json'),JSON.stringify({format:1,root:rootName,rootInode:ino(fs.statSync(root,{bigint:true})),user,userInode:ino(fs.statSync(profile,{bigint:true})),created,rows}));syncDir(journal);
+    const record=path.join(base,id);fs.mkdirSync(record,{mode:0o700});syncDir(base);
+    const container=pin(record);
+    writeEx(path.join(container,'metadata.json'),JSON.stringify({root:rootName,relative:'data/'+user+'/'+r,deleted_at:created,libraryGroup:gid}));syncDir(container);
+    check();noReplace(source,path.join(container,'item'));syncDir(container);syncDir(path.dirname(source));return gid;
+}
+function assetChange(){
+    const [raw,revision,mode,rawStem,allow]=args,r=dec(raw),k=category(r);
+    if(args.length!==5||!changeKinds.has(k)||!/^([a-f0-9]{64})$/.test(revision)||!['rename','copy','trash'].includes(mode)||!['0','1'].includes(allow))fail(64,'변경할 자료를 다시 선택해 주세요.');
+    const [dir,n]=r.split('/'),stem=dec(rawStem,240),ext=path.extname(n),name=mode==='trash'?n:stem+ext;
+    if(mode==='trash'?stem!=='':!assetName(stem)||stem!==stem.trim()||stem!==stem.normalize('NFC')||stem.endsWith('.')||/[:*?"<>|]/.test(stem)||Buffer.byteLength(name)>240||name===n)fail(64,'사용할 수 없는 이름이에요. 확장자를 제외한 새 이름을 입력해 주세요.');
+    cancel();const folder=fixedParent(profile,r),folderId=ino(fs.statSync(folder,{bigint:true})),source=path.join(folder,n),dest=path.join(folder,name);
+    const check=()=>{
+        verifyLiveProfile();const parent=stat(path.join(profile,dir)),s=stat(source);
+        if(!parent?.isDirectory()||ino(parent)!==folderId||!s?.isFile()||h(JSON.stringify([rootName,user,r,partId(s),'',false]))!==revision)fail(145,'선택한 자료가 바뀌었어요. 목록을 새로 확인해 주세요.');
+        return s;
+    };
+    check();
+    if(mode!=='copy'){
+        const usage=usageState(r);
+        if(usage.state==='used')fail(144,usage.detail+'에서 사용 중이에요. 원본을 유지했어요.');
+        if(usage.state==='unconfirmed'&&allow!=='1')fail(144,'모든 사용처를 확인하지 못했어요. 원본을 유지하거나 확인 후 진행해 주세요.');
+    }
+    cancel();check();
+    let group='';
+    if(mode==='trash')group=stashAsset(r,source,check);
+    else{
+        if(stat(dest))fail(145,'같은 이름의 파일이 있어요. 덮어쓰지 않았어요.');
+        if(named(k))checkInternalName(folder,stem,mode==='rename'?n:null);
+        if(mode==='rename'&&!named(k)){cancel();check();noReplace(source,dest);syncDir(folder);}
+        else{
+            const tmp=path.join(folder,'.st-launcher-asset-'+crypto.randomUUID()+'.tmp');
+            const fd=fs.openSync(tmp,'wx',0o600);
+            try{
+                try{
+                    if(named(k))fs.writeFileSync(fd,renamedDocument(source,stem));
+                    else withFile(source,Number.MAX_SAFE_INTEGER,(input,s)=>{
+                        const buffer=Buffer.allocUnsafe(128*1024);for(let at=0;at<Number(s.size);){
+                            cancel();const count=fs.readSync(input,buffer,0,Math.min(buffer.length,Number(s.size)-at),at);
+                            if(!count)fail(145,'복사하는 동안 파일이 바뀌었어요.');fs.writeFileSync(fd,buffer.subarray(0,count));at+=count;
+                        }
+                    });
+                    fs.fsyncSync(fd);
+                }finally{fs.closeSync(fd);}
+                cancel();check();noReplace(tmp,dest);syncDir(folder);
+                // If interrupted between publication and the trash move both valid
+                // files survive. Never remove the original to complete a failed copy.
+                if(mode==='rename')group=stashAsset(r,source,check);
+            }finally{if(stat(tmp))fs.unlinkSync(tmp);}
+        }
+    }
+    console.log('action='+mode+'\nname_b64='+b64(name));
+    if(group)console.log('group_id='+group+'\nmoved=1\nskipped=0');
 }
 try{
     user=dec(user64,255);
@@ -448,6 +576,7 @@ try{
     else if(action==='library-trash')trash();
     else if(action==='library-history'||action==='library-undo')historyOrUndo();
     else if(action==='library-usage')usage();
+    else if(action==='library-asset-change')assetChange();
     else if(action==='library-import')importAsset();
     else fail(64,'지원하지 않는 작업이에요.');
 }catch(e){

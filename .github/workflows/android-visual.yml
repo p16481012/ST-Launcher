@@ -85,6 +85,9 @@ jobs:
           for required in selectingAnArchiveNeverStopsServerOrReplacesPhoneFiles hubNeverRunsDeepChecksAndOrphanTrashNeedsSelectionAndConfirmation hubHasSeparateAssetKindsAndOnlyOpensTheChosenList cardSortAppliesWithoutReadingTheListAgain backgroundsShareARowAndOpenTheUncroppedDetail; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done
+          for required in jsonAssetsPreviewOnlyWhenOpenedAndNeverExecuteTheirContents usedBackgroundIsNotMovedAndOpeningItsMenuDoesNotStartAnOperation unknownReferencesDefaultToCopyAndRequireConsentToTrashOrRenameOriginal; do
+            grep -Fq "test=$required" visual-results/instrumentation.txt
+          done
           for required in installedManagementActionsAreRealDestinationsAndBackReturnsToTheirOrigin homeLogReturnsHomeAndToolsLogReturnsTools briefReadNeverFlashesAndLongReadShowsUntilCompletion tapOnlyHandleFoldsAndMiniBarReopens runningServerAllowsOpeningAndSavingFromLabelAfterAcknowledgement onlyVerifiedStopOpensOriginalConfirmationOnce leavingSelectedArchiveDropsEvenSuccessfulInFlightStop; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done

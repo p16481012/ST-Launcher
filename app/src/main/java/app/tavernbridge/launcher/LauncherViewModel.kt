@@ -3437,6 +3437,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         "import-preview" -> "ZIP 내용 확인"
         "import-merge" -> "PC ZIP 안전하게 합치기"
         "library-trash" -> "자료를 휴지통으로 옮기기"
+        "library-asset-change" -> "자료 파일 변경"
         "library-undo" -> "휴지통에서 자료 되돌리기"
         "library-import" -> "선택한 자료 가져오기"
         "connect-manager" -> "런처 연결"

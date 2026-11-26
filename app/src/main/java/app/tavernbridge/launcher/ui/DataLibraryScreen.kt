@@ -172,6 +172,7 @@ private enum class CardOrder(val label: String) {
     var selecting by rememberSaveable { mutableStateOf(false) }
     var selected by remember { mutableStateOf(emptySet<String>()) }
     var detail by remember { mutableStateOf<LibraryItem?>(null) }
+    var assetChange by remember { mutableStateOf<Pair<LibraryItem,AssetChange>?>(null) }
     var trashConfirm by remember { mutableStateOf<List<LibraryItem>?>(null) }
     var restore by remember { mutableStateOf<LibraryGroup?>(null) }
     var picked by remember { mutableStateOf(emptyList<Uri>()) }
@@ -179,9 +180,9 @@ private enum class CardOrder(val label: String) {
     val results = state.lastOperationResult
     var observed by remember { mutableStateOf(results?.completedAtMillis) }
     LaunchedEffect(results?.completedAtMillis) {
-        if (results != null && results.completedAtMillis != observed && results.operation in setOf("library-import","library-trash","library-undo")) {
+        if (results != null && results.completedAtMillis != observed && results.operation in setOf("library-import","library-trash","library-undo","library-asset-change")) {
             observed = results.completedAtMillis
-            selected = emptySet(); selecting = false; detail = null; generation++
+            selected = emptySet(); selecting = false; detail = null; assetChange = null; generation++
         }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -215,7 +216,8 @@ private enum class CardOrder(val label: String) {
     val selectedRows = remember(rows,selected) { rows.filter { it.path in selected } }
     val blocked = state.isWorking || state.environment.operationActive || state.environment.recoveryPending
     val leave = { if (selecting) { selecting = false; selected = emptySet() } else back() }
-    V2BackHandler(detail == null && trashConfirm == null && restore == null && picked.isEmpty() && !showSort,leave)
+    val canChangeAsset = !blocked && !loading && error.isEmpty()
+    V2BackHandler(detail == null && assetChange == null && trashConfirm == null && restore == null && picked.isEmpty() && !showSort,leave)
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         LibraryTop(if(selecting) "${selected.size}개 선택" else kind.label, leave,
             when {
@@ -237,7 +239,7 @@ private enum class CardOrder(val label: String) {
                     LibraryKind.ORPHANS -> "$user · 카드를 지울 때 남긴 채팅이에요. 옮길 항목만 직접 골라 주세요."
                     LibraryKind.PRESETS -> "$user · Chat Completion API용 프리셋만 보여줘요."
                     LibraryKind.HISTORY -> "$user · 같은 이름이 생긴 파일은 덮어쓰지 않아요."
-                    else -> "$user · 사용처는 항목을 열고 직접 확인할 때만 검사해요."
+                    else -> "$user · 항목을 눌러 미리 보거나 더보기에서 이름을 바꾸고 휴지통으로 옮길 수 있어요."
                 })
             }
             if (error.isNotBlank()) item {
@@ -270,7 +272,8 @@ private enum class CardOrder(val label: String) {
                         repeat(2) { offset ->
                             val bg = filtered.getOrNull(pair * 2 + offset)
                             if (bg == null) Spacer(Modifier.weight(1f))
-                            else key(bg.path) { BackgroundTile(library,user,bg,Modifier.weight(1f)) { detail = bg } }
+                            else key(bg.path) { BackgroundTile(library,user,bg,Modifier.weight(1f), canChangeAsset,
+                                { action -> assetChange = bg to action }, { detail = bg }) }
                         }
                     }
                 }
@@ -283,7 +286,8 @@ private enum class CardOrder(val label: String) {
                         else error = "한 번에 최대 500개까지 선택할 수 있어요."
                     }
                 }
-                LibraryItemRow(library,user,kind,row,selecting,row.path in selected,
+                LibraryItemRow(library,user,kind,row,selecting,row.path in selected,canChangeAsset,
+                    { action -> assetChange = row to action },
                     { if(selecting) toggle() else detail = row })
             }
             if (!loading && !blocked && kind != LibraryKind.HISTORY && !selecting) {
@@ -319,6 +323,14 @@ private enum class CardOrder(val label: String) {
             detail = null; trashConfirm = listOf(row)
         }
     }
+    assetChange?.let { (row,action) ->
+        key(user,row.path,row.revision,action) {
+            AssetChangeSheet(library,user,row,action,canChangeAsset,state.environment.processRunning,
+                close = { assetChange = null }, perform = { task ->
+                    if (canChangeAsset) { assetChange = null; submit(task) }
+                })
+        }
+    }
     trashConfirm?.let { records ->
         var withChats by remember(records) { mutableStateOf(false) }
         val chatCount = records.sumOf { it.chats }
@@ -345,21 +357,21 @@ private enum class CardOrder(val label: String) {
 }
 
 @Composable private fun BackgroundTile(library: DataLibraryAccess, user: String, row: LibraryItem, modifier: Modifier,
-    click: () -> Unit) {
+    canChange: Boolean, onAction: (AssetChange) -> Unit, click: () -> Unit) {
     Surface(modifier, shape = RoundedCornerShape(16.dp),color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = click)) {
             LibraryArtwork(library,user,row,Modifier.fillMaxWidth().aspectRatio(16f/9f))
-            Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 10.dp),verticalAlignment = Alignment.CenterVertically) {
                 Text(row.label,Modifier.weight(1f),style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,overflow = TextOverflow.Ellipsis)
-                Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
+                if (canChange) AssetOverflow(row,onAction) else Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
             }
         }
     }
 }
 
 @Composable private fun LibraryItemRow(library: DataLibraryAccess, user: String, kind: LibraryKind, row: LibraryItem, selecting: Boolean,
-    selected: Boolean, click: () -> Unit) {
+    selected: Boolean, canChange: Boolean, onAction: (AssetChange) -> Unit, click: () -> Unit) {
     val color = MaterialTheme.colorScheme
     val interactive = if (selecting) Modifier.toggleable(selected, enabled = !row.protected, role = Role.Checkbox) { click() }
         else Modifier.clickable(role = Role.Button, onClick = click)
@@ -382,7 +394,8 @@ private enum class CardOrder(val label: String) {
             }
             Text((if (kind == LibraryKind.CARDS) "총 " else "") + formatBackupBytes(row.bytes),
                 style = MaterialTheme.typography.bodySmall)
-            if(!selecting) Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
+            if (!selecting && kind.managedAsset && canChange) AssetOverflow(row,onAction)
+            else if(!selecting) Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
         }
     }
 }
@@ -396,7 +409,7 @@ private enum class CardOrder(val label: String) {
         Text(row.label,style = MaterialTheme.typography.titleLarge)
         if (kind == LibraryKind.BACKGROUNDS) {
             LibraryArtwork(library,user,row,Modifier.fillMaxWidth().height(216.dp).clip(RoundedCornerShape(12.dp)),detail = true)
-        }
+        } else if (kind.managedAsset) LibraryPreviewSection(library,user,kind,row)
         SettingsCaption("${row.path} · ${formatBackupBytes(row.bytes)}")
         if (kind.trashable) {
             SettingsRow("채팅", "${row.chats}개")
@@ -408,7 +421,10 @@ private enum class CardOrder(val label: String) {
             if(!checking) V2OutlineAction(if(usage == null) "사용처 확인" else "다시 확인", {
                 checking = true
                 scope.launch {
-                    try { usage = library.usage(user,row.path) }
+                    try {
+                        val result = library.assetUsage(user,row)
+                        usage = listOf(result.label,result.detail).filter(String::isNotBlank).joinToString(" · ")
+                    }
                     catch(cancel: CancellationException) { throw cancel }
                     catch(e: Exception) { usage = "확인 못 함 · " + (e.message ?: "사용처를 읽지 못했어요.") }
                     finally { checking = false }
