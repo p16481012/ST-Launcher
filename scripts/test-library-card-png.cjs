@@ -2,7 +2,7 @@
 // Unit exercise of the bundled codec. No ST server, image codec or user profile.
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),zlib=require('node:zlib');
 const asset=fs.readFileSync(path.join(__dirname,'../app/src/main/assets/library-data.sh'),'utf8').replace(/\r\n/g,'\n');
-const payload=asset.split("<<'LIBRARY_JS'\n")[1].split('\nLIBRARY_JS')[0].split('\ntry{\n    user=dec(');
+const payload=asset.split("<<'LIBRARY_JS'\n")[1].split('\nLIBRARY_JS')[0].split('\n// Manager command entry point.\n');
 assert.equal(payload.length,2,'load declarations without invoking the manager');
 const {writeNamedCard,cardInfo}=new Function('require',payload[0]+'\nreturn {writeNamedCard,cardInfo};')(require);
 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'st-card-png-')),source=path.join(scratch,'input.png'),tmp=path.join(scratch,'output.tmp');

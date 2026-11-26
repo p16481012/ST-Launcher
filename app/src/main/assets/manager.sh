@@ -936,6 +936,15 @@ begin_operation() {
     fi
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
+    # A partially renamed card and its chat directory must not be used as
+    # input to another operation, including trash cleanup. Stop/diagnose
+    # remain available if an external process or a name collision blocks recovery.
+    if [[ "$CURRENT_OPERATION" != stop && "$CURRENT_OPERATION" != diagnose &&
+        ( -e "$LAUNCHER_HOME/card-rename-pending.json" || -L "$LAUNCHER_HOME/card-rename-pending.json" ) ]]; then
+        CANCELLATION_GUARD=1
+        recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
+        CANCELLATION_GUARD=0
+    fi
     if [[ "$CURRENT_OPERATION" == library-* || "$CURRENT_OPERATION" == import-preview || "$CURRENT_OPERATION" == import-merge || "$CURRENT_OPERATION" == server-config-write || "$CURRENT_OPERATION" == import-character || "$CURRENT_OPERATION" == chat-scan || "$CURRENT_OPERATION" == chat-repair || "$CURRENT_OPERATION" == chat-undo ]]; then
         # A targeted card/chat/settings action cannot authorize replaying an unrelated installation journal.
         inspect_restore_recovery
@@ -3847,8 +3856,14 @@ inspect_restore_recovery() {
     done
     inspect_git_transaction_recovery
     pc_merge_inspect_pending
+    if [[ -e "$LAUNCHER_HOME/card-rename-pending.json" || -L "$LAUNCHER_HOME/card-rename-pending.json" ]]; then
+        RESTORE_PENDING_WORKS+=("$LAUNCHER_HOME/card-rename-pending.json")
+    fi
     if (( ${#RESTORE_PENDING_WORKS[@]} )); then
         RESTORE_PENDING_DETAIL="중단된 작업의 복구 기록이 있습니다. 다음 변경 작업 전에 이전 설치를 복구합니다. 보호 사본: ${RESTORE_PENDING_WORKS[*]}"
+        if [[ "${RESTORE_PENDING_WORKS[0]}" == "$LAUNCHER_HOME/card-rename-pending.json" ]]; then
+            RESTORE_PENDING_DETAIL="중단된 카드 이름 변경이 있어요. 서버를 끄고 점검·복구하면 원래 카드와 채팅 폴더 이름을 되돌립니다."
+        fi
         if (( RESTORE_PENDING_BLOCKED || ${#RESTORE_PENDING_WORKS[@]} > 1 )); then
             RESTORE_PENDING_BLOCKED=1
             RESTORE_PENDING_DETAIL="복구 기록이 손상되었거나 이전 형식/여러 기록이 있어 자동으로 변경하지 않습니다. 보호 사본을 확인해 주세요: ${RESTORE_PENDING_WORKS[*]}"
@@ -3863,6 +3878,11 @@ recover_pending_restore() {
     if is_running || installation_server_running "$ST_HOME" || curl -sS --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
         echo "중단된 복원을 복구하려면 먼저 서버를 종료해 주세요. 보호 사본: ${RESTORE_PENDING_WORKS[0]}" >&2
         return 25
+    fi
+    if [[ "${RESTORE_PENDING_WORKS[0]}" == "$LAUNCHER_HOME/card-rename-pending.json" ]]; then
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-data.sh" library-card-recover "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" || return 25
+        record_activity "중단된 캐릭터 카드와 대화 폴더 이름 복구 완료"
+        return 0
     fi
     if [[ "${RESTORE_PENDING_WORKS[0]}" == "$BACKUP_DIR/pc-merge-pending" ]]; then
         pc_merge_rollback_pending

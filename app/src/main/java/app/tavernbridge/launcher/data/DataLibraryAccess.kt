@@ -94,7 +94,11 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
             val name = result.field("name_b64")?.let(::libraryDecode)
             when (action) {
                 AssetChange.TRASH -> "휴지통으로 옮겼어요. 원래 위치로 되돌릴 수 있어요."
-                AssetChange.RENAME -> "이름을 바꿨어요 · ${name ?: stem}"
+                AssetChange.RENAME -> {
+                    val count = if (card) result.field("chats_moved")?.toIntOrNull() ?: 0 else 0
+                    if (count > 0) "이름을 바꾸고 1:1 채팅 ${count}개를 옮겼어요 · ${name ?: stem}\n실리태번이 열려 있다면 새로고침한 뒤 새 이름의 카드를 열어 주세요."
+                    else "이름을 바꿨어요 · ${name ?: stem}"
+                }
                 AssetChange.COPY -> "새 이름으로 복사했어요 · ${name ?: stem}\n" +
                     if (card) "기존 채팅과 그룹은 원본 카드에 남아 있어요." else "원본은 그대로예요."
             }

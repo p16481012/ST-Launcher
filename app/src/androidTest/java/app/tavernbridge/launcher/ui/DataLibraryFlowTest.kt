@@ -78,12 +78,14 @@ class DataLibraryFlowTest {
                 args.startsWith("library-card-usage ") -> {
                     val state = when {
                         "'${enc("characters/새.png")}'" in args -> "none"
+                        "'${enc("characters/대화.png")}'" in args -> "none"
                         "'${enc("characters/미확인.png")}'" in args -> "unconfirmed"
                         else -> "used"
                     }
                     "state=$state\ndetail_b64=" + enc("채팅·그룹 검사 결과")
                 }
-                args.startsWith("library-card-change ") -> "action=" + (if (" 'copy' " in args) "copy" else "rename") + "\nname_b64=" + enc("새 이름.png")
+                args.startsWith("library-card-change ") -> "action=" + (if (" 'copy' " in args) "copy" else "rename") +
+                    "\nname_b64=" + enc("새 이름.png") + "\nchats_moved=" + (if ("'${enc("characters/대화.png")}'" in args && " 'rename' " in args) 3 else 0)
                 args.startsWith("library-trash ") -> "moved=1\nskipped=0"
                 args.startsWith("library-usage ") -> "state=" + assetUse + "\ndetail_b64=" + enc("검사 결과")
                 args.startsWith("library-preview ") -> previewOutput(args)
@@ -92,6 +94,7 @@ class DataLibraryFlowTest {
                     cardCases && " 'cards' " in args -> listOf(
                         row("characters/새.png","다른 표시 이름",400),
                         row("characters/대화.png","대화 있음",300,3),
+                        row("characters/그룹.png","그룹 멤버",250,2,true),
                         row("characters/미확인.png","연결 미확인",200,0,true)
                     ).joinToString("\n")
                     " 'cards' " in args -> listOf(row("characters/가.png","가나다",200,4),
@@ -202,14 +205,18 @@ class DataLibraryFlowTest {
         ui.runOnIdle { assertTrue(writes.isEmpty()); assertFalse(calls.any { it.startsWith("library-card-usage ") }) }
     }
 
-    @Test fun cardRenameOnlyChangesUnlinkedCardsAndOffersCopyOtherwise() {
+    @Test fun cardRenameIncludesSoloChatsAndOffersOnlyCopyForGroupOrUnknownLinks() {
         launch(cardCases = true)
         openCardList()
-        for ((index,pair) in listOf("다른 표시 이름" to "rename","대화 있음" to "copy","연결 미확인" to "copy").withIndex()) {
+        for ((index,pair) in listOf("다른 표시 이름" to "rename","대화 있음" to "rename","그룹 멤버" to "copy","연결 미확인" to "copy").withIndex()) {
             openCardMenu(pair.first)
             ui.runOnIdle { assertEquals(index,calls.count { it.startsWith("library-card-usage ") }); assertEquals(index,writes.size) }
             ui.onNodeWithText("이름 변경").performClick()
             val label = if (pair.second == "copy") "새 이름으로 복사" else "이름 변경"
+            if (pair.first == "대화 있음") {
+                ui.onNodeWithText("1:1 채팅 3개가 새 이름의 카드에 그대로 연결돼요. 대화 내용은 바꾸지 않아요.").assertExists()
+                footer("새 이름으로 복사").assertDoesNotExist()
+            }
             if (pair.second == "copy") {
                 ui.onNodeWithText("원래 카드와 채팅·그룹 연결을 유지하고 새 카드만 만들어요. 채팅은 복사하지 않아요.").assertExists()
                 ui.onNodeWithText("원본 이름 변경").assertDoesNotExist()
@@ -219,8 +226,11 @@ class DataLibraryFlowTest {
             footer(label).assertIsEnabled().performClick()
             val write = ui.runOnIdle { writes.last() }
             assertEquals("library-card-change",write.operation)
-            runBlocking { write.execute() }
-            assertTrue(calls.any { it.startsWith("library-card-change ") && " '${pair.second}' " in it })
+            val result = runBlocking { write.execute() }
+            if (pair.first == "대화 있음") assertTrue(write.message(result).contains("1:1 채팅 3개"))
+            val dispatched = calls.filter { it.startsWith("library-card-change ") }
+            assertEquals(index + 1, dispatched.size)
+            assertTrue("잘못된 작업: ${dispatched.last()}", " '${pair.second}' " in dispatched.last())
             ui.runOnIdle { assertEquals(label,write.label) }
         }
     }

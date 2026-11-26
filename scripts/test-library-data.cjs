@@ -26,8 +26,10 @@ const png=(name,color,fav=false)=>Buffer.concat([Buffer.from('89504e470d0a1a0a',
     chunk('IDAT',require('node:zlib').deflateSync(Buffer.from([0,color,0,0]))),chunk('tEXt','ccv3\0'+b64(JSON.stringify({data:{name,extensions:{fav}}}))),chunk('IEND','')]);
 const bg=png('Example',1),stage='SillyTavern-File-'+crypto.randomUUID()+'.tmp';
 function imp(kind,name,data,choice){const b=Buffer.isBuffer(data)?data:Buffer.from(JSON.stringify(data));fs.writeFileSync(path.join(dl,stage),b);return [kind,stage,b64(name),hash(b),...(choice?[choice]:[])];}
+const verifyCharacterCards=()=>require('./library-card-fixtures.cjs')({base,home,owner,invoke,rows,b64,decode,readValue,chunk});
 try{
     fs.mkdirSync(dl);fs.mkdirSync(owner);
+    if(process.argv[2]==='--cards'){verifyCharacterCards();return;}
     file('characters/A.png',bg);file('characters/B.png',bg);file('characters/C.png',png('Example',2));
     file('characters/Fav.png',png('Fav',7,true));file('characters/Member.png',png('Member',8));file('groups/g.json',JSON.stringify({members:['Member.png']}));
     file('chats/A/test.jsonl','{"chat_metadata":{}}\n');file('chats/Lost/log.jsonl','{"chat_metadata":{}}\n');file('chats/NewLater/log.jsonl','{"chat_metadata":{}}\n');
@@ -170,6 +172,6 @@ try{
     let cursor='',seen=new Set(),pages=0;
     do{const page=answer(0,'library-list','worlds',cursor);assert(Buffer.byteLength(page)<40*1024);for(const x of rows(page)){assert(!seen.has(x.path));seen.add(x.path);}cursor=readValue(page,'next_cursor');assert(++pages<20);}while(cursor);
     assert(pages>1);assert.equal(seen.size,482);
-    require('./library-card-fixtures.cjs')({base,home,owner,invoke,rows,b64,decode,readValue,chunk});
+    verifyCharacterCards();
     console.log('Library data: stable paging, separated imports, safe five-category rename/copy/trash, crash recovery, grouped undo, revisions and tri-state usage passed.');
 }finally{fs.rmSync(base,{recursive:true,force:true});}

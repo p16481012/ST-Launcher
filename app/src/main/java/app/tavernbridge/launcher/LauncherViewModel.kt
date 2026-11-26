@@ -61,6 +61,9 @@ import app.tavernbridge.launcher.model.visit
 import app.tavernbridge.launcher.model.previousScreen
 import app.tavernbridge.launcher.model.LauncherUiState
 import app.tavernbridge.launcher.model.EnvironmentRefreshGate
+import app.tavernbridge.launcher.model.WarmReturnWindow
+import app.tavernbridge.launcher.model.allowsWarmProbe
+import app.tavernbridge.launcher.model.probeWarmServer
 import app.tavernbridge.launcher.model.TermuxSetupState
 import app.tavernbridge.launcher.model.TermuxSetupStatus
 import app.tavernbridge.launcher.model.beginTermuxSetupCheck
@@ -187,6 +190,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var refreshJob: Job? = null
     private val deferredReads = VisibleReadQueue(viewModelScope)
     private val environmentRefreshGate = EnvironmentRefreshGate()
+    private val warmReturn = WarmReturnWindow()
+    private var warmProbeJob: Job? = null
     private val progressLogHistory = ProgressLogHistory()
     private var fileBrowserJob: Job? = null
     private var filePreviewJob: Job? = null
@@ -219,6 +224,8 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
 
     fun onAppBackgrounded() {
         appInForeground = false
+        warmReturn.stopped(android.os.SystemClock.elapsedRealtime())
+        warmProbeJob?.cancel()
     }
 
     fun deferSetup() {
@@ -596,6 +603,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
     }
 
     private fun refreshEnvironment(firstConnectionButton: Boolean) {
+        warmProbeJob?.cancel()
         if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         if (refreshJob?.isActive == true) return
         if (!environmentRefreshGate.tryStart(
@@ -801,6 +809,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
     }
 
     fun refreshSilently() {
+        warmProbeJob?.cancel()
         if (state.value.backupTransfer != null || state.value.encryptedBackup != null) return
         if (!appInForeground || state.value.isWorking || refreshJob?.isActive == true) return
         // Setup/reconnection needs the same recovery path as a cold start, not a
@@ -863,6 +872,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
     }
 
     fun refreshAfterResume() {
+        val shortReturn = warmReturn.consume(android.os.SystemClock.elapsedRealtime(), repository.inspectedAtElapsed)
         if (setupTrip.consume() && state.value.awaitingFirstConnection && !state.value.setupDeferred) {
             viewModelScope.launch {
                 refreshJob?.join()
@@ -895,7 +905,22 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
             return
         }
         if (state.value.environmentChecked) {
-            refreshSilently()
+            val before = state.value
+            // Fresh Android prerequisites cost no Termux command. Never infer ownership from an HTTP response alone.
+            if (shortReturn && appInForeground && before.allowsWarmProbe(repository.baseStatus())) {
+                if (warmProbeJob?.isActive == true) return
+                warmProbeJob = viewModelScope.launch {
+                    probeWarmServer(
+                        ping = { repository.pingServer(before.environment.port) },
+                        stillCurrent = {
+                            val latest = state.value
+                            appInForeground && refreshJob?.isActive != true && latest.dispatchedAtMillis == before.dispatchedAtMillis &&
+                                latest.environment == before.environment && latest.allowsWarmProbe(repository.baseStatus())
+                        },
+                        inspect = { refreshSilently() },
+                    )
+                }
+            } else refreshSilently()
         } else {
             refresh()
         }

@@ -93,6 +93,7 @@ jobs:
           node scripts/test-extensions.cjs
           node scripts/test-share-character.cjs
           node scripts/test-library-data.cjs
+          bash scripts/test-card-rename-manager.sh
           node scripts/test-library-card-png.cjs
           node scripts/test-library-preview.cjs
           bash -n app/src/main/assets/library-artwork.sh

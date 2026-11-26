@@ -150,8 +150,10 @@ internal val LibraryKind.managedAsset: Boolean get() = when(this) {
         if (result == null && readError.isEmpty()) {
             if (rememberProgressVisible(true)) SettingsCaption("이 자료가 어디서 쓰이는지 확인하고 있어요.")
         } else if (result != null) {
-            SettingsHeading(result.label)
-            if (result.detail.isNotBlank()) SettingsCaption(result.detail)
+            val pairedChat = card && rename && status == AssetUse.NONE && row.chats > 0
+            SettingsHeading(if (pairedChat) "기존 채팅도 함께 옮겨요" else result.label)
+            if (pairedChat) SettingsCaption("1:1 채팅 ${row.chats}개가 새 이름의 카드에 그대로 연결돼요. 대화 내용은 바꾸지 않아요.")
+            else if (result.detail.isNotBlank()) SettingsCaption(result.detail)
             if (card && copy) SettingsCaption("원래 카드와 채팅·그룹 연결을 유지하고 새 카드만 만들어요. 채팅은 복사하지 않아요.")
             else if (status == AssetUse.USED) SettingsCaption(if(rename)
                 "연결을 유지하려면 원래 파일은 그대로 두고 새 이름으로 복사해요."

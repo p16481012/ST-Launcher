@@ -80,6 +80,8 @@ class LauncherRepository(private val context: Context) {
     private val backupRequestStore = BackupRequestStore(context)
     @Volatile private var localOperationProgress: WorkProgress? = null
     @Volatile private var termuxSetup = TermuxSetupState()
+    @Volatile internal var inspectedAtElapsed: Long? = null
+        private set
     private val managerDeploymentLock = Mutex()
     private var managerDeployed = false
     private val bundledManagerAssets by lazy {
@@ -187,8 +189,10 @@ class LauncherRepository(private val context: Context) {
             )
             progress?.completedItem("Termux 설치·프로세스·도구 검사")
             if (!status.operationActive && !status.recoveryPending) importStaging.cleanAbandoned()
+            inspectedAtElapsed = android.os.SystemClock.elapsedRealtime()
             return status
         } catch (error: Exception) {
+            inspectedAtElapsed = null
             recordEnvironmentCheckFailure(error)
             throw error
         }
@@ -1520,17 +1524,18 @@ class LauncherRepository(private val context: Context) {
         return result
     }
 
-    private suspend fun pingServer(port: Int): Boolean = withContext(Dispatchers.IO) {
+    internal suspend fun pingServer(port: Int): Boolean = withContext(Dispatchers.IO) {
         try {
             val connection = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
             connection.connectTimeout = 1_000
             connection.readTimeout = 1_000
             connection.instanceFollowRedirects = false
             connection.requestMethod = "GET"
-            connection.connect()
-            val code = connection.responseCode
-            connection.disconnect()
-            code in 200..499
+            connection.useCaches = false
+            try {
+                connection.connect()
+                connection.responseCode in 200..499
+            } finally { connection.disconnect() }
         } catch (_: Exception) {
             false
         }
