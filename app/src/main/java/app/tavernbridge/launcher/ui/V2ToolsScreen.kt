@@ -60,7 +60,7 @@ internal fun V2ToolsScreen(state: LauncherUiState, viewModel: LauncherViewModel,
                     .fillMaxHeight().testTag("tools-index").verticalScroll(rememberScrollState()).padding(horizontal = if (wide) 24.dp else 20.dp, vertical = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     Text("도구", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-                    val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.INSTALLATION, ToolPage.EXTENSIONS, ToolPage.FILES, ToolPage.DATA_LIBRARY),
+                    val groups = listOf("관리" to listOf(ToolPage.UPDATE, ToolPage.INSTALLATION, ToolPage.FILES, ToolPage.EXTENSIONS, ToolPage.DATA_LIBRARY),
                         "문제 해결" to listOf(ToolPage.DIAGNOSTICS, ToolPage.LOGS, ToolPage.REPAIR), "주의" to listOf(ToolPage.RESET))
                     groups.forEach { (label, pages) ->
                         ToolGroup(label) { pages.forEachIndexed { index, page ->

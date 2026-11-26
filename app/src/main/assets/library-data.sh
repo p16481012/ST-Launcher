@@ -3,7 +3,7 @@
 # takes the operation lock and stops the server before trash / undo.
 set -eu
 if [[ "$1" == library-import && "${6:-}" == cards ]]; then
-    [[ "$#" == 9 || "$#" == 10 ]] || exit 64
+    [[ "$#" == 9 ]] || exit 64
     reply="$(bash "$(dirname "$0")/share-character.sh" import "$2" "$4" "$5" "$7" "$8" "$9" rename)" || exit $?
     printf '%s\n' "$reply" | sed -n 's/^card_file=/imported_b64=/p'
     exit 0
@@ -60,7 +60,6 @@ function withFile(p,max,fn){
 function readAt(fd,n,offset){const b=Buffer.alloc(n);for(let i=0;i<n;){const m=fs.readSync(fd,b,i,n-i,offset+i);if(!m)fail(145,'읽는 동안 파일이 바뀌었어요.');i+=m;}return b;}
 const read=(p,max)=>withFile(p,max,(fd,s)=>readAt(fd,Number(s.size),0));
 function json(p,max){return JSON.parse(utf(read(p,max)));}
-function digest(p){return withFile(p,512*MB,(fd,s)=>{const d=crypto.createHash('sha256'),b=Buffer.alloc(131072);for(let off=0;off<Number(s.size);){cancel();const n=fs.readSync(fd,b,0,b.length,off);if(!n)fail(145,'카드가 변경되었어요.');d.update(b.subarray(0,n));off+=n;}return d.digest('hex');});}
 const crcTable=Uint32Array.from({length:256},(_,i)=>{let x=i;for(let j=0;j<8;j++)x=(x&1)?0xedb88320^(x>>>1):x>>>1;return x>>>0;});
 function crcText(key,data){let c=0xffffffff;for(const b of Buffer.from('tEXt'+key+'\0','latin1'))c=crcTable[(c^b)&255]^(c>>>8);for(const b of data)c=crcTable[(c^b)&255]^(c>>>8);return (~c)>>>0;}
 function cardInfo(p){
@@ -88,8 +87,7 @@ function cardInfo(p){
         return {name:[...name.trim()].slice(0,160).join(''),favorite:[c.fav,c.data?.extensions?.fav].some(x=>x===true||x==='true'),world:c.data?.extensions?.world};
     });}catch(e){if(e.exit===130)throw e;return null;}
 }
-const PRESETS={openai:'OpenAI Settings',textgen:'TextGen Settings',kobold:'KoboldAI Settings',novel:'NovelAI Settings',
-    instruct:'instruct',context:'context',sysprompt:'sysprompt',reasoning:'reasoning',theme:'themes',quickreply:'QuickReplies'};
+const jsonFolders={presets:'OpenAI Settings',themes:'themes',quickreplies:'QuickReplies'};
 const bgTypes=new Set(['png','jpg','jpeg','webp','gif','bmp','avif']);
 const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const ext=s=>path.extname(s).slice(1).toLowerCase();
@@ -100,7 +98,7 @@ function category(r){
     if(d==='chats')return 'orphans';
     if(d==='backgrounds'&&bgTypes.has(ext(n)))return 'backgrounds';
     if(d==='worlds'&&n.endsWith('.json'))return 'worlds';
-    if(Object.values(PRESETS).includes(d)&&n.endsWith('.json'))return 'presets';
+    if(n.endsWith('.json'))return Object.keys(jsonFolders).find(k=>jsonFolders[k]===d)||null;
     return null;
 }
 let root,rootName,profile,owner,user;
@@ -119,7 +117,7 @@ function openCardCache(){
 function cachedCard(name,p,s){
     // Never consult this cache when authorizing a live move. It contains
     // display metadata only, and is scoped to one installation+profile inode.
-    if(!['library-list','library-duplicates','library-usage'].includes(action))return cardInfo(p);
+    if(!['library-list','library-usage'].includes(action))return cardInfo(p);
     openCardCache();const old=cardCache.get(name),key=partId(s);
     if(old?.key===key&&(old.info===null||(typeof old.info?.name==='string'&&typeof old.info?.favorite==='boolean')))return old.info;
     const info=cardInfo(p);
@@ -147,7 +145,7 @@ function verifyLiveProfile(){
         !stat(p)?.isDirectory()||ino(stat(p))!==ino(fs.statSync(profile,{bigint:true})))fail(145,'사용자 폴더가 바뀌어 원본을 유지했어요.');
 }
 function listFiles(kind){
-    const folders={cards:['characters'],orphans:['chats'],backgrounds:['backgrounds'],worlds:['worlds'],presets:Object.values(PRESETS)}[kind];
+    const folders=Object.hasOwn(jsonFolders,kind)?[jsonFolders[kind]]:{cards:['characters'],orphans:['chats'],backgrounds:['backgrounds'],worlds:['worlds']}[kind];
     if(!Array.isArray(folders))fail(64,'지원하지 않는 목록이에요.');
     const out=[];const cards=kind==='orphans'?dirpath(profile,'characters'):null;
     for(const d of folders){const p=dirpath(profile,d,true);
@@ -187,26 +185,22 @@ function item(r,g){
         else {if(stat(path.join(dirpath(profile,'characters'),n+'.png')))fail(145,'같은 이름의 캐릭터 카드가 생겼어요.');protectedItem=g.unknown||g.members.has(n+'.png');}
         protectedItem ||= !chats.safe;
     }
-    return {r,k,n,p,label,bytes,count,when,prot:protectedItem,card,rev:h(JSON.stringify([rootName,user,r,partId(s),revisionData,protectedItem]))};
+    return {r,k,n,p,label,bytes,fileBytes:k==='orphans'?0:Number(s.size),count,when,prot:protectedItem,
+        artRev:k==='cards'||k==='backgrounds'?h(JSON.stringify([rootName,user,r,partId(s)])):'',
+        rev:h(JSON.stringify([rootName,user,r,partId(s),revisionData,protectedItem]))};
 }
 function list(){
-    const dupe=action==='library-duplicates',kind=dupe?'cards':args[0],cursor=dec((dupe?args[0]:args[1])||'');
+    const kind=args[0],cursor=dec(args[1]||'');
     const all=listFiles(kind),g=kind==='cards'||kind==='orphans'?groups():null;
-    let relevant=all;
-    if(dupe){const bySize=new Map();const sizes=all.map(r=>Number(stat(path.join(profile,r))?.size??-1n));
-        for(const n of sizes)bySize.set(n,(bySize.get(n)||0)+1);relevant=all.filter((r,i)=>bySize.get(sizes[i])>1);}
-    let used=0,prev=cursor,next='',scanned=0,unexamined=0;const start=Date.now();
-    for(const r of relevant){if(r<=cursor)continue;cancel();
+    let used=0,prev=cursor,next='',scanned=0;const start=Date.now();
+    for(const r of all){if(r<=cursor)continue;cancel();
         if(scanned&&(scanned>=3000||Date.now()-start>20000)){next=prev;break;}
         const x=item(r,g);
-        const canHash=dupe&&x.card&&stat(x.p)?.size<=BigInt(512*MB);
-        if(dupe&&!canHash)unexamined++;
-        const sha=canHash?digest(x.p):'-';
-        const row=['item',b64(r),b64(x.label),x.bytes,x.count,x.when,x.rev,x.prot?1:0,sha].join('\t');
+        const row=['item',b64(r),b64(x.label),x.bytes,x.count,x.when,x.rev,x.prot?1:0,x.fileBytes,x.artRev].join('\t');
         if(used+Buffer.byteLength(row)+1>pageLimit){next=prev;break;}
-        if(!dupe||sha!=='-'){console.log(row);used+=Buffer.byteLength(row)+1;}prev=r;scanned++;
+        console.log(row);used+=Buffer.byteLength(row)+1;prev=r;scanned++;
     }
-    console.log('unexamined='+unexamined+'\nnext_cursor='+b64(next));
+    console.log('next_cursor='+b64(next));
 }
 function writeEx(p,data){const fd=fs.openSync(p,'wx',0o600);try{fs.writeFileSync(fd,data);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
 function noReplace(src,dst){
@@ -314,23 +308,13 @@ function historyOrUndo(){
     else for(const g of result.sort((a,b)=>b.created-a.created).slice(0,120))console.log(['group',g.id,g.created,g.count].join('\t'));
 }
 const contains=(s,k)=>Object.hasOwn(s,k);
-function presetType(v,override){
-    if(!obj(v))fail(144,'프리셋 JSON 객체가 아니에요.');
-    const keys=Object.keys(v);
-    if(['instruct','context','sysprompt','preset'].filter(k=>obj(v[k])).length>=2)fail(144,'통합 프리셋은 실리태번의 고급 서식 가져오기를 이용해 주세요.');
-    let type;
-    if(Array.isArray(v.prompts)||contains(v,'chat_completion_source')||contains(v,'openai_max_context'))type='openai';
-    else if(contains(v,'input_sequence')&&contains(v,'output_sequence'))type='instruct';
-    else if(contains(v,'story_string'))type='context';
-    else if(['prefix','suffix','separator'].every(k=>contains(v,k))&&keys.length<=5)type='reasoning';
-    else if(contains(v,'name')&&contains(v,'content')&&keys.every(k=>['name','content','post_history'].includes(k)))type='sysprompt';
-    else if(Array.isArray(v.qrList)||Array.isArray(v.quickReplySlots))type='quickreply';
-    else if(contains(v,'main_text_color')||contains(v,'blur_strength'))type='theme';
-    else if((contains(v,'temperature')&&contains(v,'repetition_penalty'))||(contains(v,'temp')&&['temperature_last','epsilon_cutoff','rep_pen'].some(k=>contains(v,k)))){
-        if(!['textgen','kobold','novel'].includes(override))fail(146,'텍스트 완성·KoboldAI·NovelAI 중 사용할 종류를 선택해 주세요.');
-        type=override;
-    }else fail(144,'지원하는 실리태번 프리셋 형식이 아니에요.');
-    return type;
+function jsonLibrary(v){
+    if(!obj(v)||['instruct','context','sysprompt','preset'].filter(k=>obj(v[k])).length>=2)return null;
+    const matches=[];
+    if(Array.isArray(v.prompts)||typeof v.chat_completion_source==='string'||typeof v.openai_max_context==='number')matches.push('presets');
+    if(Array.isArray(v.qrList)||Array.isArray(v.quickReplySlots))matches.push('quickreplies');
+    if(typeof v.main_text_color==='string'||typeof v.blur_strength==='number')matches.push('themes');
+    return matches.length===1?matches[0]:null;
 }
 function imageExt(b){
     if(b.length>=33&&b.subarray(0,8).toString('hex')==='89504e470d0a1a0a'&&b.toString('ascii',12,16)==='IHDR')return 'png';
@@ -350,8 +334,8 @@ function stem(s,tail){
     let out='';for(const c of clean){if(Buffer.byteLength(out+c+tail)>200)break;out+=c;}return out+tail;
 }
 function importAsset(){
-    const [kind,source,rawName,expected,choice='']=args,name=dec(rawName);
-    if(!['backgrounds','worlds','presets'].includes(kind)||!/^SillyTavern-File-[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.tmp$/.test(source)||
+    const [kind,source,rawName,expected]=args,name=dec(rawName);
+    if(args.length!==4||!['backgrounds','worlds','presets','themes','quickreplies'].includes(kind)||!/^SillyTavern-File-[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.tmp$/.test(source)||
         !/^[a-f0-9]{64}$/.test(expected)||!safe(name))fail(64,'런처에서 가져올 파일을 다시 선택해 주세요.');
     const buf=read(path.join(fs.realpathSync(downloads),source),kind==='backgrounds'?30*MB:50*MB);cancel();
     if(h(buf)!==expected)fail(145,'선택한 파일이 바뀌었어요. 다시 선택해 주세요.');
@@ -366,15 +350,23 @@ function importAsset(){
             if(!obj(doc)||contains(doc,'lorebookVersion')||doc.kind==='memory'||doc.type==='risu'||!obj(doc.entries))fail(144,'실리태번 로어북이 아니에요. 다른 형식은 실리태번 화면에서 가져와 주세요.');
             dirName='worlds';
         }else{
-            const type=presetType(doc,choice);dirName=PRESETS[type];
-            renameField=['instruct','context','sysprompt','reasoning'].includes(type);
+            const type=jsonLibrary(doc),labels={presets:'채팅 완성 프리셋',themes:'테마',quickreplies:'빠른 답장(QR)'};
+            if(type!==kind)fail(144,type?labels[type]+' 파일이에요. 해당 목록에서 가져와 주세요.':labels[kind]+' 형식이 아니에요. 다른 형식은 실리태번에서 가져와 주세요.');
+            dirName=jsonFolders[kind];renameField=kind==='themes'||kind==='quickreplies';
             if(renameField&&typeof doc.name==='string'&&doc.name.trim())base=doc.name;
         }
     }
     verifyLiveProfile();const folder=pin(path.join(profile,dirName),true); // Only known internal category names.
+    // Themes and QR sets are selected by their JSON name, not their file name.
+    const taken=new Set();
+    if(renameField)for(const e of entries(folder)){
+        cancel();if(!e.isFile()||!e.name.endsWith('.json'))continue;
+        try{const v=json(path.join(folder,e.name),50*MB);if(typeof v?.name==='string')taken.add(v.name);}
+        catch(error){if(error instanceof SyntaxError)continue;throw error;}
+    }
     for(let i=1;i<=10000;i++){
         cancel();const file=stem(base,(i===1?'':' ('+i+')')+'.'+extension),dest=path.join(folder,file);
-        if(stat(dest))continue;
+        if(stat(dest)||taken.has(path.parse(file).name))continue;
         const tmp=path.join(folder,'.st-launcher-import-'+crypto.randomUUID()+'.tmp');
         const data=renameField?JSON.stringify({...doc,name:path.parse(file).name},null,4):buf;
         try{writeEx(tmp,data);cancel();
@@ -393,22 +385,21 @@ function importAsset(){
 // never means unused. Results concern built-in references, not arbitrary code.
 function usage(){
     const r=dec(args[0]),k=category(r);
-    if(!['backgrounds','worlds','presets'].includes(k))fail(64,'사용처를 확인할 수 없는 종류예요.');
+    if(!['backgrounds','worlds','presets','themes','quickreplies'].includes(k))fail(64,'사용처를 확인할 수 없는 종류예요.');
     const [folder,n]=r.split('/'),title=path.parse(n).name,p=path.join(dirpath(profile,folder),n);
     if(!stat(p)?.isFile())fail(145,'선택한 파일이 바뀌었어요.');
     let unknown=false,s={},checks=0;const hits=new Set(),start=Date.now();
     const guard=()=>{cancel();return ++checks<=15000&&Date.now()-start<20000;};
     try{s=json(path.join(profile,'settings.json'),8*MB);if(!obj(s))throw Error();}catch{unknown=true;s={};}
-    if(k==='presets'){
-        const current={
-            'OpenAI Settings':s.oai_settings?.preset_settings_openai,'TextGen Settings':s.textgenerationwebui_settings?.preset,
-            'KoboldAI Settings':s.preset_settings,'NovelAI Settings':s.preset_settings_novel,
-            instruct:s.power_user?.instruct?.preset,context:s.power_user?.context?.preset,sysprompt:s.power_user?.sysprompt?.name,
-            reasoning:s.power_user?.reasoning?.preset,themes:s.power_user?.theme
-        }[folder];
-        if(typeof current!=='string')unknown=true;else if(current===title)hits.add('지금 선택한 프리셋');
-        // Quick Reply and third-party extension selection are not a single preset key.
-        if(folder==='QuickReplies')unknown=true;
+    if(k==='quickreplies'){
+        // Sets may be active globally, per chat, or through other extensions.
+        unknown=true;
+    }else if(k==='presets'||k==='themes'){
+        const current=k==='themes'?s.power_user?.theme:s.oai_settings?.preset_settings_openai;
+        let effective=title;
+        if(k==='themes'){try{effective=json(p,50*MB)?.name;}catch{unknown=true;effective=null;}}
+        if(typeof current!=='string'||typeof effective!=='string')unknown=true;
+        else if(current===effective)hits.add(k==='themes'?'지금 선택한 테마':'지금 선택한 프리셋');
     }else{
         function bgMatch(value){
             if(typeof value!=='string')return false;
@@ -453,7 +444,7 @@ try{
     if(!assetName(user)||user.startsWith('_'))fail(113,'사용자를 다시 선택해 주세요.');
     if(!stat(rootArg)?.isDirectory()||!stat(ownerArg)?.isDirectory())fail(145,'설치 위치를 안전하게 확인할 수 없어요.');
     rootName=fs.realpathSync(rootArg);root=pin(rootName);owner=pin(fs.realpathSync(ownerArg));profile=pin(path.join(pin(path.join(root,'data')),user));
-    if(action==='library-list'||action==='library-duplicates')list();
+    if(action==='library-list')list();
     else if(action==='library-trash')trash();
     else if(action==='library-history'||action==='library-undo')historyOrUndo();
     else if(action==='library-usage')usage();

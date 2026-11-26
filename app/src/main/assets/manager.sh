@@ -4867,7 +4867,10 @@ case "${1:-doctor}" in
     list-backups) list_backups "${2:-}" ;;
     import-backup) import_backup "${2:-}" "${3:-}" ;;
     import-preview|import-merge) pc_merge_command "$@" ;;
-    library-list|library-duplicates|library-usage|library-history)
+    library-artwork)
+        [[ "$#" == 4 ]] || exit 64
+        bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-artwork.sh" "$ST_HOME" "$2" "$3" "$4" ;;
+    library-list|library-usage|library-history)
         bash "$(dirname "$MANAGER_SCRIPT_PATH")/library-data.sh" "$1" "$ST_HOME" "$LAUNCHER_HOME" "$DOWNLOAD_DIR" "${@:2}" ;;
     library-trash|library-undo|library-import)
         if [[ "$1" == library-import ]]; then begin_operation "$1"; else begin_st_file_mutation "$1"; fi

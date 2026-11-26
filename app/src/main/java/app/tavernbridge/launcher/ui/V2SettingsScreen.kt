@@ -83,7 +83,7 @@ internal fun V2SettingsScreen(state: LauncherUiState, viewModel: LauncherViewMod
                             state.cancellationRequested, state.workingStartedAtMillis, viewModel::cancelCurrentOperation)
                     }
                 }
-                DiagnosticDetail(state, viewModel, Modifier.fillMaxSize(), viewModel::makeSettingsReport)
+                DiagnosticDetail(state, viewModel, Modifier.fillMaxSize(), onRun = viewModel::makeSettingsReport)
             }
             else -> {
                 if (mode.startsWith(ABOUT_LICENSE_PREFIX)) {

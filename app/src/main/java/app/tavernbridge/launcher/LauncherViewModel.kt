@@ -54,6 +54,8 @@ import app.tavernbridge.launcher.model.validOperationId
 import app.tavernbridge.launcher.model.operationCheckpoint
 import app.tavernbridge.launcher.model.withoutOperationCancellation
 import app.tavernbridge.launcher.model.DiagnosticPanel
+import app.tavernbridge.launcher.model.DiagnosticReport
+import app.tavernbridge.launcher.model.withDiagnosticReport
 import app.tavernbridge.launcher.model.ToolPage
 import app.tavernbridge.launcher.model.visit
 import app.tavernbridge.launcher.model.previousScreen
@@ -132,6 +134,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
     private val operationResultStore = OperationResultStore(application)
     private val guidePreferences = application.getSharedPreferences("setup_navigation", android.content.Context.MODE_PRIVATE)
+    private val diagnosticPreferences = application.getSharedPreferences("diagnostic_attention", android.content.Context.MODE_PRIVATE)
     private val safetyDeleteStore = app.tavernbridge.launcher.data.SafetyDeleteReceiptStore(application)
     private var interruptedSafetyBatch = safetyDeleteStore.read()
     private var liveSafetyBatch: SafetyDeleteReceipt? = null
@@ -160,6 +163,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         LauncherUiState(
             workingStartedAtMillis = System.currentTimeMillis(),
             setupDeferred = guidePreferences.getBoolean("deferred", false),
+            acknowledgedDiagnosticKeys = diagnosticPreferences.getStringSet("seen", emptySet()).orEmpty().toSet(),
             theme = themePreferences.loadTheme(),
             displayPreferences = themePreferences.loadDisplay(),
             configuredPort = repository.configuredPort(),
@@ -2442,6 +2446,18 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         request.start()
     }
 
+    private fun updateDiagnosticState(change: (LauncherUiState) -> LauncherUiState) {
+        mutableState.update(change)
+        val seen = state.value.acknowledgedDiagnosticKeys
+        if (seen != diagnosticPreferences.getStringSet("seen", emptySet()).orEmpty())
+            diagnosticPreferences.edit().putStringSet("seen", seen).apply()
+    }
+
+    internal fun acknowledgeDiagnostics(shown: DiagnosticReport) = updateDiagnosticState { ui ->
+        if (ui.diagnosticReport !== shown) ui
+        else ui.copy(acknowledgedDiagnosticKeys = ui.acknowledgedDiagnosticKeys + shown.coveredKeys)
+    }
+
     fun scanChats(more: Boolean) {
         val previous = state.value.diagnosticReport?.chatScan
         val cursor = if (more) previous?.next?.takeIf { it.isNotEmpty() } ?: return else ""
@@ -2450,9 +2466,9 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                 if (result.isSuccess) {
                     check(!result.stdoutTruncated) { "검사 결과가 잘렸어요. 다시 검사해 주세요." }
                     val page = ChatScanPage.parse(result.stdout)
-                    mutableState.update { ui ->
+                    updateDiagnosticState { ui ->
                         val all = if (more && previous != null) previous.append(page) else page
-                        ui.copy(diagnosticReport = ui.diagnosticReport?.withChat(all),
+                        ui.withDiagnosticReport(ui.diagnosticReport?.withChat(all)).copy(
                             chatUndo = if (more) ui.chatUndo else page.receipts, chatCompletion = "")
                     }
                 }
@@ -2477,11 +2493,11 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                 }
                 val id = result.stdout.lineSequence().single { it.startsWith("trash_id=") }.substringAfter('=')
                 check(!result.stdoutTruncated && ChatUndo.validId(id))
-                mutableState.update { ui ->
+                updateDiagnosticState { ui ->
                     val page = ui.diagnosticReport?.chatScan
                     val refreshed = if (copy || page == null) ui.diagnosticReport else
                         ui.diagnosticReport.withChat(page.copy(ok = page.ok + 1, rows = page.rows.filterNot { it.path == row.path }))
-                    ui.copy(diagnosticReport = refreshed, chatUndo = listOf(ChatUndo(id,row.label)) + ui.chatUndo,
+                    ui.withDiagnosticReport(refreshed).copy(chatUndo = listOf(ChatUndo(id,row.label)) + ui.chatUndo,
                         chatCompletion = if (rows.size == 1) "${row.label} · $success" else "${rows.size}개 중 ${i+1}개 완료")
                 }
                 last = result
@@ -2494,10 +2510,10 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         if (item !in state.value.chatUndo) return
         perform("chat-undo", "채팅 복구 실행 취소", "복구 전으로 되돌렸어요.") {
             repository.undoChat(item.id).also { result ->
-                if (result.isSuccess) mutableState.update { ui -> ui.copy(chatUndo = ui.chatUndo - item,
-                    chatCompletion = "복구 전으로 되돌렸어요. 채팅 파일을 다시 검사해 주세요.",
-                    diagnosticReport = ui.diagnosticReport?.let { r -> r.copy(chatScan = null,
-                        items = r.items.map { if (it.id == "chat_integrity") it.copy(value = "다시 검사해 주세요", status = app.tavernbridge.launcher.model.DiagnosticStatus.INFO) else it }) }) }
+                if (result.isSuccess) updateDiagnosticState { ui -> ui.withDiagnosticReport(
+                    ui.diagnosticReport?.let { r -> r.copy(chatScan = null,
+                        items = r.items.map { if (it.id == "chat_integrity") it.copy(value = "다시 검사해 주세요", status = app.tavernbridge.launcher.model.DiagnosticStatus.INFO) else it }) }
+                ).copy(chatUndo = ui.chatUndo - item, chatCompletion = "복구 전으로 되돌렸어요. 채팅 파일을 다시 검사해 주세요.") }
             }
         }
     }
@@ -2517,7 +2533,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
             androidOnlyReportJob = viewModelScope.launch {
                 try {
                     val report = withContext(Dispatchers.IO) { repository.diagnose(allowTermuxChecks = false) }
-                    mutableState.update { it.copy(diagnosticReport = report, message = "Android 항목만 확인했어요. Termux 내부 검사는 실행하지 않았어요.") }
+                    updateDiagnosticState { it.withDiagnosticReport(report).copy(message = "Android 항목만 확인했어요. Termux 내부 검사는 실행하지 않았어요.") }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -2552,12 +2568,11 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                     succeeded = true,
                     startedAtMillis = operationStartedAt,
                 )
-                mutableState.update {
-                    it.copy(
+                updateDiagnosticState {
+                    it.withDiagnosticReport(report).copy(
                         isWorking = false,
                         workingLabel = "",
                         workProgress = null,
-                        diagnosticReport = report,
                         chatUndo = report.chatScan?.receipts.orEmpty(),
                         chatCompletion = "",
                         message = "환경 진단을 완료했습니다.",

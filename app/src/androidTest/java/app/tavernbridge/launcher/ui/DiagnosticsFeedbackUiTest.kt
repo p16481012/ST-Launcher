@@ -99,6 +99,22 @@ class DiagnosticsFeedbackUiTest {
         compose.onNodeWithText("앱 버전").performScrollTo().assertIsDisplayed()
     }
 
+    @Test fun acknowledgingAReportImmediatelyClearsOnlyItsUnreadMarker() {
+        val vm = compose.runOnIdle { ViewModelProvider(compose.activity)[LauncherViewModel::class.java] }
+        val screen = androidx.compose.runtime.mutableStateOf(LauncherUiState(isWorking = false).withDiagnosticReport(report))
+        compose.setContent {
+            SillyTavernLauncherTheme(AppTheme.LIGHT) {
+                DiagnosticDetail(screen.value, vm, Modifier, onAcknowledge = { current ->
+                    screen.value = screen.value.copy(acknowledgedDiagnosticKeys = current.coveredKeys)
+                })
+            }
+        }
+        compose.onNodeWithText("이번 결과 확인했어요").performScrollTo().performClick()
+        compose.onNodeWithText("이번 결과 확인했어요").assertDoesNotExist()
+        compose.onNodeWithText("Termux 배터리 최적화").assertExists()
+        compose.runOnIdle { org.junit.Assert.assertFalse(MainSection.LOGS in screen.value.tabAttention()) }
+    }
+
     @SdkSuppress(minSdkVersion = 31)
     @Test fun diagnosticSolutionsOnlyOfferActionsForTheSelectedIssue() {
         launch(report)

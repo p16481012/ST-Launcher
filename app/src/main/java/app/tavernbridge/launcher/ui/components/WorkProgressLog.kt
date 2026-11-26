@@ -17,8 +17,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,18 +56,17 @@ internal fun WorkProgressLog(logText: String, initiallyExpanded: Boolean = true,
             OutlinedButton(
                 onClick = { expanded = !expanded },
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics {
-                    contentDescription = if (expanded) "상세 로그 접기" else "상세 로그 보기"
                     stateDescription = if (expanded) "펼쳐짐" else "접힘"
                 },
                 contentPadding = PaddingValues(horizontal = 6.dp),
             ) {
                 Icon(
-                    if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                    Icons.AutoMirrored.Outlined.List,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (expanded) "기록 접기" else "기록 보기", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (expanded) "상세 기록 숨기기" else "상세 기록 보기", maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             actions()
             if (logText.isNotBlank()) IconButton(

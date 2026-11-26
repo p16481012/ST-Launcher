@@ -52,7 +52,7 @@ class WorkSheetGestureTest {
         showWork(reduced = false)
         val handle = compose.onNodeWithContentDescription("진행창 접기")
         // Swipe toward the bottom of the actual sheet, not just across its 4dp painted line.
-        val end = compose.onNodeWithText("기록 보기").fetchSemanticsNode().boundsInRoot.center.y
+        val end = compose.onNodeWithText("상세 기록 보기").fetchSemanticsNode().boundsInRoot.center.y
         val distance = end - handle.fetchSemanticsNode().boundsInRoot.center.y
         handle.performTouchInput { swipe(center, center + Offset(0f, distance), durationMillis = 140) }
         compose.onNodeWithContentDescription("진행창 펼치기").assertIsDisplayed()

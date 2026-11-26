@@ -61,7 +61,7 @@ internal val LocalV2TabAttention = staticCompositionLocalOf { emptySet<MainSecti
 
 internal fun LauncherUiState.tabAttention(): Set<MainSection> = buildSet {
     if (environment.recoveryPending || (updatePreflight?.updateAvailable ?: updateAvailable) == true ||
-        diagnosticReport?.let { it.warningCount + it.errorCount > 0 } == true) add(MainSection.LOGS)
+        hasUnreadDiagnostics()) add(MainSection.LOGS)
     if (backupReminder.notice(backupReminderNowMillis, environment.sillyTavernInstalled) != null) add(MainSection.BACKUPS)
     if (environment.serverReadiness == ServerReadiness.PORT_CONFLICT || environment.serverReadiness == ServerReadiness.UNRESPONSIVE)
         add(MainSection.HOME)

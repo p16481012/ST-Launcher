@@ -2,6 +2,13 @@
 // Fixtures run against the exact Node payload shipped by manager.sh. Only the
 // sandbox created here is written; there is no dependency on a real ST install.
 const assert=require('node:assert/strict'), fs=require('node:fs'), path=require('node:path'),os=require('node:os'),cp=require('node:child_process'),crypto=require('node:crypto');
+// Native Windows Node has no mv.exe on PATH. Exercise the shipped helper
+// with Git Bash's real GNU mv, just as the Termux/Linux fixture does.
+const bash=process.platform==='win32'?(process.env.GIT_BASH||'C:/Program Files/Git/bin/bash.exe'):'/bin/bash';
+if(process.platform==='win32'){
+    const bin=path.resolve(path.dirname(bash),'../usr/bin');
+    if(fs.existsSync(path.join(bin,'mv.exe')))process.env.Path=bin+path.delimiter+process.env.Path;
+}
 const base=fs.mkdtempSync(path.join(os.tmpdir(),'st-library-')),home=path.join(base,'st'),owner=path.join(base,'launcher'),dl=path.join(base,'downloads'),user='default-user',profile=path.join(home,'data',user);
 const script=path.join(__dirname,'../app/src/main/assets/library-data.sh'),helper=fs.readFileSync(script,'utf8').split("<<'LIBRARY_JS'")[1].split(/\r?\nLIBRARY_JS/)[0];
 const b64=s=>Buffer.from(s).toString('base64'),decode=s=>Buffer.from(s,'base64').toString(),hash=b=>crypto.createHash('sha256').update(b).digest('hex');
@@ -10,7 +17,7 @@ const invoke=(prefix,as,action,...args)=>cp.spawnSync(process.execPath,[...prefi
 const run=(action,...args)=>invoke([],user,action,...args);
 const answer=(status,cmd,...args)=>{const p=run(cmd,...args);assert.equal(p.status,status,[cmd,p.stdout,p.stderr,p.error].join('\n'));return p.stdout;};
 const readValue=(out,k)=>out.split(/\r?\n/).find(s=>s.startsWith(k+'='))?.slice(k.length+1);
-const rows=out=>out.split(/\r?\n/).filter(s=>s.startsWith('item\t')).map(r=>{const [,name,label,bytes,chats,mtime,revision,a,sha]=r.split('\t');return {path:decode(name),label:decode(label),bytes:Number(bytes),chats:Number(chats),mtime:Number(mtime),revision,protected:a==='1',sha};});
+const rows=out=>out.split(/\r?\n/).filter(s=>s.startsWith('item\t')).map(r=>{const [,name,label,bytes,chats,mtime,revision,a,fileBytes,artRev]=r.split('\t');return {path:decode(name),label:decode(label),bytes:Number(bytes),chats:Number(chats),mtime:Number(mtime),revision,protected:a==='1',fileBytes:Number(fileBytes),artRev};});
 const inspect=k=>rows(answer(0,'library-list',k,''));
 const list=items=>b64(JSON.stringify(items.map(i=>({path:i.path,revision:i.revision}))));
 const crc=b=>{let a=~0;for(const n of b){a^=n;for(let i=0;i<8;i++)a=(a&1)?0xedb88320^(a>>>1):a>>>1;}return (~a)>>>0;};
@@ -26,8 +33,8 @@ try{
     file('chats/A/test.jsonl','{"chat_metadata":{}}\n');file('chats/Lost/log.jsonl','{"chat_metadata":{}}\n');file('chats/NewLater/log.jsonl','{"chat_metadata":{}}\n');
     let cards=inspect('cards'),orphan=inspect('orphans');assert.equal(cards.length,5);assert.equal(cards.find(c=>c.path==='characters/A.png').chats,1);
     assert(cards.find(c=>c.path.endsWith('Fav.png')).protected);assert(cards.find(c=>c.path.endsWith('Member.png')).protected);assert.equal(orphan.length,2);
-    const dup=rows(answer(0,'library-duplicates',''));assert.equal(dup.find(c=>c.path==='characters/A.png').sha,dup.find(c=>c.path==='characters/B.png').sha);
-    assert(!dup.some(c=>c.path==='characters/C.png'&&c.sha===hash(bg)));
+    const cardA=cards.find(c=>c.path==='characters/A.png');assert.equal(cardA.fileBytes,bg.length);assert(cardA.bytes>cardA.fileBytes);assert.match(cardA.artRev,/^[a-f0-9]{64}$/);
+    assert(!orphan[0].artRev);
     const guest=path.join(home,'data','guest');fs.mkdirSync(path.join(guest,'characters'),{recursive:true});fs.writeFileSync(path.join(guest,'characters/A.png'),png('Private guest card',9));
     const guestView=invoke([],'guest','library-list','cards','');assert.equal(guestView.status,0,guestView.stderr);assert.equal(rows(guestView.stdout)[0].label,'Private guest card');
     assert.equal(inspect('cards').find(c=>c.path==='characters/A.png').label,'Example');assert.notEqual(invoke([],'../default-user','library-list','cards').status,0);
@@ -35,7 +42,8 @@ try{
     assert.equal(readValue(answer(0,'library-trash',list([orphan.find(c=>c.path.endsWith('NewLater'))])),'moved'),'0');
     file('chats/A/test.jsonl','{"chat_metadata":{}}\n{"mes":"appended"}');
     assert.equal(readValue(answer(0,'library-trash',list([cards.find(c=>c.path==='characters/A.png')]),'1'),'moved'),'0');
-    cards=inspect('cards');let record=answer(0,'library-trash',list([cards.find(c=>c.path==='characters/A.png'),cards.find(c=>c.path.endsWith('Fav.png')),orphan.find(c=>c.path.endsWith('Lost'))]),'1');
+    cards=inspect('cards');assert.equal(cards.find(c=>c.path==='characters/A.png').artRev,cardA.artRev);
+    let record=answer(0,'library-trash',list([cards.find(c=>c.path==='characters/A.png'),cards.find(c=>c.path.endsWith('Fav.png')),orphan.find(c=>c.path.endsWith('Lost'))]),'1');
     const gid=readValue(record,'group_id');assert.equal(readValue(record,'moved'),'2');assert.equal(readValue(record,'skipped'),'1');
     assert(!fs.existsSync(path.join(profile,'characters/A.png')));assert(!fs.existsSync(path.join(profile,'chats/A')));assert(!fs.existsSync(path.join(profile,'chats/Lost')));
     assert(answer(0,'library-history').includes(gid));file('characters/A.png','new different card');
@@ -56,7 +64,6 @@ try{
     const orig={entries:{1:{content:'Keep'}}},next={entries:{1:{content:'Other'}}};
     // Exercise the actual shell dispatch to the existing shared PNG reader,
     // not a second parser that happens to accept our test card.
-    const bash=process.platform==='win32'?(process.env.GIT_BASH||'C:/Program Files/Git/bin/bash.exe'):'/bin/bash';
     const importPng=data=>{
         const argv=imp('cards','A.png',data);
         return cp.spawnSync(bash,[script,'library-import',home,owner,dl,b64(user),...argv],{encoding:'utf8',windowsHide:true,timeout:15000});
@@ -71,28 +78,37 @@ try{
     answer(144,'library-import',...imp('worlds','Foreign.json',{entries:{},lorebookVersion:5}));
     assert.equal(decode(readValue(answer(0,'library-import',...imp('backgrounds','Card.png',bg)),'imported_b64')),'Card.png');
     answer(144,'library-import',...imp('backgrounds','NotPng.jpg',bg));
-    const amb={temperature:1,repetition_penalty:1.2};answer(146,'library-import',...imp('presets','Sample.json',amb));
-    answer(0,'library-import',...imp('presets','Sample.json',amb,'novel'));assert(fs.existsSync(path.join(profile,'NovelAI Settings/Sample.json')));
-    const instruct={name:'ChatML',input_sequence:'a',output_sequence:'b'};file('instruct/ChatML.json',JSON.stringify(instruct));
-    answer(0,'library-import',...imp('presets','DiffFile.json',instruct));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(profile,'instruct/ChatML (2).json'),'utf8')).name,'ChatML (2)');
-    for(const [folder,format,pick] of [
-        ['OpenAI Settings',{prompts:[]}], ['context',{story_string:'{{story}}'}],
-        ['sysprompt',{name:'Case',content:'system'}], ['reasoning',{name:'Case',prefix:'<',suffix:'>',separator:' '}],
-        ['QuickReplies',{quickReplySlots:[]}], ['themes',{main_text_color:'white'}],
-        ['TextGen Settings',{temp:1,epsilon_cutoff:0},'textgen'],['KoboldAI Settings',{temp:1,rep_pen:1},'kobold']
-    ]){answer(0,'library-import',...imp('presets','Case.json',format,pick));assert(fs.existsSync(path.join(profile,folder,'Case.json')));}
+    const preset={prompts:[]}, theme={name:'Night',main_text_color:'white'}, qr={name:'Night',qrList:[]};
+    for(const [kind,folder,format] of [['presets','OpenAI Settings',preset],['themes','themes',theme],['quickreplies','QuickReplies',qr]]){
+        for(const other of ['presets','themes','quickreplies'].filter(k=>k!==kind))answer(144,'library-import',...imp(other,'Cross.json',format));
+        const named=kind!=='presets';
+        if(named)file(folder+'/Existing-file.json',JSON.stringify(format));
+        const result=answer(0,'library-import',...imp(kind,'Case.json',format));
+        const target=named?'Night (2).json':'Case.json';
+        assert.equal(decode(readValue(result,'imported_b64')),target);
+        const stored=JSON.parse(fs.readFileSync(path.join(profile,folder,target),'utf8'));
+        if(named)assert.equal(stored.name,'Night (2)');else assert.deepEqual(stored,preset);
+        assert(inspect(kind).every(row=>row.path.startsWith(folder+'/')));
+    }
+    for(const [folder,format] of [['NovelAI Settings',{temperature:1,repetition_penalty:1.2}],['instruct',{name:'ChatML',input_sequence:'a',output_sequence:'b'}],['TextGen Settings',{temp:1,epsilon_cutoff:0}]]){
+        file(folder+'/Keep.json',JSON.stringify(format));answer(144,'library-import',...imp('presets','No.json',format));
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile,folder,'Keep.json'),'utf8')),format);
+    }
+    assert.deepEqual(inspect('presets').map(r=>r.path),['OpenAI Settings/Case.json']);
+    answer(144,'library-import',...imp('quickreplies','Ambiguous.json',{prompts:[],qrList:[]}));
     answer(144,'library-import',...imp('presets','Combined.json',{instruct:{},context:{}}));
-    file('settings.json',JSON.stringify({background:{name:'elsewhere.png'},power_user:{instruct:{preset:'ChatML'}}}));
-    assert.equal(readValue(answer(0,'library-usage',b64('instruct/ChatML.json')),'state'),'used');
+    file('settings.json',JSON.stringify({background:{name:'elsewhere.png'},power_user:{theme:'Night'},oai_settings:{preset_settings_openai:'Case'}}));
+    assert.equal(readValue(answer(0,'library-usage',b64('OpenAI Settings/Case.json')),'state'),'used');
+    assert.equal(readValue(answer(0,'library-usage',b64('themes/Existing-file.json')),'state'),'used');
+    assert.equal(readValue(answer(0,'library-usage',b64('QuickReplies/Existing-file.json')),'state'),'unconfirmed');
     assert.equal(readValue(answer(0,'library-usage',b64('backgrounds/Card.png')),'state'),'none');
     file('chats/A/broken.jsonl','{broken');assert.equal(readValue(answer(0,'library-usage',b64('backgrounds/Card.png')),'state'),'unconfirmed');
     file('group chats/g.jsonl',JSON.stringify({chat_metadata:{custom_background:'url("backgrounds/Card.png")'}})+'\n');assert.equal(readValue(answer(0,'library-usage',b64('backgrounds/Card.png')),'state'),'used');
     if(process.platform!=='win32'){
         fs.symlinkSync(path.join(profile,'characters/A.png'),path.join(profile,'characters/linked.png'));assert(!inspect('cards').some(x=>x.path==='characters/linked.png'));
-        fs.renameSync(path.join(profile,'sysprompt'),path.join(profile,'sysprompt-original'));
-        fs.symlinkSync(path.join(profile,'worlds'),path.join(profile,'sysprompt'));assert.notEqual(run('library-import',...imp('presets','No.json',{name:'No',content:'Ignore'})).status,0);
-        assert(!fs.existsSync(path.join(profile,'worlds/No.json')));fs.unlinkSync(path.join(profile,'sysprompt'));
+        fs.renameSync(path.join(profile,'OpenAI Settings'),path.join(profile,'openai-original'));
+        fs.symlinkSync(path.join(profile,'worlds'),path.join(profile,'OpenAI Settings'));assert.notEqual(run('library-import',...imp('presets','No.json',preset)).status,0);
+        assert(!fs.existsSync(path.join(profile,'worlds/No.json')));fs.unlinkSync(path.join(profile,'OpenAI Settings'));
         fs.unlinkSync(path.join(dl,stage));fs.symlinkSync(path.join(profile,'worlds/City.json'),path.join(dl,stage));assert.notEqual(run('library-import','worlds',stage,b64('Link.json'),hash(Buffer.from(JSON.stringify(orig)))).status,0);assert(!fs.existsSync(path.join(profile,'worlds/Link.json')));
         fs.symlinkSync(guest,path.join(home,'data','guest-link'));assert.notEqual(invoke([],'guest-link','library-list','cards').status,0);
     }
@@ -100,5 +116,5 @@ try{
     let cursor='',seen=new Set(),pages=0;
     do{const page=answer(0,'library-list','worlds',cursor);assert(Buffer.byteLength(page)<40*1024);for(const x of rows(page)){assert(!seen.has(x.path));seen.add(x.path);}cursor=readValue(page,'next_cursor');assert(++pages<20);}while(cursor);
     assert(pages>1);assert.equal(seen.size,482);
-    console.log('Library data: stable paging, checked imports, grouped undo, stale revisions, manual duplicates and tri-state usage passed.');
+    console.log('Library data: stable paging, separated imports, scoped names, grouped undo, revisions and tri-state usage passed.');
 }finally{fs.rmSync(base,{recursive:true,force:true});}

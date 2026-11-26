@@ -46,6 +46,25 @@ data class DiagnosticReport(
     val errorCount: Int get() = rows(DiagnosticStatus.ERROR).size
     val infoCount: Int get() = rows(DiagnosticStatus.INFO).size
     val checkedCount: Int get() = okCount + warningCount + errorCount
+    // Never store raw logs, paths, report times or free-space measurements in preferences.
+    // A different last error is a new issue even if it shares the same diagnostic row.
+    private fun issueKey(item: DiagnosticItem, severity: DiagnosticStatus = item.status): String {
+        val cause = when (item.id) {
+            "last_operation", "last_error" -> java.security.MessageDigest.getInstance("SHA-256")
+                .digest((item.value + "\u0000" + item.detail).toByteArray()).joinToString("") { "%02x".format(it) }
+            else -> ""
+        }
+        return "${item.id}:${severity.name}:$cause"
+    }
+    internal val issueKeys by lazy { (rows(DiagnosticStatus.WARNING) + rows(DiagnosticStatus.ERROR)).map(::keyForRow).toSet() }
+    private fun keyForRow(item: DiagnosticItem) = issueKey(item)
+    internal val coveredKeys by lazy { issueKeys + rows(DiagnosticStatus.ERROR).map { issueKey(it, DiagnosticStatus.WARNING) } }
+    internal fun retainSeen(seen: Set<String>): Set<String> {
+        val checked = items.mapTo(mutableSetOf()) { it.id }
+        // A completed Termux check omits restore_recovery entirely once recovery is done.
+        if ("termux_storage" in checked) checked += "restore_recovery"
+        return seen.filterTo(mutableSetOf()) { it in coveredKeys || it.substringBefore(':') !in checked }
+    }
     val checkTitle: String get() = if (checkedCount == 0) "판정한 검사 없음" else "검사 결과 ${checkedCount}개"
     val statusSummary: String get() = "정상 ${okCount}개 · 확인 필요 ${warningCount}개 · 오류 ${errorCount}개"
     val indexLabel: String get() = when {
@@ -69,3 +88,10 @@ data class DiagnosticReport(
         }
     }.trim().let { redactSensitiveText(it, maxLength = null) }
 }
+
+internal fun LauncherUiState.withDiagnosticReport(report: DiagnosticReport?) = copy(
+    diagnosticReport = report,
+    acknowledgedDiagnosticKeys = report?.retainSeen(acknowledgedDiagnosticKeys) ?: acknowledgedDiagnosticKeys,
+)
+internal fun LauncherUiState.hasUnreadDiagnostics() =
+    diagnosticReport?.issueKeys?.any { it !in acknowledgedDiagnosticKeys } == true

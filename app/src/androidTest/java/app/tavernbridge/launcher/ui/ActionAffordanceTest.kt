@@ -27,8 +27,10 @@ class ActionAffordanceTest {
         ui.onNodeWithContentDescription("전체 로그 복사").assertHasClickAction()
             .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
         ui.onNodeWithText("복사").assertDoesNotExist()
-        ui.onNodeWithText("기록 보기").performClick()
+        ui.onNodeWithText("상세 기록 보기").performClick()
         ui.onNodeWithText("테스트 로그").assertIsDisplayed()
+        ui.onNodeWithText("상세 기록 숨기기").performClick()
+        ui.onNodeWithText("테스트 로그").assertDoesNotExist()
         ui.runOnIdle { log = "" }
         ui.onNodeWithContentDescription("전체 로그 복사").assertDoesNotExist()
     }

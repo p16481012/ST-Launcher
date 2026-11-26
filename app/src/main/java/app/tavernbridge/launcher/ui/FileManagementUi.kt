@@ -293,8 +293,12 @@ internal fun TavernFileManagerDialog(
                             if (selectedPaths.isEmpty()) selectionMode = false
                         })
                     } else if (!state.fileBrowserMutating) {
-                        V2TopBarAction("휴지통", { trashOpen = true },
-                            leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(18.dp)) })
+                        TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                            tooltip = { PlainTooltip { Text("휴지통 열기") } }, state = rememberTooltipState()) {
+                            IconButton(onClick = { trashOpen = true }, modifier = Modifier.size(48.dp)) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = "휴지통 열기")
+                            }
+                        }
                         Box {
                             IconButton(onClick = { moreMenu = true }) { Icon(Icons.Outlined.MoreVert, "파일 더보기") }
                             DropdownMenu(moreMenu, { moreMenu = false }) {

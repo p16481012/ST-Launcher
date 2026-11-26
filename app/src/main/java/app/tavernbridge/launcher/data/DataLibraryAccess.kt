@@ -22,10 +22,10 @@ import org.json.JSONObject
 internal enum class LibraryKind(val wire: String, val label: String, val maxMiB: Int = 0) {
     CARDS("cards", "캐릭터 카드", 20), ORPHANS("orphans", "카드 없이 남은 채팅"),
     BACKGROUNDS("backgrounds", "배경 그림", 30), WORLDS("worlds", "로어북", 50),
-    PRESETS("presets", "프리셋", 50), DUPLICATES("duplicates", "중복 카드"), HISTORY("history", "휴지통에서 되돌리기")
+    PRESETS("presets", "채팅 완성 프리셋", 50), THEMES("themes", "테마", 50),
+    QUICK_REPLIES("quickreplies", "빠른 답장(QR)", 50), HISTORY("history", "휴지통에서 되돌리기")
 }
-internal data class LibraryFilePlan(val uri: Uri, val name: String, val info: String, val rejection: String = "",
-    val recommended: String? = null, val chosen: String? = null)
+internal data class LibraryFilePlan(val uri: Uri, val name: String, val info: String, val rejection: String = "")
 internal data class LibraryWrite(val operation: String, val label: String, val pause: Boolean,
     val message: (TermuxCommandResult) -> String, val execute: suspend () -> TermuxCommandResult)
 
@@ -45,6 +45,7 @@ private fun wire(command: String, vararg parts: String) = (listOf(command) + par
 internal class DataLibraryAccess(private val context: Context, private val getUsers: suspend () -> List<String>,
     private val run: suspend (String, Long) -> TermuxCommandResult) {
     private val staging = SharedImportStaging(context)
+    val artwork = LibraryArtworkLoader(run)
     val lastMoved = MutableStateFlow<Pair<String,LibraryGroup>?>(null)
     val pendingUndo = MutableStateFlow<Pair<String,LibraryGroup>?>(null)
     fun requestUndo(receipt: Pair<String,LibraryGroup>) {
@@ -53,8 +54,7 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
     suspend fun users() = getUsers().distinct()
     suspend fun page(user: String, kind: LibraryKind, cursor: String): LibraryPage {
         require(kind != LibraryKind.HISTORY)
-        val cmd = if (kind == LibraryKind.DUPLICATES) wire("library-duplicates", libraryEncode(user), cursor)
-            else wire("library-list", libraryEncode(user), kind.wire, cursor)
+        val cmd = wire("library-list", libraryEncode(user), kind.wire, cursor)
         return LibraryProtocol.page(run(cmd, 10 * 60_000L).verified().stdout)
     }
     suspend fun groups(user: String) =
@@ -128,15 +128,20 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
                     }
                     basic.copy(info = "배경 그림")
                 }
-                LibraryKind.WORLDS, LibraryKind.PRESETS -> {
+                LibraryKind.WORLDS, LibraryKind.PRESETS, LibraryKind.THEMES, LibraryKind.QUICK_REPLIES -> {
                     require(ext == "json") { "실리태번 JSON 파일을 골라 주세요." }
                     val keys = readKeys(uri,max)
                     if (kind == LibraryKind.WORLDS) {
                         require(keys["entries"] == "BEGIN_OBJECT") { "실리태번 로어북이 아니에요. 다른 형식은 실리태번에서 가져와 주세요." }
                         basic.copy(info = "실리태번 로어북")
                     } else {
-                        val (info, pick) = LibraryProtocol.preset(keys) ?: error("개별 프리셋 형식이 아니에요. 실리태번에서 가져와 주세요.")
-                        basic.copy(info = info, recommended = pick)
+                        val detected = LibraryProtocol.jsonLibrary(keys)
+                        require(detected == kind.wire) {
+                            val other = LibraryKind.entries.firstOrNull { it.wire == detected }
+                            if (other != null) "${other.label} 파일이에요. 자료 관리의 ‘${other.label}’에서 가져와 주세요."
+                            else "${kind.label} 형식이 아니에요. 다른 형식은 실리태번에서 가져와 주세요."
+                        }
+                        basic.copy(info = kind.label)
                     }
                 }
                 else -> error("가져올 수 없는 목록이에요.")
@@ -163,9 +168,7 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
         }
     }
     fun import(user: String, kind: LibraryKind, entries: List<LibraryFilePlan>): LibraryWrite {
-        require(kind.maxMiB > 0 && entries.size in 1..20 && entries.all {
-            it.rejection.isEmpty() && (it.recommended == null || it.chosen in setOf("textgen","kobold","novel"))
-        })
+        require(kind.maxMiB > 0 && entries.size in 1..20 && entries.all { it.rejection.isEmpty() })
         return LibraryWrite("library-import", "${kind.label} 가져오기", false,
             { r -> r.field("library_notice")?.let(::libraryDecode) ?: "가져오기를 마쳤어요." }) {
             val saved = mutableListOf<String>()
@@ -177,7 +180,7 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
                 var dispatched = false
                 try {
                     val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                    val args = listOf(libraryEncode(user),kind.wire,transfer.name,libraryEncode(item.name),hash) + listOfNotNull(item.chosen)
+                    val args = listOf(libraryEncode(user),kind.wire,transfer.name,libraryEncode(item.name),hash)
                     val cmd = wire("library-import", *args.toTypedArray())
                     operationCheckpoint()
                     dispatched = true

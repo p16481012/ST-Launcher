@@ -39,7 +39,8 @@ private fun diagnosticTime(raw: String): String {
         " " + stamp.format(DateTimeFormatter.ofPattern("HH:mm")) + " 진단"
 }
 
-@Composable internal fun DiagnosticDetail(state: LauncherUiState, vm: LauncherViewModel, mod: Modifier, onRun: () -> Unit = vm::runDiagnostics) {
+@Composable internal fun DiagnosticDetail(state: LauncherUiState, vm: LauncherViewModel, mod: Modifier,
+    onAcknowledge: (DiagnosticReport) -> Unit = vm::acknowledgeDiagnostics, onRun: () -> Unit = vm::runDiagnostics) {
     val report = state.diagnosticReport
     val clipboard = LocalClipboardManager.current
     val colors = LocalLauncherColors.current
@@ -76,7 +77,9 @@ private fun diagnosticTime(raw: String): String {
             }
         } else {
             val issues = report.rows(DiagnosticStatus.ERROR) + report.rows(DiagnosticStatus.WARNING)
-            if (issues.isNotEmpty()) DiagnosticGroup("확인 필요") {
+            if (issues.isNotEmpty()) DiagnosticGroup("확인 필요",
+                if (state.hasUnreadDiagnostics()) "이번 결과 확인했어요" else null,
+                { onAcknowledge(report) }) {
                 issues.forEachIndexed { i, item ->
                     if (i > 0) ToolDivider(40)
                     DiagnosticResultRow(item, open)

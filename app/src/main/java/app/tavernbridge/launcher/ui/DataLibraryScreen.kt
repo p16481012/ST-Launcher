@@ -3,7 +3,6 @@ package app.tavernbridge.launcher.ui
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -27,7 +27,9 @@ import app.tavernbridge.launcher.data.*
 import app.tavernbridge.launcher.R
 import app.tavernbridge.launcher.model.LauncherUiState
 import java.text.DateFormat
+import java.text.Collator
 import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
@@ -36,7 +38,9 @@ import kotlinx.coroutines.yield
 @Composable
 internal fun DataLibraryScreen(state: LauncherUiState, library: DataLibraryAccess,
     submit: (LibraryWrite) -> Unit, onBack: () -> Unit) {
-    var page by rememberSaveable { mutableStateOf<LibraryKind?>(null) }
+    // Save a wire value instead of an enum so retired destinations safely return to the hub.
+    var pageId by rememberSaveable { mutableStateOf<String?>(null) }
+    var cardOrder by rememberSaveable { mutableStateOf(CardOrder.TOTAL) }
     var user by rememberSaveable { mutableStateOf("") }
     var users by remember { mutableStateOf(emptyList<String>()) }
     var showUsers by remember { mutableStateOf(false) }
@@ -60,17 +64,17 @@ internal fun DataLibraryScreen(state: LauncherUiState, library: DataLibraryAcces
         val receipt = requested ?: return@LaunchedEffect
         if (userLoading) return@LaunchedEffect
         if (receipt.first in users && receipt == library.lastMoved.value) {
-            user = receipt.first; page = null; restoreQuick = receipt.second
+            user = receipt.first; pageId = null; restoreQuick = receipt.second
         }
         library.pendingUndo.compareAndSet(receipt,null)
     }
-    V2BackHandler(page == null && !showUsers && restoreQuick == null, onBack)
-    val destination = page
+    val destination = LibraryKind.entries.find { it.wire == pageId }
+    V2BackHandler(destination == null && !showUsers && restoreQuick == null, onBack)
     if (destination == null) {
         Column(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            LibraryTop("데이터 정리", onBack)
+            LibraryTop("자료 관리", onBack)
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Lead("실리태번 자료", "캐릭터·배경·로어북·프리셋을 가져오거나 정리해요.")
+                Lead("실리태번 자료", "사용자별로 자료를 살펴보고 새 파일을 가져와요.")
                 if (userError.isNotEmpty()) {
                     Text(userError, color = MaterialTheme.colorScheme.error)
                     V2OutlineAction("사용자 다시 확인", { usersRequest++ })
@@ -80,19 +84,18 @@ internal fun DataLibraryScreen(state: LauncherUiState, library: DataLibraryAcces
                 else {
                     if (users.size > 1) SettingsGroup { SettingsRow("사용자", user, onClick = { showUsers = true }) }
                     else SettingsCaption("사용자 · $user")
-                    ToolGroup("자료") {
-                        listOf(LibraryKind.CARDS,LibraryKind.BACKGROUNDS,LibraryKind.WORLDS,LibraryKind.PRESETS).forEachIndexed { i, k ->
+                    ToolGroup("내 자료") {
+                        listOf(LibraryKind.CARDS, LibraryKind.BACKGROUNDS, LibraryKind.WORLDS,
+                            LibraryKind.PRESETS, LibraryKind.THEMES, LibraryKind.QUICK_REPLIES).forEachIndexed { i, k ->
                             if (i != 0) ToolDivider()
-                            ToolRow(k.label, if (k == LibraryKind.CARDS) "카드와 채팅을 합쳐 큰 순서로 봐요" else "",
-                                totals[k].orEmpty(), icon = iconFor(k), onClick = { page = k })
+                            ToolRow(k.label, if (k == LibraryKind.PRESETS) "Chat Completion API에서 쓰는 설정이에요" else "",
+                                totals[k].orEmpty(), icon = iconFor(k), onClick = { pageId = k.wire })
                         }
                     }
                     ToolGroup("정리 도구") {
-                        ToolRow("카드 없이 남은 채팅", "카드가 없어도 소중한 대화일 수 있어요", icon = iconFor(LibraryKind.ORPHANS)) { page = LibraryKind.ORPHANS }
+                        ToolRow("카드 없이 남은 채팅", "카드가 없어도 소중한 대화일 수 있어요", icon = iconFor(LibraryKind.ORPHANS)) { pageId = LibraryKind.ORPHANS.wire }
                         ToolDivider()
-                        ToolRow("중복 카드 찾기", "요청할 때만 그림까지 비교해요", icon = iconFor(LibraryKind.DUPLICATES)) { page = LibraryKind.DUPLICATES }
-                        ToolDivider()
-                        ToolRow("휴지통에서 되돌리기", "데이터 정리에서 옮긴 기록", icon = iconFor(LibraryKind.HISTORY)) { page = LibraryKind.HISTORY }
+                        ToolRow("휴지통에서 되돌리기", "자료 관리에서 옮긴 기록", icon = iconFor(LibraryKind.HISTORY)) { pageId = LibraryKind.HISTORY.wire }
                     }
                     recent?.takeIf { it.first == user }?.let { (_, group) ->
                         if (!state.isWorking) V2OutlineAction("방금 옮긴 항목 되돌리기", { restoreQuick = group })
@@ -102,18 +105,18 @@ internal fun DataLibraryScreen(state: LauncherUiState, library: DataLibraryAcces
             }
         }
     } else if (user.isNotEmpty()) key(user, destination) {
-        LibraryDetail(state,library,user,destination,submit,
-            { label -> totals[destination] = label }, { page = null })
+        LibraryDetail(state,library,user,destination,cardOrder,{ cardOrder = it },submit,
+            { label -> totals[destination] = label }, { pageId = null })
     } else {
         Column(Modifier.padding(18.dp)) {
-            LibraryTop("데이터 정리", { page = null })
+            LibraryTop("자료 관리", { pageId = null })
             SettingsCaption(userError.ifBlank { "사용자를 확인하고 있어요." })
         }
     }
     if (showUsers) V2BottomSheet({ showUsers = false }) {
         Text("사용자 선택", style = MaterialTheme.typography.titleLarge)
         users.forEach { handle -> SettingsRow(handle, selected = handle == user, onClick = {
-            user = handle; page = null; showUsers = false
+            user = handle; pageId = null; showUsers = false
         }) }
     }
     restoreQuick?.let { receipt -> UndoGroupSheet(receipt,state.environment.processRunning,
@@ -128,7 +131,8 @@ private fun iconFor(kind: LibraryKind): ImageVector = when(kind) {
     LibraryKind.BACKGROUNDS -> Icons.Outlined.Image
     LibraryKind.WORLDS -> Icons.Outlined.MenuBook
     LibraryKind.PRESETS -> Icons.Outlined.Tune
-    LibraryKind.DUPLICATES -> Icons.Outlined.ContentCopy
+    LibraryKind.THEMES -> Icons.Outlined.Palette
+    LibraryKind.QUICK_REPLIES -> Icons.Outlined.ChatBubbleOutline
     LibraryKind.HISTORY -> Icons.Outlined.Restore
 }
 @Composable private fun LibraryTop(title: String, back: () -> Unit, action: String? = null, click: () -> Unit = {}) {
@@ -139,13 +143,28 @@ private fun iconFor(kind: LibraryKind): ImageVector = when(kind) {
     }
 }
 private fun friendlyDate(ms: Long) = DateFormat.getDateTimeInstance(DateFormat.SHORT,DateFormat.SHORT).format(Date(ms))
-private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,LibraryKind.ORPHANS,LibraryKind.DUPLICATES)
+private val LibraryKind.trashable get() = this == LibraryKind.CARDS || this == LibraryKind.ORPHANS
+
+private enum class CardOrder(val label: String) {
+    TOTAL("총용량 큰 순"), NAME("이름순"), CHATS("채팅 많은 순");
+
+    fun comparator(): Comparator<LibraryItem> {
+        val collator = Collator.getInstance(Locale.KOREAN)
+        val byName = Comparator<LibraryItem> { a, b -> collator.compare(a.label, b.label) }.thenBy { it.path }
+        return when (this) {
+            TOTAL -> compareByDescending<LibraryItem> { it.bytes }.then(byName)
+            CHATS -> compareByDescending<LibraryItem> { it.chats }.then(byName)
+            NAME -> byName
+        }
+    }
+}
 
 @Composable private fun LibraryDetail(state: LauncherUiState, library: DataLibraryAccess, user: String,
-    kind: LibraryKind, submit: (LibraryWrite) -> Unit, summary: (String) -> Unit, back: () -> Unit) {
+    kind: LibraryKind, cardOrder: CardOrder, setCardOrder: (CardOrder) -> Unit,
+    submit: (LibraryWrite) -> Unit, summary: (String) -> Unit, back: () -> Unit) {
     var generation by remember { mutableIntStateOf(0) }
     var raw by remember { mutableStateOf(emptyList<LibraryItem>()) }
-    var missed by remember { mutableIntStateOf(0) }
+    var showSort by remember { mutableStateOf(false) }
     var groups by remember { mutableStateOf(emptyList<LibraryGroup>()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
@@ -170,7 +189,7 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
         else if (uris.isNotEmpty()) picked = uris.distinct()
     }
     LaunchedEffect(kind,user,generation) {
-        raw = emptyList(); groups = emptyList(); error = ""; loading = true; missed = 0
+        raw = emptyList(); groups = emptyList(); error = ""; loading = true
         try {
             if (kind == LibraryKind.HISTORY) groups = library.groups(user)
             else {
@@ -180,7 +199,6 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
                     check(seen.add(cursor)) { "같은 목록이 반복되어 검사를 멈췄어요." }
                     val chunk = library.page(user,kind,cursor)
                     chunk.items.forEach { all[it.path] = it }
-                    missed += chunk.unexamined
                     raw = all.values.toList()
                     cursor = chunk.next
                     yield()
@@ -191,23 +209,13 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
         catch(e: Exception) { error = e.message ?: "자료 목록을 읽지 못했어요." }
         finally { loading = false }
     }
-    val rows = remember(raw,kind) {
-        when(kind) {
-            LibraryKind.DUPLICATES -> raw.filter { it.duplicate.isNotEmpty() }.groupBy { it.duplicate }.values
-                .filter { it.size > 1 }.sortedBy { it.first().label }.flatMap { it.sortedBy(LibraryItem::path) }
-            else -> raw.sortedWith(compareByDescending<LibraryItem> { it.bytes }.thenBy { it.label })
-        }
-    }
+    val order = remember(kind,cardOrder) { (if (kind == LibraryKind.CARDS) cardOrder else CardOrder.TOTAL).comparator() }
+    val rows = remember(raw,order) { raw.sortedWith(order) }
     val filtered = remember(rows,query) { rows.filter { it.label.contains(query,true) || it.path.contains(query,true) } }
-    val groupNumbers = remember(rows,kind) { if (kind == LibraryKind.DUPLICATES)
-        rows.map { it.duplicate }.distinct().withIndex().associate { it.value to it.index + 1 } else emptyMap() }
     val selectedRows = remember(rows,selected) { rows.filter { it.path in selected } }
     val blocked = state.isWorking || state.environment.operationActive || state.environment.recoveryPending
-    val unsafeDuplicates = kind == LibraryKind.DUPLICATES && selectedRows.any { chosen ->
-        rows.none { it.duplicate == chosen.duplicate && it.path !in selected }
-    }
     val leave = { if (selecting) { selecting = false; selected = emptySet() } else back() }
-    V2BackHandler(detail == null && trashConfirm == null && restore == null && picked.isEmpty(),leave)
+    V2BackHandler(detail == null && trashConfirm == null && restore == null && picked.isEmpty() && !showSort,leave)
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         LibraryTop(if(selecting) "${selected.size}개 선택" else kind.label, leave,
             when {
@@ -222,13 +230,12 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
                     kind == LibraryKind.HISTORY -> "옮긴 작업 기록"
                     loading -> "자료 확인 중"
                     error.isNotEmpty() -> "자료 확인"
-                    kind == LibraryKind.DUPLICATES -> "같은 카드 ${rows.map { it.duplicate }.distinct().size}묶음"
                     else -> "${kind.label} ${rows.size}개"
                 }
                 Lead(title, when(kind) {
-                    LibraryKind.CARDS -> "$user · 카드+채팅 용량이 큰 순서예요."
+                    LibraryKind.CARDS -> "$user · 총용량은 카드 파일과 연결된 채팅을 합친 값이에요."
                     LibraryKind.ORPHANS -> "$user · 카드를 지울 때 남긴 채팅이에요. 옮길 항목만 직접 골라 주세요."
-                    LibraryKind.DUPLICATES -> "$user · PNG 전체가 같은 카드만 보여요. 묶음마다 하나는 남겨 주세요."
+                    LibraryKind.PRESETS -> "$user · Chat Completion API용 프리셋만 보여줘요."
                     LibraryKind.HISTORY -> "$user · 같은 이름이 생긴 파일은 덮어쓰지 않아요."
                     else -> "$user · 사용처는 항목을 열고 직접 확인할 때만 검사해요."
                 })
@@ -237,15 +244,18 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
                 Column { Text(error,color = MaterialTheme.colorScheme.error); V2OutlineAction("다시 확인", { generation++ }) }
             }
             if (kind != LibraryKind.HISTORY && raw.isNotEmpty()) item {
-                OutlinedTextField(query,{ query = it },Modifier.fillMaxWidth(),singleLine = true, label = { Text("이름으로 찾기") })
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(query,{ query = it },Modifier.weight(1f),singleLine = true, label = { Text("이름으로 찾기") })
+                    if (kind == LibraryKind.CARDS) V2LinkAction(cardOrder.label, { showSort = true }) {
+                        Icon(Icons.Outlined.Sort,contentDescription = "정렬",modifier = Modifier.size(18.dp))
+                    }
+                }
             }
             if (loading) item { if (rememberProgressVisible(true)) SettingsCaption("불러온 항목 ${raw.size}개 · 확인하고 있어요.") }
-            if (missed > 0) item { SettingsCaption("확인 못 한 카드 ${missed}개는 정리 후보에 넣지 않았어요.") }
             if (!loading && error.isEmpty() && groups.isEmpty() && filtered.isEmpty()) item {
                 SettingsCaption(when {
                     query.isNotEmpty() -> "검색 결과가 없어요."
-                    kind == LibraryKind.HISTORY -> "이 사용자에서 데이터 정리로 옮긴 기록이 없어요."
-                    kind == LibraryKind.DUPLICATES -> "확인한 카드 중 그림까지 같은 카드가 없어요."
+                    kind == LibraryKind.HISTORY -> "이 사용자에서 자료 관리로 옮긴 기록이 없어요."
                     else -> "표시할 항목이 없어요."
                 })
             }
@@ -253,7 +263,18 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
                 V2NavigationRow(friendlyDate(group.date), { restore = group },
                     description = "되돌릴 항목 ${group.count}개")
             }
-            items(filtered,key = { it.path }) { row ->
+            if (kind == LibraryKind.BACKGROUNDS) {
+                // Keep only viewport tiles composed, including the last unpaired tile.
+                items(filtered.size / 2 + filtered.size % 2, key = { "pair:" + filtered[it * 2].path }) { pair ->
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        repeat(2) { offset ->
+                            val bg = filtered.getOrNull(pair * 2 + offset)
+                            if (bg == null) Spacer(Modifier.weight(1f))
+                            else key(bg.path) { BackgroundTile(library,user,bg,Modifier.weight(1f)) { detail = bg } }
+                        }
+                    }
+                }
+            } else items(filtered,key = { it.path }) { row ->
                 val isProtected = row.protected
                 val toggle: () -> Unit = {
                     if (!isProtected && !blocked) {
@@ -262,7 +283,7 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
                         else error = "한 번에 최대 500개까지 선택할 수 있어요."
                     }
                 }
-                LibraryItemRow(kind,row,groupNumbers[row.duplicate],selecting,row.path in selected,
+                LibraryItemRow(library,user,kind,row,selecting,row.path in selected,
                     { if(selecting) toggle() else detail = row })
             }
             if (!loading && !blocked && kind != LibraryKind.HISTORY && !selecting) {
@@ -273,8 +294,7 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
         }
         if (blocked) SettingsCaption("다른 작업이나 복구가 끝난 뒤 변경할 수 있어요.")
         if (selecting && !blocked && selectedRows.isNotEmpty()) {
-            if (unsafeDuplicates) SettingsCaption("같은 카드 묶음마다 하나는 남겨 주세요.")
-            else V2DangerAction("${selectedRows.size}개 휴지통으로", { trashConfirm = selectedRows },Modifier.fillMaxWidth())
+            V2DangerAction("${selectedRows.size}개 휴지통으로", { trashConfirm = selectedRows },Modifier.fillMaxWidth())
         } else if (!selecting && kind.maxMiB > 0 && !blocked) {
             V2SheetPrimaryButton("가져오기") {
                 filePicker.launch(when(kind) {
@@ -285,6 +305,14 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
             }
         }
         Spacer(Modifier.height(2.dp))
+    }
+    if (showSort) V2BottomSheet({ showSort = false }) {
+        Text("카드 정렬", style = MaterialTheme.typography.titleLarge)
+        SettingsGroup {
+            CardOrder.entries.forEach { choice ->
+                SettingsRow(choice.label, selected = choice == cardOrder, onClick = { setCardOrder(choice); showSort = false })
+            }
+        }
     }
     detail?.let { row ->
         ItemSheet(library,user,kind,row,!blocked && !loading && error.isEmpty(),{ detail = null }) {
@@ -316,7 +344,21 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
     }
 }
 
-@Composable private fun LibraryItemRow(kind: LibraryKind, row: LibraryItem, groupNumber: Int?, selecting: Boolean,
+@Composable private fun BackgroundTile(library: DataLibraryAccess, user: String, row: LibraryItem, modifier: Modifier,
+    click: () -> Unit) {
+    Surface(modifier, shape = RoundedCornerShape(16.dp),color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = click)) {
+            LibraryArtwork(library,user,row,Modifier.fillMaxWidth().aspectRatio(16f/9f))
+            Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment = Alignment.CenterVertically) {
+                Text(row.label,Modifier.weight(1f),style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable private fun LibraryItemRow(library: DataLibraryAccess, user: String, kind: LibraryKind, row: LibraryItem, selecting: Boolean,
     selected: Boolean, click: () -> Unit) {
     val color = MaterialTheme.colorScheme
     val interactive = if (selecting) Modifier.toggleable(selected, enabled = !row.protected, role = Role.Checkbox) { click() }
@@ -325,22 +367,21 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
         Row(Modifier.fillMaxWidth().then(interactive).padding(horizontal = 14.dp,vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if(selecting) SettingsChoiceMark(selected,selection = true,enabled = !row.protected)
-            if (kind == LibraryKind.CARDS || kind == LibraryKind.DUPLICATES) {
-                Box(Modifier.size(40.dp).background(color.surfaceVariant,RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center) { Text(row.label.take(1),style = MaterialTheme.typography.titleMedium) }
+            if (kind == LibraryKind.CARDS) {
+                LibraryArtwork(library,user,row,Modifier.size(width = 48.dp,height = 64.dp).clip(RoundedCornerShape(8.dp)))
             } else Icon(iconFor(kind),null,Modifier.size(22.dp))
             Column(Modifier.weight(1f)) {
-                Text(if (groupNumber == null) row.label else row.path.substringAfterLast('/'),
+                Text(row.label,
                     maxLines = 2,overflow = TextOverflow.Ellipsis,style = MaterialTheme.typography.bodyLarge)
                 SettingsCaption(when(kind) {
-                    LibraryKind.CARDS, LibraryKind.DUPLICATES -> (if(row.chats > 0) "채팅 ${row.chats}개" else "채팅 없음") +
-                        (if(row.protected) " · 보호됨" else "") + if(groupNumber != null) " · 같은 카드 묶음 $groupNumber" else ""
+                    LibraryKind.CARDS -> "카드 ${formatBackupBytes(row.fileBytes)} · 채팅 ${row.chats}개" +
+                        (if(row.protected) " · 보호됨" else "")
                     LibraryKind.ORPHANS -> "채팅 ${row.chats}개" + if (row.modified > 0) " · ${friendlyDate(row.modified)}" else ""
-                    LibraryKind.PRESETS -> row.path.substringBefore('/')
                     else -> if (row.modified > 0) friendlyDate(row.modified) else row.path
                 })
             }
-            Text(formatBackupBytes(row.bytes),style = MaterialTheme.typography.bodySmall)
+            Text((if (kind == LibraryKind.CARDS) "총 " else "") + formatBackupBytes(row.bytes),
+                style = MaterialTheme.typography.bodySmall)
             if(!selecting) Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
         }
     }
@@ -353,13 +394,14 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
     val scope = rememberCoroutineScope()
     V2BottomSheet(close) {
         Text(row.label,style = MaterialTheme.typography.titleLarge)
+        if (kind == LibraryKind.BACKGROUNDS) {
+            LibraryArtwork(library,user,row,Modifier.fillMaxWidth().height(216.dp).clip(RoundedCornerShape(12.dp)),detail = true)
+        }
         SettingsCaption("${row.path} · ${formatBackupBytes(row.bytes)}")
         if (kind.trashable) {
             SettingsRow("채팅", "${row.chats}개")
             if (row.protected) SettingsCaption("즐겨찾기·그룹 연결 등으로 보호된 항목은 여기서 옮기지 않아요.")
-            else if (canWrite && kind != LibraryKind.DUPLICATES)
-                V2DangerAction("휴지통으로 옮기기",trash,Modifier.fillMaxWidth())
-            else if(kind == LibraryKind.DUPLICATES) SettingsCaption("선택 모드에서 같은 묶음의 카드 하나를 남기고 정리해 주세요.")
+            else if (canWrite) V2DangerAction("휴지통으로 옮기기",trash,Modifier.fillMaxWidth())
         } else {
             SettingsHeading("어디서 쓰나요?")
             Text(usage ?: if(checking) "사용처를 확인하고 있어요." else "아직 확인하지 않았어요.")
@@ -391,8 +433,6 @@ private val LibraryKind.trashable get() = this in setOf(LibraryKind.CARDS,Librar
     }
 }
 
-private val samplerLabels = mapOf("textgen" to "텍스트 완성","kobold" to "KoboldAI","novel" to "NovelAI")
-
 @Composable private fun LibraryImportSheet(library: DataLibraryAccess,kind: LibraryKind,user: String,
     picked: List<Uri>,close: () -> Unit,apply: (List<LibraryFilePlan>) -> Unit) {
     var plans by remember(picked) { mutableStateOf(emptyList<LibraryFilePlan>()) }
@@ -409,13 +449,12 @@ private val samplerLabels = mapOf("textgen" to "텍스트 완성","kobold" to "K
         reading = false
     }
     val valid = plans.filter { it.rejection.isEmpty() }
-    val ambiguous = valid.any { it.recommended != null && it.chosen == null }
     V2BottomSheet(close, footer = {
         Column(Modifier.fillMaxWidth()) {
             if(!reading && valid.isEmpty()) V2SheetPrimaryButton("확인",onClick = close)
             else {
                 V2SheetPrimaryButton(if(reading) "파일 확인 중" else "${valid.size}개 가져오기",
-                    enabled = !reading && !ambiguous && valid.isNotEmpty()) { apply(valid) }
+                    enabled = !reading && valid.isNotEmpty()) { apply(valid) }
                 V2QuietAction("취소",close,Modifier.fillMaxWidth())
             }
         }
@@ -423,23 +462,11 @@ private val samplerLabels = mapOf("textgen" to "텍스트 완성","kobold" to "K
         Text("${kind.label} 가져오기",style = MaterialTheme.typography.titleLarge)
         SettingsCaption("넣을 사용자 · $user\n같은 이름이면 원래 파일을 바꾸지 않고 새 이름으로 넣어요.")
         if(reading) SettingsCaption("파일 확인 중 · $fileIndex / ${picked.size}개")
-        plans.forEachIndexed { index, p ->
+        plans.forEach { p ->
             Column(Modifier.fillMaxWidth().padding(vertical = 4.dp),verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(p.name,style = MaterialTheme.typography.titleMedium)
                 if(p.rejection.isNotBlank()) Text("못 넣음 · ${p.rejection}",color = MaterialTheme.colorScheme.error)
-                else if (p.recommended == null) SettingsCaption(p.info)
-                else {
-                    SettingsCaption("어떤 프리셋인가요? · 추천: ${samplerLabels[p.recommended]}")
-                    samplerLabels.entries.sortedByDescending { it.key == p.recommended }.forEach { (value,label) ->
-                        Row(Modifier.fillMaxWidth().clickable(role = Role.RadioButton) {
-                            plans = plans.mapIndexed { n, item -> if(n == index) item.copy(chosen = value) else item }
-                        }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(p.chosen == value,onClick = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(label + if(value == p.recommended) " · 추천" else "")
-                        }
-                    }
-                }
+                else SettingsCaption(p.info)
             }
         }
         if(!reading && valid.isNotEmpty()) SettingsCaption("서버가 켜져 있다면 가져온 뒤 실리태번 목록을 새로고침해 주세요.")

@@ -89,7 +89,7 @@ class FileLogPrototypeTest {
                 onRestoreTrash = { captured += it })
             }
         } }
-        ui.onNodeWithText("휴지통").performClick()
+        ui.onNodeWithContentDescription("휴지통 열기").performClick()
         ui.onNodeWithText("SillyTavern/data/기록.txt").assertExists()
         ui.captureManagementScreen("files-trash", "기록.txt")
         ui.onNodeWithContentDescription("data/기록.txt 작업").performClick()
