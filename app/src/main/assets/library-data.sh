@@ -158,19 +158,18 @@ function listFiles(kind){
     }
     return out.sort();
 }
-function groups(extended=false){
-    const members=new Set(),other=new Set();let unknown=false,extraUnknown=false;
+function groups(){
+    const members=new Set(),disabled=new Set();let unknown=false;
     try{for(const e of entries(dirpath(profile,'groups',true))){if(!e.name.endsWith('.json'))continue;
         if(!e.isFile()){unknown=true;continue;}try{
             const g=json(path.join(profile,'groups',e.name),4*MB);
-            if(!Array.isArray(g.members))unknown=true;else g.members.forEach(x=>members.add(x));
-            if(extended)for(const v of [g.members,g.disabled_members]){
-                if(v==null)continue;
-                if(!Array.isArray(v)){extraUnknown=true;continue;}
-                for(const x of v){if(typeof x==='string')other.add(x);else extraUnknown=true;}
+            for(const [names,set] of [[g.members,members],[g.disabled_members,disabled]]){
+                if(names===undefined&&set===disabled)continue; // optional in older group definitions
+                if(!Array.isArray(names)){unknown=true;continue;}
+                for(const name of names){if(typeof name==='string'&&name.length)set.add(name);else unknown=true;}
             }
         }catch{unknown=true;}}}catch{unknown=true;}
-    return {members,unknown,other,extraUnknown};
+    return {members,disabled,unknown,has:name=>members.has(name)||disabled.has(name)};
 }
 function chatStat(name){
     const chat=dirpath(profile,'chats',true),d=chat&&path.join(chat,name),st=d&&stat(d),hash=crypto.createHash('sha256'),contents=action==='library-card-change'?crypto.createHash('sha256'):null;
@@ -187,15 +186,18 @@ function item(r,g,verifiedChats){
     const k=category(r),[d,n]=r.split('/');if(!k)fail(64,'지원하지 않는 항목이에요.');
     const par=dirpath(profile,d),p=path.join(par,n),s=stat(p);
     if(k==='orphans'?!s?.isDirectory():!s?.isFile())fail(145,'선택한 항목이 바뀌었어요.');
-    let label=n,bytes=k==='orphans'?0:Number(s.size),count=0,when=Number(s.mtimeMs),protectedItem=false,card=null,revisionData='',chats=null;
+    let label=n,bytes=k==='orphans'?0:Number(s.size),count=0,when=Number(s.mtimeMs),protectReason='',card=null,revisionData='',chats=null;
     if(k==='cards'||k==='orphans'){
         const name=k==='cards'?n.slice(0,-4):n;
         chats=verifiedChats||chatStat(name);bytes+=chats.bytes;count=chats.count;when=chats.stamp||when;revisionData=chats.rev;
-        if(k==='cards'){card=cachedCard(n,p,s);label=card?.name||name;protectedItem=!card||card.favorite||g.unknown||g.members.has(n);}
-        else {if(stat(path.join(dirpath(profile,'characters'),n+'.png')))fail(145,'같은 이름의 캐릭터 카드가 생겼어요.');protectedItem=g.unknown||g.members.has(n+'.png');}
-        protectedItem ||= !chats.safe;
+        if(k==='cards'){card=cachedCard(n,p,s);label=card?.name||name;}
+        else if(stat(path.join(dirpath(profile,'characters'),n+'.png')))fail(145,'같은 이름의 캐릭터 카드가 생겼어요.');
+        const avatar=k==='cards'?n:n+'.png';
+        protectReason=k==='cards'&&!card?'unreadable':card?.favorite?'favorite':g.members.has(avatar)?'group':
+            g.disabled.has(avatar)?'disabled_group':g.unknown?'unknown_group':!chats.safe?'unsafe_chats':'';
     }
-    return {r,k,n,p,label,bytes,fileBytes:k==='orphans'?0:Number(s.size),count,when,prot:protectedItem,card,chats,
+    const protectedItem=!!protectReason;
+    return {r,k,n,p,label,bytes,fileBytes:k==='orphans'?0:Number(s.size),count,when,prot:protectedItem,protectReason,card,chats,
         artRev:k==='cards'||k==='backgrounds'?h(JSON.stringify([rootName,user,r,partId(s)])):'',
         rev:h(JSON.stringify([rootName,user,r,partId(s),revisionData,protectedItem]))};
 }
@@ -206,7 +208,7 @@ function list(){
     for(const r of all){if(r<=cursor)continue;cancel();
         if(scanned&&(scanned>=3000||Date.now()-start>20000)){next=prev;break;}
         const x=item(r,g);
-        const row=['item',b64(r),b64(x.label),x.bytes,x.count,x.when,x.rev,x.prot?1:0,x.fileBytes,x.artRev].join('\t');
+        const row=['item',b64(r),b64(x.label),x.bytes,x.count,x.when,x.rev,x.prot?1:0,x.fileBytes,x.artRev,x.protectReason].join('\t');
         if(used+Buffer.byteLength(row)+1>pageLimit){next=prev;break;}
         console.log(row);used+=Buffer.byteLength(row)+1;prev=r;scanned++;
     }
@@ -251,12 +253,12 @@ function trash(){
             chatRevision:category(r)==='orphans'?chatStat(path.basename(r)).rev:'',id:created+'-'+crypto.randomUUID()};});
         rows.push(...batch);accepted.push({x,batch});
     }
-    if(!rows.length){console.log('moved=0\nskipped='+skipped);return;}
+    if(!rows.length){console.log('moved=0\nchats_moved=0\nskipped='+skipped);return;}
     const journal=pin(path.join(owner,'library-undo'),true),base=pin(path.join(owner,'file-trash'),true);
     // Plan and metadata are durable before the first move. A killed shell may
     // leave planned-but-unmoved records; history only offers actual receipts.
     writeEx(path.join(journal,gid+'.json'),JSON.stringify({format:1,root:rootName,rootInode:ino(fs.statSync(root,{bigint:true})),user,userInode:ino(fs.statSync(profile,{bigint:true})),created,rows}));syncDir(journal);
-    let moved=0;const liveGroups=groups();
+    let moved=0,chatsMoved=0;const liveGroups=groups();
     for(const {x,batch} of accepted){cancel();let check;try{check=item(x.r,liveGroups);}catch(e){if(e.exit!==145)throw e;}
         if(!check||check.prot||check.rev!==x.rev){skipped++;continue;}
         for(const m of batch){const start=fds.length;try{
@@ -272,10 +274,11 @@ function trash(){
                 fail(145,'옮기기 직전에 카드나 채팅이 바뀌었어요. 이미 옮긴 항목은 휴지통에 있어요.');
             }
             noReplace(source,path.join(container,'item'));syncDir(container);syncDir(path.dirname(source));
+            if(category(m.r)==='orphans')chatsMoved+=check.count; // actual directory moved, not just the requested selection
         }finally{closeSince(start);}}
         moved++;
     }
-    console.log('group_id='+gid+'\nmoved='+moved+'\nskipped='+skipped);
+    console.log('group_id='+gid+'\nmoved='+moved+'\nchats_moved='+chatsMoved+'\nskipped='+skipped);
 }
 function historyOrUndo(){
     const undo=action==='library-undo',journal=dirpath(owner,'library-undo',true),base=dirpath(owner,'file-trash',true);
@@ -804,22 +807,22 @@ function cardOperation(){
             if(!actual.safe||actual.identity!==shifted.identity||actual.contentRev!==shifted.contentRev||
                 stat(path.join(dirpath(profile,'chats'),old)))fail(145,'옮기는 동안 채팅 폴더가 바뀌었어요.');
         }
-        const g=groups(true),x=item(r,g,shifted),s=stat(source);
+        const g=groups(),x=item(r,g,shifted),s=stat(source);
         if(!s?.isFile()||x.rev!==rev||x.artRev!==h(JSON.stringify([rootName,user,r,partId(s)])))fail(145,'카드나 연결 상태가 바뀌었어요. 목록을 다시 열어 주세요.');
         const names=[old];if(changing)names.push(stem);
         if(x.card?.name)names.push(x.card.name);
         const settings=cardSettingsRefs(names),history=groupHistoryRefs(names);
         let used='',unknown='';
         const sprite=n=>stat(path.join(folder,n));
-        if(g.other.has(old+'.png')||history.found.has(old)||history.found.has(x.card?.name))used='그룹 또는 그룹 대화에서 이 카드를 참조하고 있어요.';
+        if(g.has(old+'.png')||history.found.has(old)||history.found.has(x.card?.name))used='그룹 또는 그룹 대화에서 이 카드를 참조하고 있어요.';
         else if(sprite(old)||(x.card?.name&&assetName(x.card.name)&&sprite(x.card.name)))used='이 카드 이름에 연결된 표정 폴더나 파일이 있어요.';
         else if(settings.found.has(old)||settings.found.has(x.card?.name))used='사용자 설정에 이 카드 이름을 쓰는 항목이 있어요.';
-        else if(!x.card||!x.chats.safe||g.unknown||g.extraUnknown||settings.unknown||history.unknown)unknown='카드·채팅·그룹 또는 설정의 연결 상태를 전부 확인하지 못했어요.';
+        else if(!x.card||!x.chats.safe||g.unknown||settings.unknown||history.unknown)unknown='카드·채팅·그룹 또는 설정의 연결 상태를 전부 확인하지 못했어요.';
         if(!changing)return {state:used?'used':unknown?'unconfirmed':'none',detail:used||unknown||(x.count?'1:1 채팅 '+x.count+'개는 카드 이름과 함께 옮길 수 있어요.':'다른 곳에서 쓰는 연결을 찾지 못했어요.')};
         if(mode==='rename'&&(used||unknown))fail(144,(used||unknown)+' 원본을 유지하고 새 이름으로 복사해 주세요.');
         const chats=dirpath(profile,'chats',true), existing=stat(dest);
         if((published?(!existing||partId(existing)!==published):!!existing)||sprite(stem)||(!shifted&&chats&&stat(path.join(chats,stem)))||
-            g.other.has(file)||settings.found.has(stem)||history.found.has(stem))fail(145,'새 이름을 쓰는 카드·채팅·그룹 또는 설정이 있어요. 다른 이름을 골라 주세요.');
+            g.has(file)||settings.found.has(stem)||history.found.has(stem))fail(145,'새 이름을 쓰는 카드·채팅·그룹 또는 설정이 있어요. 다른 이름을 골라 주세요.');
         return {s,chats:x.chats};
     };
     const initial=check();

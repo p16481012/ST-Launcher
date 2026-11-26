@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ExtensionCheckStateTest {
+    @Test fun finishingRecoveryOnlyReloadsTheVisibleExtensionScreen() {
+        val open = LauncherUiState(section = MainSection.LOGS, toolPage = ToolPage.EXTENSIONS, isWorking = false)
+        assertTrue(open.mayRefreshVisibleExtensions())
+        assertFalse(open.copy(section = MainSection.HOME).mayRefreshVisibleExtensions())
+        assertTrue(open.copy(section = MainSection.HOME, extensionManagerOpen = true).mayRefreshVisibleExtensions())
+        assertFalse(open.copy(isWorking = true).mayRefreshVisibleExtensions())
+    }
     private val item = ManagedExtension("x", "local", "Example", "1.0", "user", false, "clean",
         "a".repeat(40), true, "", "owner/example", "main")
 

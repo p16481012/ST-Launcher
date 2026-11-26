@@ -42,7 +42,6 @@ internal class EncryptedBackupFiles(context: Context) {
     } ?: -1L
 
     suspend fun encrypt(source: Uri, target: Uri, password: CharArray, progress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
-        var owned = false
         val signal = CancellationSignal()
         val reading = AtomicReference<InputStream?>(null)
         val writing = AtomicReference<OutputStream?>(null)
@@ -55,8 +54,6 @@ internal class EncryptedBackupFiles(context: Context) {
             val bytes = size(source, signal)
             preflight(bytes >= 4, "원본 ZIP 크기를 확인할 수 없습니다. 기기에 저장된 ZIP을 선택해 주세요.")
             BackupTransferLimits.checkEncryptedSize(bytes)
-            preflight(size(target, signal) == 0L, "비어 있는 새 파일만 저장 위치로 사용할 수 있습니다.")
-            owned = true
             val coroutine = currentCoroutineContext()
             resolver.openAssetFileDescriptor(source, "r", signal)?.use { descriptor ->
                 PushbackInputStream(descriptor.createInputStream(), 4).use { input ->
@@ -69,21 +66,21 @@ internal class EncryptedBackupFiles(context: Context) {
                          (signature[2] == 5.toByte() && signature[3] == 6.toByte()) ||
                          (signature[2] == 7.toByte() && signature[3] == 8.toByte())), "ZIP 백업을 선택해 주세요.")
                     input.unread(signature)
-                    resolver.openAssetFileDescriptor(target, "w", signal)?.use { destination ->
-                        destination.createOutputStream().use { output ->
-                            writing.set(output)
-                            EncryptedBackupCodec.encrypt(input, output, password, bytes, { coroutine.ensureActive() }) { progress(it, bytes) }
-                        }
-                    } ?: error("새 파일을 열지 못했습니다.")
+                    writeSelectedBackupDocument({ size(target, signal) }, { coroutine.ensureActive() }) {
+                        resolver.openAssetFileDescriptor(target, "w", signal)?.use { destination ->
+                            destination.createOutputStream().use { output ->
+                                writing.set(output)
+                                EncryptedBackupCodec.encrypt(input, output, password, bytes, { coroutine.ensureActive() }) { progress(it, bytes) }
+                            }
+                        } ?: error("새 파일을 열지 못했습니다.")
+                    }
                 }
             } ?: error("원본을 읽지 못했습니다.")
             coroutine.ensureActive()
         } catch (error: Exception) {
-            val removed = !owned || runCatching { DocumentsContract.deleteDocument(resolver, target) }.getOrDefault(false)
             currentCoroutineContext().ensureActive()
-            if (error is BackupTransferPreflightException && removed) throw error
-            throw IOException(if (removed) "암호화 저장을 완료하지 못했습니다. 원본 ZIP은 유지했습니다. 저장 공간과 파일 접근을 확인해 주세요."
-                else "암호화 저장에 실패했습니다. 저장 위치에 미완성 파일이 남아 있습니다. 원본 ZIP은 유지했습니다.", error)
+            if (error is BackupTransferPreflightException || error is SelectedBackupWriteException) throw error
+            throw IOException("암호화 저장을 완료하지 못했습니다. 원본 ZIP은 유지했습니다. 저장 공간과 파일 접근을 확인해 주세요.", error)
         } finally { password.fill('\u0000'); watcher.cancel(); reading.set(null); writing.set(null) }
     }
 

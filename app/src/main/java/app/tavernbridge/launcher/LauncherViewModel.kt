@@ -12,6 +12,7 @@ import app.tavernbridge.launcher.model.ExtensionUpdateMetadata
 import app.tavernbridge.launcher.model.ExtensionCheckIssue
 import app.tavernbridge.launcher.model.extensionUpdateReceipt
 import app.tavernbridge.launcher.model.sameCheckTarget
+import app.tavernbridge.launcher.model.mayRefreshVisibleExtensions
 import app.tavernbridge.launcher.data.ExtensionVersionClient
 
 import app.tavernbridge.launcher.model.reselectRoot
@@ -77,6 +78,8 @@ import app.tavernbridge.launcher.model.finishTermuxSetupCheck
 import app.tavernbridge.launcher.model.sectionAfterEnvironmentCheck
 import app.tavernbridge.launcher.model.indicatesExistingInstallation
 import app.tavernbridge.launcher.model.MainSection
+import app.tavernbridge.launcher.data.PcZipStagingOwner
+import app.tavernbridge.launcher.data.pcZipStagingOwner
 import app.tavernbridge.launcher.model.OperationResultSummary
 import app.tavernbridge.launcher.model.RetryAction
 import app.tavernbridge.launcher.model.SettingsPanel
@@ -1317,6 +1320,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         operation: String,
         started: Long,
         backupRequest: BackupRequest? = null,
+        partialNotice: () -> String = { "" },
         block: suspend () -> T,
     ): T {
         val control = OperationCancellationControl()
@@ -1337,8 +1341,9 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
             val environment = if (!control.hasDispatched) state.value.environment else try { repository.inspect() }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { state.value.environment }
+            val notice = if (operation == "delete-st") partialFileActionNotice else partialNotice()
             val detail = "요청에 따라 작업을 중단했습니다. 이미 완료된 변경은 유지됩니다." +
-                if (operation == "delete-st" && partialFileActionNotice.isNotEmpty()) "\n$partialFileActionNotice" else ""
+                if (notice.isNotEmpty()) "\n$notice" else ""
             val summary = operationSummary(operation, operationLabel(operation), detail, false, started,
                 errorCode = "OPERATION_CANCELLED", backupRequest = backupRequest)
             mutableState.update { it.copy(environment = environment, isWorking = false,
@@ -1371,11 +1376,13 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
             retryAction = RetryAction.CHECK_UPDATE,
             successMessageForResult = { result ->
                 if (result.stdout.lineSequence().any { it == "followup_cancelled=1" }) {
-                    "업데이트 적용은 완료했습니다. 중단 요청에 따라 서버 재시작은 진행하지 않았습니다."
+                    if (result.stdout.lineSequence().any { it == "followup_stopped=0" })
+                        "업데이트 적용은 완료했어요. 재시작 중단을 요청했지만 서버가 꺼졌는지는 확인하지 못했어요. 홈에서 확인해 주세요."
+                    else "업데이트 적용은 완료했습니다. 중단 요청에 따라 서버 재시작을 멈췄습니다."
                 } else if (result.stdout.lineSequence().any { it == "updated=0" }) {
-                    "이미 최신 커밋입니다. 패키지를 다시 설치하지 않았습니다."
+                    maintenanceMessage("이미 최신 커밋입니다. 패키지를 다시 설치하지 않았습니다.", result)
                 } else {
-                    "업데이트·패키지 설치·서버 응답 검사를 완료했습니다."
+                    maintenanceMessage("업데이트·패키지 설치·서버 응답 검사를 완료했습니다.", result)
                 }
             },
         ) {
@@ -1757,30 +1764,80 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         if (target.isNotEmpty() && current.profiles.any { it.key != source && it.value == target }) {
             showMessage("이 휴대폰 사용자는 다른 원본 사용자와 이미 연결되어 있어요."); return
         }
-        perform("import-preview", "넣을 곳 확인", "선택한 사용자의 합치기 내용을 확인했어요.") {
-            val (preview, result) = repository.previewPcZip(file, current.profiles + (source to target))
-            if (file == pcZipFile) pcZipScreen.value = preview.copy(name = current.name)
-            result
+        recheckPcZip(file, current, current.profiles + (source to target), impact = false)
+    }
+
+    internal fun checkPcZipReplacement() {
+        val file = pcZipFile ?: return
+        val current = pcZipScreen.value ?: return
+        if (current.checking || commandEntryBlocked()) return
+        recheckPcZip(file, current, current.profiles, impact = true)
+    }
+
+    internal fun togglePcZipAvatars() {
+        val file = pcZipFile ?: return
+        val current = pcZipScreen.value ?: return
+        if (current.checking || current.candidateAvatars == 0 || commandEntryBlocked()) return
+        recheckPcZip(file, current, current.profiles, impact = false, includeAvatars = !current.avatarsIncluded)
+    }
+
+    private fun recheckPcZip(file: app.tavernbridge.launcher.data.SharedImportStaging.Transfer,
+        current: app.tavernbridge.launcher.data.PcZipPreview, mapping: Map<String,String>, impact: Boolean,
+        includeAvatars: Boolean = current.avatarsIncluded) {
+        if (current.checking) return
+        val generation = pcZipGeneration
+        pcZipScreen.value = current.copy(checking = true)
+        perform("import-preview", if (impact) "교체 범위 확인" else "넣을 곳 확인", "ZIP 미리보기를 갱신했어요.",
+            onFinished = { if (generation == pcZipGeneration) pcZipScreen.value = pcZipScreen.value?.copy(checking = false) }) {
+            try {
+                val (preview, result) = repository.previewPcZip(file, mapping, impact, current.archive, includeAvatars)
+                if (generation == pcZipGeneration && file == pcZipFile) {
+                    pcZipScreen.value = current.refreshFrom(preview)
+                        ?: error("[IMPORT_ARCHIVE_CHANGED] 확인하던 ZIP이 바뀌었어요. 원본 ZIP을 다시 선택해 주세요.")
+                }
+                result
+            } catch (e: Exception) {
+                if (errorCodeFrom(e.userMessage()) == "IMPORT_ARCHIVE_CHANGED" &&
+                    generation == pcZipGeneration && file == pcZipFile) closePcZip()
+                throw e
+            }
         }
     }
 
     internal fun applyPcZip(replace: Boolean, backupBefore: Boolean) {
         val preview = pcZipScreen.value ?: return
         val file = pcZipFile ?: return
-        if (commandEntryBlocked() || state.value.environment.operationActive || state.value.environment.recoveryPending) return
+        if (preview.checking || commandEntryBlocked() || state.value.environment.operationActive || state.value.environment.recoveryPending) return
         if (!replace && !preview.canAdd || preview.layout in setOf("legacy_public", "unknown")) return
-        pcZipGeneration++
+        val generation = ++pcZipGeneration
         pcZipFile = null
         pcZipScreen.value = null
         val op = if (replace) "import-backup" else "import-merge"
+        var handedOff = false
+        var settled = false
+        fun settleStaging(active: Boolean) {
+            if (settled) return
+            settled = true
+            when (pcZipStagingOwner(handedOff, generation == pcZipGeneration, active && !operationCancellationRequested,
+                state.value.section in setOf(MainSection.SETUP, MainSection.BACKUPS))) {
+                PcZipStagingOwner.TERMUX -> Unit
+                PcZipStagingOwner.PREVIEW -> {
+                    pcZipFile = file
+                    pcZipScreen.value = preview.copy(retainedAfterPreflight = true, impact = null)
+                }
+                PcZipStagingOwner.DISCARD -> viewModelScope.launch(Dispatchers.IO) { repository.discardPcZip(file) }
+            }
+        }
         perform(op, if (replace) "ZIP으로 교체" else "PC ZIP 안전하게 합치기", "ZIP 처리를 마쳤어요.",
+            onFinished = { settleStaging(true) },
             successMessageForResult = { result ->
                 val counts = result.stdout.lineSequence().associate { it.substringBefore('=') to it.substringAfter('=', "") }
                 val text = if (replace) "확인한 ZIP으로 교체했어요."
-                    else "파일 ${counts["added"]?.toIntOrNull() ?: preview.added}개를 추가했어요. 기존 파일은 덮어쓰지 않았어요."
+                    else "파일 ${counts["added"]?.toIntOrNull() ?: preview.added}개를 추가했어요. " + if (counts["cleanup_pending"] == "1")
+                        "합치기는 완료됐고 임시 파일은 안전을 확인한 뒤 정리해요. ZIP을 다시 가져올 필요는 없어요."
+                    else "기존 파일은 덮어쓰지 않았어요."
                 maintenanceMessage(text, result)
             }) {
-            var handedOff = false
             try {
                 val result = maintainServer {
                     protectBeforeReplacement(backupBefore, { backupBeforeReplacement(op) }) {
@@ -1791,8 +1848,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                 if (result.isSuccess && backupBefore) refreshBackupListAfterOperation()
                 result
             } finally {
-                // A dispatched job may still own its staging ZIP after a lost callback.
-                if (!handedOff) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { repository.discardPcZip(file) }
+                settleStaging(currentCoroutineContext().isActive)
             }
         }
     }
@@ -2236,16 +2292,20 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         var changed = 0
         var identical = 0
         perform("extension-update", "확장 ${items.size}개 업데이트", "확장 작업을 완료했어요.",
+            partialNotice = { "확장 ${completed}/${items.size}개 완료" },
             successMessageForResult = {
                 listOfNotNull("업데이트 ${changed}개".takeIf { changed > 0 }, "변경 없이 동일 ${identical}개".takeIf { identical > 0 },
                     "변경 여부 미확인 ${completed - changed - identical}개".takeIf { completed > changed + identical }).joinToString(" · ")
             },
-            onFinished = { if (state.value.toolPage == ToolPage.EXTENSIONS && !state.value.isWorking) loadExtensions() }) {
+            onFinished = { if (state.value.mayRefreshVisibleExtensions()) loadExtensions() }) {
             var last: TermuxCommandResult? = null
             for (item in items) {
                 operationCheckpoint()
                 last = repository.changeExtension(item, app.tavernbridge.launcher.model.ExtensionAction.UPDATE)
-                if (!last.isSuccess) throw IllegalStateException("${completed}/${items.size}개 완료 · ${item.name}: ${last.readableError()}")
+                if (!last.isSuccess) {
+                    if (last.exitCode == 130) operationCheckpoint()
+                    return@perform last.inFailedExtensionBatch(completed, items.size, item.name)
+                }
                 when (extensionUpdateReceipt(last.stdout)) { "updated" -> changed++; "already-current" -> identical++ }
                 completed++
             }
@@ -2256,13 +2316,18 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
     fun changeExtension(item: app.tavernbridge.launcher.model.ManagedExtension, action: app.tavernbridge.launcher.model.ExtensionAction) {
         if (state.value.environment.processRunning) { showMessage("확장을 변경하려면 서버를 먼저 종료해 주세요."); return }
         val defaultMessage = "확장 ${action.label} 작업을 완료했습니다."
-        perform("extension-${action.argument}", "확장 ${action.label}", defaultMessage, successMessageForResult = { result ->
+        var dispatched = false
+        var refreshed = false
+        perform("extension-${action.argument}", "확장 ${action.label}", defaultMessage, onFinished = {
+            if (dispatched && !refreshed && state.value.mayRefreshVisibleExtensions()) loadExtensions()
+        }, successMessageForResult = { result ->
             if (action != ExtensionAction.UPDATE) defaultMessage else when (extensionUpdateReceipt(result.stdout)) {
                 "updated" -> "${item.name}: 새 커밋으로 업데이트했어요."
                 "already-current" -> "${item.name}: 이미 원격 브랜치와 같아 변경하지 않았어요."
                 else -> "${item.name}: 작업은 완료됐지만 변경 여부를 확인하지 못했어요."
             }
         }) {
+            dispatched = true
             repository.changeExtension(item, action).also { result ->
                 if (result.isSuccess) runCatching { withoutOperationCancellation { repository.listExtensions() } }.onSuccess { inventory ->
                     val checkedCommit = result.stdout.lineSequence().filter { it.startsWith("extension_commit=") }
@@ -2272,6 +2337,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
                             fresh.id == item.id && fresh.gitHubRepository == item.gitHubRepository && fresh.gitBranch == item.gitBranch)
                             fresh.copy(remoteAhead = 0) else fresh
                     })) }
+                    refreshed = true
                 }
             }
         }
@@ -2279,7 +2345,11 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
 
     fun recoverExtension() {
         if (state.value.environment.processRunning) { showMessage("서버를 종료한 뒤 확장을 복구해 주세요."); return }
-        perform("extension-recover", "중단된 확장 교체 복구", "확장 교체 상태를 확인하고 안전하게 복구했습니다.") {
+        var dispatched = false
+        perform("extension-recover", "중단된 확장 교체 복구", "확장 교체 상태를 확인하고 안전하게 복구했습니다.", onFinished = {
+            if (dispatched && state.value.mayRefreshVisibleExtensions()) loadExtensions()
+        }) {
+            dispatched = true
             repository.recoverExtension().also { if (it.isSuccess) mutableState.update { state -> state.copy(extensionInventory = null) } }
         }
     }
@@ -2331,7 +2401,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         if (commandEntryBlocked()) { change.close(); return false }
         perform("save-lan-security", "외부 접속 설정 저장", "외부 접속 설정을 저장했습니다.",
             onFinished = change::close,
-            successMessageForResult = { maintenanceMessage("외부 접속 설정을 저장했습니다.", it) }) {
+            successMessageForResult = { maintenanceMessage(app.tavernbridge.launcher.model.lanSettingsSavedMessage(it.stdout), it) }) {
             try { maintainServer { repository.saveLanSecurity(change) } } finally { change.close() }
         }
         return true
@@ -3260,6 +3330,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
         onFinished: () -> Unit = {},
         allowRuntimeSyncOffer: Boolean = false,
         onRefreshChecked: ((Boolean) -> Unit)? = null,
+        partialNotice: () -> String = { "" },
         block: suspend () -> TermuxCommandResult,
     ) {
         if (commandEntryBlocked(requireManager = operation != "connect-manager")) { onFinished(); return }
@@ -3282,7 +3353,7 @@ it.copy(backgroundStatus = repository.backgroundStatus(it.environment.processRun
             var committedResult: OperationResultSummary? = null
             var verifiedLinkerFailure = false
             try {
-                val result = cancellableOperation(operation, operationStartedAt, backupRequest) { block() }
+                val result = cancellableOperation(operation, operationStartedAt, backupRequest, partialNotice) { block() }
                 verifiedLinkerFailure = allowRuntimeSyncOffer && operation == "repair" && result.isRepairLinkerFailure
                 if (!result.isSuccess && operationCancellationRequested && result.exitCode == 130) {
                     progressJob.cancel()

@@ -100,8 +100,8 @@ internal class BackupTransferController(context: Context) {
     /**
      * newDestination MUST come from ACTION_CREATE_DOCUMENT, never OpenDocument or a saved URI.
      * A confirmed empty document is required before opening a write stream. If the provider
-     * cannot establish this, it is left untouched. Failed/cancelled copies remove only that
-     * newly-created empty destination, never the source or an existing nonempty document.
+     * cannot establish this, it is left untouched. The picker does not establish ownership
+     * of an empty document. Never delete it automatically, even on cancellation or failure.
      */
     suspend fun export(
         source: Source,
@@ -124,30 +124,30 @@ internal class BackupTransferController(context: Context) {
                 runCatching { writing.get()?.close() }
             }
         }
-        var ownedEmptyDestination = false
         try {
             val checked = inspectSource(source.uri, backup, signal, reading)
-            val targetSize = documentSize(newDestination, signal).takeIf { it >= 0 }
-                ?: resolver.openFileDescriptor(newDestination, "r", signal)?.use { it.statSize } ?: -1L
-            BackupTransferPolicy.requireEmptyDestination(targetSize)
-            ownedEmptyDestination = true
             val coroutine = currentCoroutineContext()
             var lastReport = 0L
             val copied = resolver.openAssetFileDescriptor(checked.uri, "r", signal)?.use { descriptor ->
                 descriptor.createInputStream().use { input ->
                     reading.set(input)
-                    resolver.openAssetFileDescriptor(newDestination, "w", signal)?.use { targetDescriptor ->
-                        targetDescriptor.createOutputStream().use { output ->
-                            writing.set(output)
-                            BackupTransferPolicy.copy(input, output, checked.sizeBytes, checkpoint = { coroutine.ensureActive() }) { bytes ->
-                                val now = android.os.SystemClock.elapsedRealtime()
-                                if (bytes == 0L || bytes == checked.sizeBytes || now - lastReport >= 250L) {
-                                    onProgress(Progress(bytes, checked.sizeBytes))
-                                    lastReport = now
+                    writeSelectedBackupDocument({
+                        documentSize(newDestination, signal).takeIf { it >= 0 }
+                            ?: resolver.openFileDescriptor(newDestination, "r", signal)?.use { it.statSize } ?: -1L
+                    }, { coroutine.ensureActive() }) {
+                        resolver.openAssetFileDescriptor(newDestination, "w", signal)?.use { targetDescriptor ->
+                            targetDescriptor.createOutputStream().use { output ->
+                                writing.set(output)
+                                BackupTransferPolicy.copy(input, output, checked.sizeBytes, checkpoint = { coroutine.ensureActive() }) { bytes ->
+                                    val now = android.os.SystemClock.elapsedRealtime()
+                                    if (bytes == 0L || bytes == checked.sizeBytes || now - lastReport >= 250L) {
+                                        onProgress(Progress(bytes, checked.sizeBytes))
+                                        lastReport = now
+                                    }
                                 }
                             }
-                        }
-                    } ?: error("선택한 저장 위치에 파일을 쓸 수 없습니다.")
+                        } ?: error("선택한 저장 위치에 파일을 쓸 수 없습니다.")
+                    }
                 }
             } ?: error("원본 백업 파일을 읽을 수 없습니다.")
             coroutine.ensureActive()
@@ -155,10 +155,8 @@ internal class BackupTransferController(context: Context) {
             check(writtenSize < 0 || writtenSize == copied) { "저장된 파일 크기가 원본과 다릅니다. 저장 공간이나 연결을 확인해 주세요." }
             copied
         } catch (error: Exception) {
-            val removed = !ownedEmptyDestination || runCatching { DocumentsContract.deleteDocument(resolver, newDestination) }.getOrDefault(false)
             // A blocked provider may throw IOException after the cancellation watcher closes it.
             currentCoroutineContext().ensureActive()
-            if (!removed) throw IllegalStateException("${error.message ?: "내보내기에 실패했습니다."}\n저장 위치에 미완성 파일이 남아 있을 수 있습니다. 확인 후 삭제해 주세요.", error)
             throw error
         } finally {
             watcher.cancel()

@@ -33,6 +33,15 @@ class DataLibraryProtocolTest {
         assertEquals("quickreplies",LibraryProtocol.jsonLibrary(mapOf("qrList" to "BEGIN_ARRAY")))
         assertEquals("quickreplies",LibraryProtocol.jsonLibrary(mapOf("quickReplySlots" to "BEGIN_ARRAY")))
     }
+    @Test fun reasonsDistinguishUnreadableDisabledAndLegacyProtectedRows() {
+        fun reason(code: String?, guarded: Boolean = true) =
+            LibraryProtocol.page(row("characters/A.png","A",guarded) + (code?.let { "\t$it" } ?: "") + "\nnext_cursor=").items.single().protectionReason
+        assertEquals(LibraryProtection.UNREADABLE, reason("unreadable"))
+        assertEquals(LibraryProtection.DISABLED_GROUP, reason("disabled_group"))
+        assertEquals(LibraryProtection.UNKNOWN, reason(null))
+        assertEquals(LibraryProtection.UNKNOWN, reason("new_guard"))
+        assertNull(reason("", false))
+    }
     @Test fun groupReceiptsMustBeKnownShapeAndAreShownNewestFirst() {
         val a = "0".repeat(8)+"-0000-0000-0000-000000000001"
         val b = "0".repeat(8)+"-0000-0000-0000-000000000002"

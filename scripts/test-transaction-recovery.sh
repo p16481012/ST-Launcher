@@ -5,6 +5,7 @@ MANAGER="$ROOT_DIR/app/src/main/assets/manager.sh"
 fail() { echo "FAIL: ${CASE_NAME:-suite}: $*" >&2; exit 1; }
 
 if [[ "${1:-}" != --case && "${1:-}" != --worker ]]; then
+    bash "$ROOT_DIR/scripts/test-transaction-pid-race.sh"
     TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/st-transaction-tests.XXXXXX")"
     cleanup() { case "$TEST_ROOT" in "${TMPDIR:-/tmp}"/st-transaction-tests.*) rm -rf -- "$TEST_ROOT" ;; esac; }
     trap cleanup EXIT

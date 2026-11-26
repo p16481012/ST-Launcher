@@ -17,7 +17,7 @@ const invoke=(prefix,as,action,...args)=>cp.spawnSync(process.execPath,[...prefi
 const run=(action,...args)=>invoke([],user,action,...args);
 const answer=(status,cmd,...args)=>{const p=run(cmd,...args);assert.equal(p.status,status,[cmd,p.stdout,p.stderr,p.error].join('\n'));return p.stdout;};
 const readValue=(out,k)=>out.split(/\r?\n/).find(s=>s.startsWith(k+'='))?.slice(k.length+1);
-const rows=out=>out.split(/\r?\n/).filter(s=>s.startsWith('item\t')).map(r=>{const [,name,label,bytes,chats,mtime,revision,a,fileBytes,artRev]=r.split('\t');return {path:decode(name),label:decode(label),bytes:Number(bytes),chats:Number(chats),mtime:Number(mtime),revision,protected:a==='1',fileBytes:Number(fileBytes),artRev};});
+const rows=out=>out.split(/\r?\n/).filter(s=>s.startsWith('item\t')).map(r=>{const [,name,label,bytes,chats,mtime,revision,a,fileBytes,artRev,reason]=r.split('\t');return {path:decode(name),label:decode(label),bytes:Number(bytes),chats:Number(chats),mtime:Number(mtime),revision,protected:a==='1',fileBytes:Number(fileBytes),artRev,reason};});
 const inspect=k=>rows(answer(0,'library-list',k,''));
 const list=items=>b64(JSON.stringify(items.map(i=>({path:i.path,revision:i.revision}))));
 const crc=b=>{let a=~0;for(const n of b){a^=n;for(let i=0;i<8;i++)a=(a&1)?0xedb88320^(a>>>1):a>>>1;}return (~a)>>>0;};
@@ -47,6 +47,7 @@ try{
     cards=inspect('cards');assert.equal(cards.find(c=>c.path==='characters/A.png').artRev,cardA.artRev);
     let record=answer(0,'library-trash',list([cards.find(c=>c.path==='characters/A.png'),cards.find(c=>c.path.endsWith('Fav.png')),orphan.find(c=>c.path.endsWith('Lost'))]),'1');
     const gid=readValue(record,'group_id');assert.equal(readValue(record,'moved'),'2');assert.equal(readValue(record,'skipped'),'1');
+    assert.equal(readValue(record,'chats_moved'),'2');
     assert(!fs.existsSync(path.join(profile,'characters/A.png')));assert(!fs.existsSync(path.join(profile,'chats/A')));assert(!fs.existsSync(path.join(profile,'chats/Lost')));
     assert(answer(0,'library-history').includes(gid));file('characters/A.png','new different card');
     const first=answer(0,'library-undo',gid);assert.equal(readValue(first,'restored'),'1');assert.equal(readValue(first,'skipped'),'2');

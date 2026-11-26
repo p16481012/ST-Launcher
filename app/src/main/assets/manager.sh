@@ -163,7 +163,7 @@ manager_error_code() {
         import-install:55) echo "INSTALL_IMPORT_COPY_FAILED" ;;
         update:29) echo "UPDATE_NODE_REQUIREMENT" ;;
         update:30|update-preflight:30) echo "UPDATE_NO_SPACE" ;;
-        update:31) echo "UPDATE_GIT_FAILED" ;;
+        update:31|update-preflight:31|switch-branch:31) echo "UPDATE_GIT_FAILED" ;;
         update:32) echo "UPDATE_PACKAGES_FAILED" ;;
         update:33) echo "UPDATE_SERVER_FAILED" ;;
         update:34) echo "UPDATE_HISTORY_DIVERGED" ;;
@@ -936,6 +936,18 @@ begin_operation() {
     fi
     CANCELLATION_GUARD=0; CANCELLATION_CLEANUP=0; CANCELLATION_COMMITTED=0
     guard_extension_recovery || exit $?
+    # Completed PC imports can outlive their writer checks. Don't permit later
+    # mutations (including safety, extension and backup cleanup) to race that writer.
+    # The recovery helper verifies all journal identities; a marker alone grants no trust.
+    case "$CURRENT_OPERATION" in
+        stop|diagnose|inspect-install|storage-usage|restore-selection-list) ;;
+        *)
+            if [[ -e "$BACKUP_DIR/pc-merge-pending/committed.json" || -L "$BACKUP_DIR/pc-merge-pending/committed.json" ]]; then
+                CANCELLATION_GUARD=1
+                recover_pending_restore || { RESTORE_RECOVERY_GUARD_FAILED=1; exit 25; }
+                CANCELLATION_GUARD=0
+            fi ;;
+    esac
     # A partially renamed card and its chat directory must not be used as
     # input to another operation, including trash cleanup. Stop/diagnose
     # remain available if an external process or a name collision blocks recovery.
@@ -1481,6 +1493,13 @@ update_changelog() {
     fi
 }
 
+checked_update_status() {
+    git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || {
+        echo "Git 수정 파일 목록을 읽지 못해 중단했어요. 설치 파일은 바꾸지 않았어요." >&2
+        return 31
+    }
+}
+
 update_preflight() {
     local branch dirty_files dirty_count current_commit remote_commit node_report node_status=0 commits_behind
     local free_bytes modules_bytes required_bytes space_ready
@@ -1491,7 +1510,8 @@ update_preflight() {
     [[ "$branch" == "release" || "$branch" == "staging" ]] || { echo "지원하지 않는 현재 브랜치입니다: $branch" >&2; exit 2; }
     record_processing "업데이트 대상 설치 확인 완료 · $branch 브랜치"
     write_progress 0 "수정 파일 확인" "업데이트를 방해할 수 있는 로컬 변경을 실제로 검사하고 있습니다."
-    dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all | sed 's/^...//' || true)"
+    dirty_files="$(checked_update_status)" || exit 31
+    dirty_files="$(sed 's/^...//' <<< "$dirty_files")"
     dirty_count="$(printf '%s\n' "$dirty_files" | sed '/^$/d' | wc -l)"
     record_processing "수정 파일 검사 완료 · 변경 항목 ${dirty_count}개"
     write_progress 0 "업데이트 정보 가져오기" "$branch 브랜치의 최신 커밋 정보를 GitHub에서 가져오고 있습니다."
@@ -3863,6 +3883,8 @@ inspect_restore_recovery() {
         RESTORE_PENDING_DETAIL="중단된 작업의 복구 기록이 있습니다. 다음 변경 작업 전에 이전 설치를 복구합니다. 보호 사본: ${RESTORE_PENDING_WORKS[*]}"
         if [[ "${RESTORE_PENDING_WORKS[0]}" == "$LAUNCHER_HOME/card-rename-pending.json" ]]; then
             RESTORE_PENDING_DETAIL="중단된 카드 이름 변경이 있어요. 서버를 끄고 점검·복구하면 원래 카드와 채팅 폴더 이름을 되돌립니다."
+        elif [[ "${RESTORE_PENDING_WORKS[0]}" == "$BACKUP_DIR/pc-merge-pending" ]]; then
+            RESTORE_PENDING_DETAIL="PC ZIP 합치기의 완료 기록과 남은 임시 파일을 확인해야 해요. ZIP을 다시 가져오지 말고 먼저 점검·복구해 주세요."
         fi
         if (( RESTORE_PENDING_BLOCKED || ${#RESTORE_PENDING_WORKS[@]} > 1 )); then
             RESTORE_PENDING_BLOCKED=1
@@ -4440,7 +4462,7 @@ update_st() {
     ensure_restore_target_stopped
     write_progress 0 "업데이트 준비 검사" "서버 종료 상태와 Git 수정 파일을 확인하고 있습니다."
     local dirty_files
-    dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || true)"
+    dirty_files="$(checked_update_status)" || exit 31
     if [[ -n "$dirty_files" && "$allow_dirty" != "1" ]]; then
         echo "수정된 파일이 있어 안전하게 업데이트할 수 없습니다." >&2
         exit 9
@@ -4589,7 +4611,7 @@ switch_branch() {
     ensure_restore_target_stopped
     write_progress 0 "브랜치 변경 준비 검사" "Git 수정 파일을 검사하고 있습니다. 검사 명령의 완료를 기다립니다."
     local dirty_files
-    dirty_files="$(git -C "$ST_HOME" status --porcelain=v1 --untracked-files=all || true)"
+    dirty_files="$(checked_update_status)" || exit 31
     if [[ -n "$dirty_files" && "$allow_dirty" != "1" ]]; then
         echo "수정된 파일이 있어 브랜치를 변경할 수 없습니다." >&2
         exit 9

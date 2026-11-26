@@ -341,10 +341,18 @@ private enum class CardOrder(val label: String) {
             V2SheetPrimaryButton("닫기",onClick = { trashConfirm = null })
         }) {
             Text("보호된 카드는 옮기지 않아요",style = MaterialTheme.typography.titleLarge)
-            SettingsCaption("즐겨찾기나 그룹에 연결되어 있거나, 연결 상태를 확인하지 못한 카드예요. 원본과 채팅은 그대로 두었어요.")
+            records.filter { it.protected }.map { it.protectionReason ?: LibraryProtection.UNKNOWN }.distinct().forEach {
+                SettingsCaption(it.detail)
+            }
+            SettingsCaption("원본과 채팅은 그대로 두었어요.")
         } else V2BottomSheet({ trashConfirm = null }) {
             Text("${records.size}개를 휴지통으로 옮길까요?",style = MaterialTheme.typography.titleLarge)
-            SettingsCaption(if (kind == LibraryKind.ORPHANS) "선택한 채팅 폴더와 대화 파일이 함께 옮겨져요." else "카드만 옮기면 채팅은 그대로 남아요.")
+            SettingsCaption(when {
+                kind == LibraryKind.ORPHANS -> "선택한 채팅 폴더와 대화 파일이 함께 옮겨져요."
+                chatCount > 0 && !withChats -> "채팅 ${chatCount}개는 그대로 남아요. 자료 관리의 ‘카드 없이 남은 채팅’에서 볼 수 있어요."
+                withChats -> "카드와 선택한 채팅을 함께 휴지통으로 옮겨요."
+                else -> "카드만 옮겨요."
+            })
             if (kind != LibraryKind.ORPHANS && chatCount > 0) SettingsRow("채팅 ${chatCount}개도 같이 옮기기",checked = withChats,
                 onClick = { withChats = !withChats })
             SettingsCaption("직접 휴지통을 비우기 전까지 되돌릴 수 있어요. 지금은 저장 공간이 늘지 않아요.")
@@ -427,9 +435,10 @@ private enum class CardOrder(val label: String) {
                 SettingsDivider()
                 SettingsRow("연결된 채팅","${row.chats}개")
             }
+            if (row.protected) SettingsCaption((row.protectionReason ?: LibraryProtection.UNKNOWN).detail)
         } else if (kind.trashable) {
             SettingsRow("채팅", "${row.chats}개")
-            if (row.protected) SettingsCaption("즐겨찾기·그룹 연결 등으로 보호된 항목은 여기서 옮기지 않아요.")
+            if (row.protected) SettingsCaption((row.protectionReason ?: LibraryProtection.UNKNOWN).detail)
             else if (canWrite) V2DangerAction("휴지통으로 옮기기",trash,Modifier.fillMaxWidth())
         } else {
             SettingsHeading("어디서 쓰나요?")
@@ -454,7 +463,8 @@ private enum class CardOrder(val label: String) {
     V2BottomSheet(close) {
         Text("옮긴 항목을 되돌릴까요?",style = MaterialTheme.typography.titleLarge)
         SettingsCaption("${friendlyDate(group.date)} · 같은 이름이 있으면 그대로 두고 가능한 항목만 복구해요.")
-        if (server) SettingsCaption("서버를 잠깐 끄고 되돌린 뒤 다시 켜요.")
+        SettingsCaption(if (server) "서버를 잠깐 끄고 되돌린 뒤 다시 켜요."
+            else "되돌리기 전에 다시 확인해요. 그사이에 서버가 켜졌다면 잠깐 끄고 되돌린 뒤 다시 켜요.")
         if(busy) {
             SettingsCaption("다른 작업이나 복구가 끝난 뒤 되돌릴 수 있어요.")
             V2SheetPrimaryButton("닫기",onClick = close)

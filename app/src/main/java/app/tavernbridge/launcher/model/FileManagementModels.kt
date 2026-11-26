@@ -57,3 +57,8 @@ internal fun availableTavernName(name: String, occupied: Set<String>, directory:
 fun LauncherUiState.canModifyTavernFiles(): Boolean =
     environment.managerConnected && !isWorking && !environment.operationActive && !environment.recoveryPending &&
         !environment.processRunning && !fileBrowserLoading && !fileBrowserMutating
+
+internal fun LauncherUiState.canUndoLibraryWithoutStoppingServer(): Boolean =
+    environmentChecked && termuxSetup.verified && canModifyTavernFiles() && environment.sillyTavernInstalled &&
+        !environment.serverReachable && environment.extensionRecovery == "none" && !termuxWakeBlocked &&
+        !cancellationRequested && backupTransfer == null && encryptedBackup == null

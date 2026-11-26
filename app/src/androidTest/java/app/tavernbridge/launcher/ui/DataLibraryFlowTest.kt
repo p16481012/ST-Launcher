@@ -3,12 +3,15 @@ package app.tavernbridge.launcher.ui
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import app.tavernbridge.launcher.data.DataLibraryAccess
 import app.tavernbridge.launcher.data.LibraryWrite
+import app.tavernbridge.launcher.data.LibraryChatMove
+import app.tavernbridge.launcher.data.LibraryChatMoveNotices
 import app.tavernbridge.launcher.model.*
 import app.tavernbridge.launcher.termux.TermuxCommandResult
 import app.tavernbridge.launcher.ui.theme.SillyTavernLauncherTheme
@@ -27,9 +30,13 @@ class DataLibraryFlowTest {
     private val revision = "1".repeat(64)
     private val writes = mutableListOf<LibraryWrite>()
     private val calls = CopyOnWriteArrayList<String>()
-    private fun row(path: String, name: String, bytes: Int, chats: Int = 0, protected: Boolean = false) =
+    private lateinit var library: DataLibraryAccess
+    private fun notices() = LibraryChatMoveNotices(InstrumentationRegistry.getInstrumentation().targetContext
+        .getSharedPreferences("test_library_chat_advice", android.content.Context.MODE_PRIVATE))
+    private val receiptId = "1730ca6e-f651-4862-9470-24cd33205135"
+    private fun row(path: String, name: String, bytes: Int, chats: Int = 0, protected: Boolean = false, reason: String = "") =
         listOf("item", enc(path), enc(name), bytes.toString(), chats.toString(), "100", revision,
-            (if (protected) "1" else "0"), bytes.toString(), if(path.startsWith("chats/")) "" else revision).joinToString("\t")
+            (if (protected) "1" else "0"), bytes.toString(), if(path.startsWith("chats/")) "" else revision, reason).joinToString("\t")
     // This 4:1 green image has red/blue edge strips. A cropped landscape tile hides the strips;
     // the fitted detail must show them. Generate valid PNG bytes with Android's codec.
     private val artPng by lazy {
@@ -70,8 +77,8 @@ class DataLibraryFlowTest {
             else -> error("예상하지 않은 미리보기 경로")
         }
     }
-    private fun launch(assetUse: String? = null, serverRunning: Boolean = false, cardCases: Boolean = false) {
-        val library = DataLibraryAccess(InstrumentationRegistry.getInstrumentation().targetContext,{ listOf("default-user") }) { args,_ ->
+    private fun launch(assetUse: String? = null, serverRunning: Boolean = false, cardCases: Boolean = false, showChatAdvice: Boolean = false) {
+        library = DataLibraryAccess(InstrumentationRegistry.getInstrumentation().targetContext, { listOf("default-user") }, notices()) { args,_ ->
             calls += args
             val output = when {
                 args.startsWith("library-artwork ") -> artOutput(args)
@@ -86,7 +93,8 @@ class DataLibraryFlowTest {
                 }
                 args.startsWith("library-card-change ") -> "action=" + (if (" 'copy' " in args) "copy" else "rename") +
                     "\nname_b64=" + enc("새 이름.png") + "\nchats_moved=" + (if ("'${enc("characters/대화.png")}'" in args && " 'rename' " in args) 3 else 0)
-                args.startsWith("library-trash ") -> "moved=1\nskipped=0"
+                args.startsWith("library-trash ") -> "group_id=$receiptId\nmoved=1\nskipped=0\nchats_moved=" + if(args.endsWith(" '1'")) 3 else 0
+                args.startsWith("library-undo ") -> "restored=1\nskipped=0"
                 args.startsWith("library-usage ") -> "state=" + assetUse + "\ndetail_b64=" + enc("검사 결과")
                 args.startsWith("library-preview ") -> previewOutput(args)
                 args.startsWith("library-list ") -> (when {
@@ -94,8 +102,8 @@ class DataLibraryFlowTest {
                     cardCases && " 'cards' " in args -> listOf(
                         row("characters/새.png","다른 표시 이름",400),
                         row("characters/대화.png","대화 있음",300,3),
-                        row("characters/그룹.png","그룹 멤버",250,2,true),
-                        row("characters/미확인.png","연결 미확인",200,0,true)
+                        row("characters/그룹.png","그룹 멤버",250,2,true,"disabled_group"),
+                        row("characters/미확인.png","연결 미확인",200,0,true,"unreadable")
                     ).joinToString("\n")
                     " 'cards' " in args -> listOf(row("characters/가.png","가나다",200,4),
                         row("characters/나.png","나라마",900,1)).joinToString("\n")
@@ -111,10 +119,14 @@ class DataLibraryFlowTest {
             }
             TermuxCommandResult("",output,"",0,Activity.RESULT_OK,"")
         }
+        library.chatMoveNotices.pending.value?.let(library.chatMoveNotices::acknowledge)
         ui.setContent {
             SillyTavernLauncherTheme(AppTheme.LIGHT,DisplayPreferences(reducedMotion=true)) {
                 DataLibraryScreen(LauncherUiState(isWorking=false,environment = EnvironmentStatus(processRunning = serverRunning)),
                     library, { writes += it }, {})
+                if (showChatAdvice) library.chatMoveNotices.pending.collectAsState().value?.let { kind ->
+                    LibraryChatRefreshSheet(kind) { library.chatMoveNotices.acknowledge(kind) }
+                }
             }
         }
     }
@@ -227,7 +239,11 @@ class DataLibraryFlowTest {
             val write = ui.runOnIdle { writes.last() }
             assertEquals("library-card-change",write.operation)
             val result = runBlocking { write.execute() }
-            if (pair.first == "대화 있음") assertTrue(write.message(result).contains("1:1 채팅 3개"))
+            if (pair.first == "대화 있음") {
+                assertTrue(write.message(result).contains("1:1 채팅 3개"))
+                assertEquals(LibraryChatMove.RENAMED, library.chatMoveNotices.pending.value)
+                library.chatMoveNotices.acknowledge(LibraryChatMove.RENAMED)
+            } else assertNull(library.chatMoveNotices.pending.value)
             val dispatched = calls.filter { it.startsWith("library-card-change ") }
             assertEquals(index + 1, dispatched.size)
             assertTrue("잘못된 작업: ${dispatched.last()}", " '${pair.second}' " in dispatched.last())
@@ -244,6 +260,7 @@ class DataLibraryFlowTest {
         }
         trash("대화 있음")
         val include = ui.onNodeWithText("채팅 3개도 같이 옮기기")
+        ui.onNodeWithText("채팅 3개는 그대로 남아요. 자료 관리의 ‘카드 없이 남은 채팅’에서 볼 수 있어요.").assertExists()
         include.assertIsOff().performClick().assertIsOn()
         ui.onNodeWithText("취소").performClick()
         trash("대화 있음")
@@ -253,11 +270,35 @@ class DataLibraryFlowTest {
         assertEquals("library-trash",task.operation)
         runBlocking { task.execute() }
         assertTrue(calls.single { it.startsWith("library-trash ") }.endsWith(" '0'"))
+        assertNull(library.chatMoveNotices.pending.value)
         trash("연결 미확인")
         ui.onNodeWithText("보호된 카드는 옮기지 않아요").assertExists()
+        ui.onNodeWithText("캐릭터 카드 정보를 읽을 수 없어 원본을 보호해요.").assertExists()
         ui.onNodeWithText("휴지통으로 옮기기").assertDoesNotExist()
         footer("닫기").performClick()
         ui.runOnIdle { assertEquals(1,writes.size) }
+    }
+
+    @Test fun movedChatsKeepRefreshAdviceUntilAcknowledgedAndUndoUsesOnlyItsReceipt() {
+        launch(cardCases = true, showChatAdvice = true)
+        openCardList(); openCardMenu("대화 있음")
+        ui.onNodeWithText("휴지통으로 옮기기").performClick()
+        ui.onNodeWithText("채팅 3개도 같이 옮기기").performClick()
+        ui.onNodeWithText("휴지통으로 옮기기").performClick()
+        val task = ui.runOnIdle { writes.single() }
+        runBlocking { task.execute() }
+        ui.onNodeWithText("열어 둔 실리태번 탭을 새로고침해 주세요").assertExists()
+        assertEquals(LibraryChatMove.TRASHED, notices().pending.value)
+        footer("확인").performClick()
+        ui.onNodeWithText("열어 둔 실리태번 탭을 새로고침해 주세요").assertDoesNotExist()
+        assertNull(notices().pending.value)
+        val receipt = checkNotNull(library.lastMoved.value)
+        assertNull(library.directUndo("other-user" to receipt.second))
+        val undo = checkNotNull(library.directUndo(receipt))
+        assertFalse(undo.pause)
+        runBlocking { undo.execute() }
+        assertTrue(calls.last().startsWith("library-undo ") && receiptId in calls.last())
+        assertNull(library.directUndo(receipt)); assertTrue(runCatching { runBlocking { undo.execute() } }.isFailure)
     }
 
     @Test fun jsonAssetsPreviewOnlyWhenOpenedAndNeverExecuteTheirContents() {

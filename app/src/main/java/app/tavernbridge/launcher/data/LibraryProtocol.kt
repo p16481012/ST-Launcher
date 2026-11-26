@@ -4,7 +4,16 @@ import java.util.Base64
 
 internal data class LibraryItem(val path: String, val label: String, val bytes: Long, val chats: Int,
     val modified: Long, val revision: String, val protected: Boolean, val fileBytes: Long = bytes,
-    val artRevision: String = "")
+    val artRevision: String = "", val protectionReason: LibraryProtection? = null)
+internal enum class LibraryProtection(val wire: String, val detail: String) {
+    UNREADABLE("unreadable","캐릭터 카드 정보를 읽을 수 없어 원본을 보호해요."),
+    FAVORITE("favorite","즐겨찾기에 등록한 카드예요."),
+    GROUP("group","그룹에서 이 카드를 사용하고 있어요."),
+    DISABLED_GROUP("disabled_group","그룹의 비활성 멤버로 등록된 카드예요."),
+    UNKNOWN_GROUP("unknown_group","일부 그룹의 멤버 목록을 읽을 수 없어 연결을 확인하지 못했어요."),
+    UNSAFE_CHATS("unsafe_chats","채팅 폴더에 안전하게 옮길 수 없는 항목이 있어요."),
+    UNKNOWN("unknown","보호 이유를 확인하지 못해 원본을 그대로 두었어요."),
+}
 internal data class LibraryPage(val items: List<LibraryItem>, val next: String)
 internal data class LibraryGroup(val id: String, val date: Long, val count: Int)
 
@@ -38,13 +47,14 @@ internal object LibraryProtocol {
         stdout.lineSequence().forEach { line ->
             if (line.startsWith("item\t")) {
                 val c = line.split('\t')
-                require(c.size in 8..10 && librarySha.matches(c[6]) && c[7] in setOf("0","1"))
+                require(c.size in 8..11 && librarySha.matches(c[6]) && c[7] in setOf("0","1"))
                 val path = libraryDecode(c[1]); require(path.safeLibraryRelative())
                 val bytes = c[3].toLong().also { require(it >= 0) }
                 rows += LibraryItem(path, libraryDecode(c[2]), bytes,
                     c[4].toInt().also { require(it >= 0) }, c[5].toLong(), c[6], c[7] == "1",
                     c.getOrNull(8)?.toLong()?.also { require(it in 0L..bytes) } ?: bytes,
-                    c.getOrNull(9)?.also { require(it.isEmpty() || librarySha.matches(it)) }.orEmpty())
+                    c.getOrNull(9)?.also { require(it.isEmpty() || librarySha.matches(it)) }.orEmpty(),
+                    if (c[7] == "1") LibraryProtection.entries.find { it.wire == c.getOrNull(10) } ?: LibraryProtection.UNKNOWN else null)
             } else if (line.startsWith("next_cursor=")) {
                 require(next == null)
                 next = line.substringAfter('=').also { require(it.length <= 8192 && it.matches(Regex("[A-Za-z0-9+/=_-]*"))) }

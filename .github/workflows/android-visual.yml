@@ -82,13 +82,13 @@ jobs:
           mkdir -p visual-results
           adb shell am instrument -w -r -e package app.tavernbridge.launcher.ui app.tavernbridge.stlauncher.debug.test/androidx.test.runner.AndroidJUnitRunner | tee visual-results/instrumentation.txt
           grep -Eq '^OK \([1-9][0-9]* tests?\)' visual-results/instrumentation.txt
-          for required in selectingAnArchiveNeverStopsServerOrReplacesPhoneFiles hubNeverRunsDeepChecksAndOrphanTrashNeedsSelectionAndConfirmation hubHasSeparateAssetKindsAndOnlyOpensTheChosenList cardSortAppliesWithoutReadingTheListAgain backgroundsShareARowAndOpenTheUncroppedDetail; do
+          for required in selectingAnArchiveNeverStopsServerOrReplacesPhoneFiles mergeShowsPersonaAndConflictScopeBeforeOfferingReplacementInventory hubNeverRunsDeepChecksAndOrphanTrashNeedsSelectionAndConfirmation hubHasSeparateAssetKindsAndOnlyOpensTheChosenList cardSortAppliesWithoutReadingTheListAgain backgroundsShareARowAndOpenTheUncroppedDetail; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done
           for required in jsonAssetsPreviewOnlyWhenOpenedAndNeverExecuteTheirContents usedBackgroundIsNotMovedAndOpeningItsMenuDoesNotStartAnOperation unknownReferencesDefaultToCopyAndRequireConsentToTrashOrRenameOriginal; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done
-          for required in cardTapShowsUncroppedArtAndMetadataWithoutOpeningActions cardRenameIncludesSoloChatsAndOffersOnlyCopyForGroupOrUnknownLinks cardTrashDefaultsToCardOnlyAndProtectedCardExplainsWhy healthyWarmReturnUsesLoopbackWithoutFullInspection; do
+          for required in cardTapShowsUncroppedArtAndMetadataWithoutOpeningActions cardRenameIncludesSoloChatsAndOffersOnlyCopyForGroupOrUnknownLinks cardTrashDefaultsToCardOnlyAndProtectedCardExplainsWhy movedChatsKeepRefreshAdviceUntilAcknowledgedAndUndoUsesOnlyItsReceipt healthyWarmReturnUsesLoopbackWithoutFullInspection; do
             grep -Fq "test=$required" visual-results/instrumentation.txt
           done
           for required in installedManagementActionsAreRealDestinationsAndBackReturnsToTheirOrigin homeLogReturnsHomeAndToolsLogReturnsTools briefReadNeverFlashesAndLongReadShowsUntilCompletion tapOnlyHandleFoldsAndMiniBarReopens runningServerAllowsOpeningAndSavingFromLabelAfterAcknowledgement onlyVerifiedStopOpensOriginalConfirmationOnce leavingSelectedArchiveDropsEvenSuccessfulInFlightStop; do

@@ -7,6 +7,11 @@ data class LanSecuritySnapshot(
     val perUserBasicAuth: Boolean = false,
 )
 
+internal fun lanSettingsSavedMessage(output: String): String =
+    if (output.lineSequence().any { it == "durability_warning=1" })
+        "외부 접속 설정은 적용됐지만 디스크 기록 완료는 확인하지 못했어요. 기기를 끄기 전에 설정을 다시 확인해 주세요."
+    else "외부 접속 설정을 저장했습니다."
+
 /** Do not put this object in saved state, preferences, logs, diagnostics or a callback Intent. */
 class EphemeralBasicAuthCredentials private constructor(
     val username: String,

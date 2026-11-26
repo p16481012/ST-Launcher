@@ -180,5 +180,14 @@ noop_result="$(update_st 0 0)"
 grep -Fq 'updated=0' <<< "$noop_result" || fail "current commit triggered a redundant update"
 grep -Fq 'already_current=1' <<< "$noop_result" || fail "no-op update did not report current state"
 
+# An unreadable Git status must never be mistaken for a clean worktree, even
+# with explicit permission to preserve and replace known modified files.
+for check_action in 'update_preflight' 'update_st 0 1' 'switch_branch staging 1'; do
+    rc=0
+    (git(){ if [[ " $* " == *" status "* ]]; then return 128; fi; command git "$@"; }
+     $check_action) > "$TEST_ROOT/dirty-status-check" 2>&1 || rc=$?
+    [[ "$rc" == 31 ]] || { cat "$TEST_ROOT/dirty-status-check"; fail "unreadable git status: $check_action ($rc)"; }
+done
+
 source "$ROOT_DIR/scripts/test-manager-regressions.sh"
 echo "manager safety helper and regression tests passed"

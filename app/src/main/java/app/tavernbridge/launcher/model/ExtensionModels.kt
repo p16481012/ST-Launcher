@@ -51,6 +51,9 @@ internal fun ManagedExtension.sameCheckTarget(other: ManagedExtension) =
     id == other.id && commit == other.commit && gitHubRepository == other.gitHubRepository &&
         gitBranch == other.gitBranch && revision == other.revision
 
+internal fun LauncherUiState.mayRefreshVisibleExtensions(): Boolean =
+    !isWorking && (extensionManagerOpen || (section == MainSection.LOGS && toolPage == ToolPage.EXTENSIONS))
+
 internal fun extensionUpdateReceipt(output: String): String? = output.lineSequence().filter {
     it.startsWith("extension_result=")
 }.singleOrNull()?.substringAfter('=')?.takeIf { it == "already-current" || it == "updated" }

@@ -43,9 +43,10 @@ private fun wire(command: String, vararg parts: String) = (listOf(command) + par
 
 /** No library scans run on launch, home, server start, or in the background. */
 internal class DataLibraryAccess(private val context: Context, private val getUsers: suspend () -> List<String>,
+    val chatMoveNotices: LibraryChatMoveNotices = LibraryChatMoveNotices(context),
     private val run: suspend (String, Long) -> TermuxCommandResult) {
-    private val staging = SharedImportStaging(context)
-    val artwork = LibraryArtworkLoader(run)
+    private val staging by lazy { SharedImportStaging(context) }
+    val artwork by lazy { LibraryArtworkLoader(run) }
     val lastMoved = MutableStateFlow<Pair<String,LibraryGroup>?>(null)
     val pendingUndo = MutableStateFlow<Pair<String,LibraryGroup>?>(null)
     fun requestUndo(receipt: Pair<String,LibraryGroup>) {
@@ -96,7 +97,7 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
                 AssetChange.TRASH -> "휴지통으로 옮겼어요. 원래 위치로 되돌릴 수 있어요."
                 AssetChange.RENAME -> {
                     val count = if (card) result.field("chats_moved")?.toIntOrNull() ?: 0 else 0
-                    if (count > 0) "이름을 바꾸고 1:1 채팅 ${count}개를 옮겼어요 · ${name ?: stem}\n실리태번이 열려 있다면 새로고침한 뒤 새 이름의 카드를 열어 주세요."
+                    if (count > 0) "이름을 바꾸고 1:1 채팅 ${count}개를 옮겼어요 · ${name ?: stem}"
                     else "이름을 바꿨어요 · ${name ?: stem}"
                 }
                 AssetChange.COPY -> "새 이름으로 복사했어요 · ${name ?: stem}\n" +
@@ -106,6 +107,9 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
             lastMoved.value = null
             run(command, 5 * 60_000L).also { r ->
                 val id = r.field("group_id")
+                if (card && action == AssetChange.RENAME && r.isSuccess && !r.stdoutTruncated &&
+                    r.field("action") == "rename" && (r.field("chats_moved")?.toIntOrNull() ?: 0) > 0)
+                    chatMoveNotices.record(LibraryChatMove.RENAMED)
                 if (action == AssetChange.TRASH && r.isSuccess && !r.stdoutTruncated &&
                     r.field("action") == "trash" && r.field("moved") == "1" && id != null && libraryGroupId.matches(id))
                     lastMoved.value = user to LibraryGroup(id, System.currentTimeMillis(), 1)
@@ -122,14 +126,26 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
             lastMoved.value = null
             run(command, 30 * 60_000L).also { r ->
                 val id = r.field("group_id"); val count = r.field("moved")?.toIntOrNull() ?: 0
-                if (r.isSuccess && !r.stdoutTruncated && id != null && libraryGroupId.matches(id) && count > 0)
+                if (r.isSuccess && !r.stdoutTruncated && id != null && libraryGroupId.matches(id) && count > 0) {
                     lastMoved.value = user to LibraryGroup(id, System.currentTimeMillis(), count)
+                    if ((r.field("chats_moved")?.toIntOrNull() ?: 0) > 0) chatMoveNotices.record(LibraryChatMove.TRASHED)
+                }
             }
         }
     }
-    fun undo(user: String, group: LibraryGroup): LibraryWrite {
+    fun directUndo(receipt: Pair<String,LibraryGroup>): LibraryWrite? {
+        if (lastMoved.value != receipt) return null
+        val job = undo(receipt.first, receipt.second, pause = false)
+        // A one-tap undo never authorizes stopping a now-running server. The
+        // manager rechecks its live state, transaction, receipt, and destinations.
+        return job.copy(execute = {
+            check(lastMoved.value == receipt) { "실행 취소할 항목이 바뀌었어요. 휴지통에서 다시 선택해 주세요." }
+            job.execute()
+        })
+    }
+    fun undo(user: String, group: LibraryGroup, pause: Boolean = true): LibraryWrite {
         require(libraryGroupId.matches(group.id))
-        return LibraryWrite("library-undo", "휴지통에서 되돌리기", true, { r ->
+        return LibraryWrite("library-undo", "휴지통에서 되돌리기", pause, { r ->
             "${r.field("restored") ?: "0"}개를 되돌렸어요. 건너뜀 ${r.field("skipped") ?: "0"}개."
         }) { run(wire("library-undo",libraryEncode(user),group.id),30 * 60_000L).also { r ->
             if (r.isSuccess && lastMoved.value?.second?.id == group.id) lastMoved.value = null

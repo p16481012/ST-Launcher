@@ -17,6 +17,15 @@ module.exports=function verifyCardActions({base,home,owner,invoke,rows,b64,decod
     for(const dir of ['characters','groups','chats'])fs.mkdirSync(p(dir),{recursive:true});
     put('settings.json','{}');put('characters/원본.png',bytes);
     const start=card('원본');assert.equal(start.label,'표시 이름');assert.equal(usage(start),'none');
+    // Even an imported group which lists a card only as a disabled member must protect it.
+    put('groups/partial.json',JSON.stringify({members:[],disabled_members:['원본.png']}));
+    assert.equal(card('원본').reason,'disabled_group');
+    const guardedTrash=call(0,'library-trash',b64(JSON.stringify([{path:start.path,revision:start.revision}])),'1');
+    assert.equal(readValue(guardedTrash,'moved'),'0');assert.equal(readValue(guardedTrash,'chats_moved'),'0');assert.deepEqual(read(start.path),bytes);
+    put('groups/partial.json',JSON.stringify({members:[],disabled_members:'unknown'}));
+    assert.equal(card('원본').reason,'unknown_group');
+    fs.unlinkSync(p('groups/partial.json'));
+    put('characters/broken.png','not a card');assert.equal(card('broken').reason,'unreadable');
     // Interruption after the new card becomes visible must never lose the source.
     const interrupt=path.join(base,'stop-before-shelving.cjs');
     fs.writeFileSync(interrupt,"const cp=require('node:child_process'),move=cp.execFileSync;let i=0;cp.execFileSync=function(exe,...args){if(exe==='mv'&&++i===2)process.exit(85);return move.call(this,exe,...args)};");
@@ -55,6 +64,7 @@ module.exports=function verifyCardActions({base,home,owner,invoke,rows,b64,decod
     const bytesNow=read(present.path);change(0,present,'copy','사본');assert.equal(card('사본').label,'사본');
     assert.deepEqual(read(newChat),origChat);assert.deepEqual(read(present.path),bytesNow);assert(!fs.existsSync(p('chats/사본')));
     const info=call(0,'library-trash',b64(JSON.stringify([{path:present.path,revision:present.revision}])),'0');
+    assert.equal(readValue(info,'chats_moved'),'0');
     assert.equal(readValue(info,'moved'),'1');assert(!fs.existsSync(p(present.path)));assert.deepEqual(read(newChat),origChat);
     assert.equal(readValue(call(0,'library-undo',readValue(info,'group_id')),'restored'),'1');
     assert.deepEqual(read(present.path),bytesNow);assert.deepEqual(read(newChat),origChat);

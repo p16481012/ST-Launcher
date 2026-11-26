@@ -38,7 +38,7 @@ const shim=new Proxy(fs,{get(o,k){
     if(k==='fstatSync')return (fd,...args)=>fds.has(fd)?fs.lstatSync(fds.get(fd),...args):fs.fstatSync(fd,...args);
     if(k==='closeSync')return fd=>{if(!fds.delete(fd))fs.closeSync(fd);};
     if(k==='fsyncSync')return fd=>{if(!fds.has(fd))fs.fsyncSync(fd);};
-    if(['lstatSync','linkSync','rmdirSync','unlinkSync','readdirSync','mkdirSync','renameSync'].includes(k))return (...args)=>fs[k](...args.map(translate));
+    if(['lstatSync','linkSync','rmdirSync','unlinkSync','readdirSync','opendirSync','mkdirSync','renameSync'].includes(k))return (...args)=>fs[k](...args.map(translate));
     return o[k];
 }});
 const mvAdapter=(cmd,args,opts)=>{
@@ -46,8 +46,8 @@ const mvAdapter=(cmd,args,opts)=>{
     const p=path.join(fds.get(opts.stdio[3]),path.basename(args[2])),q=path.join(fds.get(opts.stdio[4]),path.basename(args[3]));
     if(!fs.existsSync(q))fs.renameSync(p,q);return {status:0};
 };
-function run(args,expected=0){
-    const output=[],err=[],p={argv:['node','-',...args],env:{},exitCode:0};
+function run(args,expected=0,env={}){
+    const output=[],err=[],p={argv:['node','-',...args],env,exitCode:0};
     vm.runInNewContext(helper,{require:n=>windows&&n==='fs'?shim:windows&&n==='child_process'?{spawnSync:mvAdapter}:require(n),process:p,Buffer,TextDecoder,console:{log:s=>output.push(s),error:e=>err.push(e)}});
     assert.equal(p.exitCode,expected,err.join('\n'));steps++;return output.join('\n');
 }
@@ -82,5 +82,22 @@ try{
     fixture([['characters/NoPhone.png','x']]);const fresh=run(['plan',path.join(root,'absent-install'),arc,ix,'',run(['stamp',arc])]);assert.equal(scalar(fresh,'add_count'),'0');assert.ok(!fresh.includes('target\t'));assert.equal(scalar(fresh,'layout_kind'),'user_data');
     run(['plan',st,arc,ix,'',stamp],72);
     fixture([['data/default-user/.st-launcher-manifest','items=config'],['data/default-user/worlds/A.json','{}']]);run(['plan',st,arc,ix,'',run(['stamp',arc])],23);
+    const inventory=()=>run(['plan',st,arc,ix,'',run(['stamp',arc])],0,{ST_PC_REPLACE_IMPACT:'1'});
+    fixture([['pc/export/st/data/default-user/characters/A.png','original']]);
+    assert.ok(inventory().includes('replace_impact\tknown\t0\t0\t1'));
+    for(const legacy of ['characters/C.png','chats/A/x.jsonl','group chats/g.jsonl','groups/g.json','worlds/L.json','settings.json','stats.json']){
+        fixture([['copy/public/'+legacy,'x'],['copy/data/default-user/characters/A.png','x']]);
+        const out=inventory();assert.equal(scalar(out,'layout_kind'),'legacy_public');assert.ok(out.includes('replace_impact\tunknown'));
+    }
+    // Exercise only the optional inventory budget, without writing fifty thousand fixture files.
+    const budget=helper.slice(helper.indexOf('function previewReplacementImpact('),helper.indexOf('function decodeMapping('));
+    for(const named of [new Array(50001),[{e:{path:'data/default-user'},p:'data/default-user'}]]){
+        const results=[];let tick=0,walks=0;
+        vm.runInNewContext(budget+"\npreviewReplacementImpact('',{impact:{scope:'data',named}});",{
+            named,Date:{now:()=>tick++?3001:0},console:{log:x=>results.push(x)},at:()=>{walks++;}});
+        assert.deepEqual(results,['replace_impact\tunknown']);
+        assert.equal(walks,0,'Do not start phone traversal after the inventory budget was exhausted');
+    }
+    require('./pc-merge-relationship-fixtures.cjs')({root,st,arc,ix,fixture,write,preview,run,scalar,inline,extract,map});
     console.log('PC ZIP: '+steps+' worker invocations, actual validator/extractor and transaction scenarios passed'+(windows?' (Windows procfs adapter)':''));
 }finally{fs.rmSync(root,{force:true,recursive:true});}

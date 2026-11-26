@@ -60,6 +60,43 @@ function manifest(fd,e) {
     if(!lines.includes('format=st-launcher-backup-v1')||item.length!==1)fail(23,'지원하지 않는 런처 백업 범위예요.');
     return item[0].slice(6).split(',');
 }
+// Only inflate metadata or a bounded same-name card for an identity check.
+// Unverifiable metadata is not a reason to reject other, independent assets.
+const groupLimit=4*1024*1024, cardLimit=32*1024*1024;
+function zipBytes(fd,e,limit) {
+    if(!e||e.isDirectory||e.bytes>limit||e.compressedBytes>limit+65536)return null;
+    const raw=Buffer.alloc(e.compressedBytes);
+    if(raw.length!==fs.readSync(fd,raw,0,raw.length,e.dataOffset))fail(20,'ZIP 항목을 읽지 못했어요.');
+    let b;try{b=e.method===8?zlib.inflateRawSync(raw,{maxOutputLength:Math.max(e.bytes,1)}):raw;}
+    catch{fail(20,'ZIP 항목의 압축 데이터가 손상되었어요.');}
+    if(b.length!==e.bytes||crc(b)!==e.crc32)fail(20,'ZIP 항목의 내용이 손상되었어요.');
+    return b;
+}
+function groupInfo(bytes,stem) {
+    if(!bytes)return null;
+    try{
+        const g=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+        if(!g||typeof g!=='object'||Array.isArray(g))return null;
+        const key=x=>typeof x==='string'?x:(Number.isSafeInteger(x)&&x>=0?String(x):'');
+        const ids=new Set();
+        const chats=g.chats===undefined?[]:g.chats;if(!Array.isArray(chats)||chats.length>16384)return null;
+        for(const v of [...chats,...(g.chat_id===undefined?[]:[g.chat_id])]){
+            const id=key(v);if(!part(id)||!part(id+'.jsonl'))return null;ids.add(id);
+        }
+        if(!ids.size)ids.add(stem); // Older groups use their ID for the default chat.
+        const disabled=g.disabled_members===undefined?[]:g.disabled_members;
+        const valid=Array.isArray(g.members)&&Array.isArray(disabled)&&g.members.length+disabled.length<=8192;
+        const members=valid?[...new Set([...g.members,...disabled])]:[];
+        return {ids,members,valid:valid&&(g.id===undefined||key(g.id)===stem)&&members.every(x=>part(x)&&/\.png$/i.test(x))};
+    }catch{return null;}
+}
+function omittedKind(rel) {
+    if(['settings.json','stats.json','secrets.json'].includes(rel))return 'settings';
+    if(/^characters\/[^/]+\/.+/.test(rel))return 'expressions';
+    if(/^(?:user\/)?images\//.test(rel))return 'chat_images';
+    if(/^(?:extensions|public\/scripts\/extensions)\//.test(rel))return 'extensions';
+    return 'other';
+}
 function classifyZip(entries,fd) {
     // Walk only a unique consecutive wrapper chain; never guess between two installations.
     const manifestPaths=entries.filter(e=>e.path.split('/').at(-1)==='.st-launcher-manifest');
@@ -80,17 +117,23 @@ function classifyZip(entries,fd) {
         const namedUsers=new Set(named.filter(x=>{const a=x.p.split('/');return a.length>=2&&profile(a[0])&&(dirs.has(a[1])||a[1]==='settings.json');}).map(x=>x.p.split('/')[0]));
         if(data || flat || namedUsers.size || native) {
             const kind=native?'launcher_backup':(data&&top.has('server.js')&&top.has('package.json')?'full_candidate':'user_data');
-            const rows=[],sources=new Set();
+            const rows=[],sources=new Set(),excluded=new Map();
             for(const {e,p} of named) {
                 let a=p.split('/'),u;
-                if(data){if(a[0]!=='data')continue;a.shift();u=a.shift();}
+                if(data){if(a[0]!=='data'){if(!e.isDirectory)excluded.set(e.path,omittedKind(p));continue;}a.shift();u=a.shift();}
                 else if(flat){u='default-user';}
                 else {u=a.shift();if(!namedUsers.has(u))continue;}
                 if(!profile(u)||!a.length)continue;
                 const k=category(a.join('/')); if(dirs.has(a[0])||a[0]==='settings.json')sources.add(u);
                 if(k&&!e.isDirectory) rows.push({e,u,rel:a.join('/'),k});
+                else if(!e.isDirectory)excluded.set(e.path,omittedKind(a.join('/')));
             }
-            return {kind,rows,sources:[...sources].sort()};
+            // Only keep normalized paths for the optional inventory. The classification
+            // above already rejected legacy public/ and identified the wrapper chain.
+            const impactScope=!native&&process.env.ST_PC_REPLACE_IMPACT==='1'&&
+                (data?'data':top.has('default-user')?'profiles':
+                ['characters','chats','settings.json'].some(k=>top.has(k))?'raw':null);
+            return {kind,rows,sources:[...sources].sort(),excluded,impact:impactScope?{scope:impactScope,named}:null};
         }
         if([...top].some(k=>['config.yaml','public','third-party'].includes(k)))return {kind:'config_extensions',rows:[],sources:[]};
         if(top.size!==1)break;
@@ -122,17 +165,154 @@ function at(root,rel,cb,guard=null) {
     } finally {if(fd!==undefined)fs.closeSync(fd);}
 }
 const info=(root,rel)=>at(root,rel,(p,_,state)=>p?{s:stat(p),blocked:false}:{s:null,blocked:state==='blocked'});
-function crcOf(root,rel,expected) {
-    return at(root,rel,p=>{
-        if(!p)return -1;
+function liveBytes(root,rel,expected,limit) {
+    try{return at(root,rel,p=>{
+        if(!p||!expected?.isFile()||expected.size>BigInt(limit))return null;
         const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{
             if(revision(fs.fstatSync(fd,{bigint:true}))!==revision(expected))fail(73,'비교 도중 카드 파일이 바뀌었어요.');
-            let n,acc=0;const chunk=Buffer.alloc(256*1024);
-            while((n=fs.readSync(fd,chunk,0,chunk.length,null))>0)acc=crc(chunk.subarray(0,n),acc);
+            const b=Buffer.alloc(Number(expected.size));
+            for(let n=0;n<b.length;){const got=fs.readSync(fd,b,n,b.length-n,n);if(!got)fail(73,'비교 중 파일이 바뀌었어요.');n+=got;}
             if(revision(fs.fstatSync(fd,{bigint:true}))!==revision(expected))fail(73,'비교 도중 카드 파일이 바뀌었어요.');
-            return acc;
+            return b;
         } finally{fs.closeSync(fd);}
-    });
+    });}catch(e){if(e.code==='EACCES'||e.code==='EPERM')return null;throw e;}
+}
+// lstat on the entry, then enumerate through a pinned no-follow directory fd.
+function withDir(root,relative,fn) {
+    try{return at(root,relative+'/probe',(_,fd,state)=>state==='ok'?fn('/proc/self/fd/'+fd):state);}
+    catch(e){if(e.code==='EACCES'||e.code==='EPERM')return 'blocked';throw e;}
+}
+function relationships(install,fd,rows,mapping,update) {
+    const cards=new Map(),ownership=new Map(),orphans=new Map(),groupOwners=new Map(),groups=new Map();
+    const key=(u,s)=>u+'/'+s, stem=f=>f.slice(0,-4);
+    for(const r of rows)if(r.k==='characters')cards.set(key(r.u,r.rel.slice(11)),r.e);
+    function orphan(to,name) {
+        const atKey=key(to,name);if(orphans.has(atKey))return orphans.get(atKey);
+        const folder='data/'+to+'/chats/'+stem(name);
+        const result=withDir(install,folder,p=>{const h=fs.opendirSync(p);try{return h.readSync()?'nonempty':'empty';}finally{h.closeSync();}});
+        update('chat-dir',folder,result);const conflict=result!=='empty'&&result!=='absent';orphans.set(atKey,conflict);return conflict;
+    }
+    function card(u,name) {
+        if(!part(name))return {ok:false,known:false};
+        const k=key(u,name);if(ownership.has(k))return ownership.get(k);
+        const to=mapping.get(u),rel='data/'+to+'/characters/'+name,t=info(install,rel),e=cards.get(k);
+        let ok=!t.blocked,known=false;
+        if(ok&&t.s){
+            ok=false;
+            if(t.s.isFile()&&e&&e.bytes===Number(t.s.size)&&e.bytes<=cardLimit){
+                const onPhone=liveBytes(install,rel,t.s,cardLimit);
+                // A ZIP central-directory CRC alone is not proof the character is the same.
+                if(onPhone&&crc(onPhone)===e.crc32){const pc=zipBytes(fd,e,cardLimit);ok=!!pc&&onPhone.equals(pc);}
+            }
+            known=ok;
+        }else if(ok){ok=!orphan(to,name);known=ok&&!!e;}
+        const state={ok,known};update('owner',rel,revision(t.s),ok,known);ownership.set(k,state);return state;
+    }
+    // Index the ZIP group->chat edges individually. Ambiguous ownership protects
+    // only the affected groups/chats, not all groups of the same account.
+    let groupBudget=128*1024*1024;
+    let scanned=0;const groupRows=rows.filter(r=>r.k==='groups'&&mapping.get(r.u));
+    for(const r of groupRows){
+        pulse('그룹과 대화 연결 확인',++scanned,groupRows.length,r.rel);
+        const name=r.rel.slice(7,-5),k=key(r.u,name);
+        const b=r.e.bytes<=groupBudget?zipBytes(fd,r.e,groupLimit):null;groupBudget-=b?.length||0;
+        const parsed=groupInfo(b,name),ids=parsed?.ids||new Set([name]);
+        groups.set(k,{r,name,parsed,ids,ok:false});
+        for(const chat of ids){const c=key(r.u,chat);groupOwners.set(c,groupOwners.has(c)?null:k);}
+    }
+    // A different phone group may already own the same chat ID, even if its
+    // .jsonl doesn't exist yet. Read only mapped profiles with incoming groups.
+    const liveOwners=new Map(),unknownPhone=new Set();
+    for(const u of new Set([...groups.values()].map(g=>g.r.u))){
+        const to=mapping.get(u),rel='data/'+to+'/groups';
+        let budget=64*1024*1024,count=0;
+        const response=withDir(install,rel,p=>{
+            const h=fs.opendirSync(p);
+            try{let ent;while((ent=h.readSync())){if(!/\.json$/i.test(ent.name))continue;
+                if(!part(ent.name)||!ent.isFile()||++count>8192)return 'unconfirmed';
+                const gr=rel+'/'+ent.name,s=info(install,gr).s;
+                if(!s?.isFile()||s.size>BigInt(Math.min(groupLimit,budget)))return 'unconfirmed';
+                budget-=Number(s.size);const name=ent.name.slice(0,-5),g=groupInfo(liveBytes(install,gr,s,groupLimit),name);
+                if(!g)return 'unconfirmed';
+                for(const cid of g.ids){const c=key(u,cid);if(!groupOwners.has(c))continue;
+                    liveOwners.set(c,liveOwners.has(c)?null:key(u,name));}
+            }}finally{h.closeSync();}return 'known';
+        });
+        if(response!=='known'&&response!=='absent')unknownPhone.add(u);
+    }
+    for(const [k,g] of groups){
+        const {r,parsed}=g,to=mapping.get(r.u),rel='data/'+to+'/'+r.rel,t=info(install,rel);
+        let ok=!!parsed?.valid&&!t.blocked&&!unknownPhone.has(r.u);
+        if(ok&&t.s){
+            // An identical group definition may receive missing chats. A
+            // different definition at the same path never receives PC chats.
+            const bytes=t.s.isFile()&&Number(t.s.size)===r.e.bytes&&liveBytes(install,rel,t.s,groupLimit);
+            const pc=bytes&&zipBytes(fd,r.e,groupLimit);ok=!!pc&&bytes.equals(pc);
+        }
+        if(ok)ok=parsed.members.every(name=>card(r.u,name).known);
+        if(ok)for(const chat of g.ids){
+            const c=key(r.u,chat);
+            if(groupOwners.get(c)!==k||(liveOwners.has(c)&&liveOwners.get(c)!==k)){ok=false;break;}
+            if(!t.s){const gc=info(install,'data/'+to+'/group chats/'+chat+'.jsonl');if(gc.blocked||gc.s){ok=false;break;}}
+        }
+        g.ok=ok;update('group',rel,revision(t.s),ok);
+    }
+    return {card,orphan,group:(u,name)=>!!groups.get(key(u,name))?.ok,
+        groupChat:(u,name)=>!!groups.get(groupOwners.get(key(u,name)))?.ok};
+}
+// Informational only: replacement ignores the merge account mapping. Never use
+// these counts to authorize a write. Only report layouts whose data/ root we
+// can identify exactly, and never follow a symlink or return a partial count.
+function previewReplacementImpact(install, layout) {
+    const unknown=()=>console.log('replace_impact\tunknown');
+    try {
+        if(!layout.impact)return unknown();
+        const {scope,named}=layout.impact, incoming=new Set(),users=new Set();
+        let cards=0,chats=0,accounts=0,remaining=50000,matched=false;const until=Date.now()+3000;
+        const step=()=>{if(--remaining<0||Date.now()>until)throw Error();};
+        if(named.length>remaining)return unknown();
+        for(const {e,p} of named){
+            step();
+            if(('/'+e.path+'/').includes('/.st-launcher-manifest/'))return unknown();
+            const slash=p.indexOf('/'), first=slash<0?p:p.slice(0,slash), dir=slash>=0||e.isDirectory;
+            if((scope==='data'&&first==='data'&&dir)||(scope==='profiles'&&first==='default-user'&&dir)||
+                (scope==='raw'&&((first==='settings.json'&&!dir)||(['chats','characters'].includes(first)&&dir))))matched=true;
+            const rel=scope==='data'?(first==='data'&&slash>=0?p.slice(slash+1):''):scope==='raw'?'default-user/'+p:p;
+            if(!rel)continue;
+            const s=rel.indexOf('/');
+            if(s>=0 || e.isDirectory)users.add(s<0?rel:rel.slice(0,s));
+            if(!e.isDirectory)incoming.add(rel);
+        }
+        if(!matched)return unknown();
+        function children(dir,visit){
+            at(install,'data/'+(dir?dir+'/':'')+'probe',(p,fd,state)=>{
+                if(state==='absent')return;
+                if(state!=='ok')throw Error();
+                const h=fs.opendirSync(path.dirname(p));try{let e;
+                    while((e=h.readSync())){step();visit(e);}
+                }finally{h.closeSync();}
+            });
+        }
+        children('',u=>{
+            if(u.name.startsWith('_')||u.name.startsWith('.'))return;
+            if(u.isSymbolicLink())throw Error();
+            if(!u.isDirectory())return;
+            if(!profile(u.name))throw Error();
+            if(!users.has(u.name))accounts++;
+            const files=(d,ext,increment)=>children(u.name+'/'+d,e=>{
+                if(!e.name.toLowerCase().endsWith(ext))return;
+                if(!e.isFile())throw Error();
+                if(!incoming.has(u.name+'/'+d+'/'+e.name))increment();
+            });
+            files('characters','.png',()=>cards++);
+            files('group chats','.jsonl',()=>chats++);
+            children(u.name+'/chats',e=>{
+                if(e.isSymbolicLink())throw Error();
+                if(e.isDirectory())files('chats/'+e.name,'.jsonl',()=>chats++);
+            });
+        });
+        console.log(['replace_impact','known',cards,chats,accounts].join('\t'));
+    }catch{return unknown();}
 }
 function decodeMapping(raw) {
     if(!raw)return null;
@@ -146,7 +326,10 @@ function plan([install,archive,indexPath,enc,expected,expectedTarget,work,free])
     const z=readJson(indexPath),stamp=archiveStamp(archive);
     if(stamp!==expected)fail(72,'선택한 ZIP이 바뀌었어요.');
     const fd=fs.openSync(archive,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
-    let layout; try{layout=classifyZip(z.entries,fd);}finally{fs.closeSync(fd);}
+    try{return planOpen(install,archive,z,fd,stamp,enc,expectedTarget,work,free);}finally{fs.closeSync(fd);}
+}
+function planOpen(install,archive,z,fd,stamp,enc,expectedTarget,work,free) {
+    const layout=classifyZip(z.entries,fd);
     const targets=at(install,'data',(p)=>{
         if(!p||!stat(p)?.isDirectory())return [];
         return fs.readdirSync(p,{withFileTypes:true}).filter(d=>d.isDirectory()&&profile(d.name)).map(d=>d.name).sort();
@@ -158,43 +341,38 @@ function plan([install,archive,indexPath,enc,expected,expectedTarget,work,free])
         if(!layout.sources.includes(src)||typeof to!=='string'||(to&&(!targets.includes(to)||destinations.has(to))))fail(151,'대상 사용자를 하나씩 다르게 선택해 주세요.');
         if(to)destinations.add(to);
     }
-    const h=crypto.createHash('sha256'), counts={}, selected=[], snapshot=[], guarded=new Map();
+    const h=crypto.createHash('sha256'), counts={}, selected=[], snapshot=[], reasons={};
     const rootId=id(stat(install));
-    const update=(...parts)=>h.update(JSON.stringify(parts)+'\n');update(rootId);
+    const includeAvatars=process.env.ST_PC_INCLUDE_AVATARS!=='0';
+    const update=(...parts)=>h.update(JSON.stringify(parts)+'\n');update(rootId,includeAvatars);
     for(const src of layout.sources){const to=mapping.get(src)||'';update(src,to,to?id(info(install,'data/'+to).s):'');}
-    const cardRows=new Map(layout.rows.filter(x=>x.k==='characters').map(x=>[x.u+'/'+x.rel.slice(11,-4), x.e]));
-    const groupConflicts=new Set();
-    for(const r of layout.rows) {
-        if(r.k!=='groups')continue;const to=mapping.get(r.u);if(!to)continue;
-        const rel='data/'+to+'/'+r.rel, t=info(install,rel);
-        if(t.blocked||(t.s&&(!t.s.isFile()||Number(t.s.size)!==r.e.bytes||crcOf(install,rel,t.s)!==r.e.crc32))) groupConflicts.add(r.u);
-    }
-    let kept=0, bytes=0, relations=0, tried=0;
+    const owners=relationships(install,fd,layout.rows,mapping,update);
+    let kept=0, bytes=0, relations=0, tried=0, candidateAvatars=0, omittedAvatars=0;
     for(const r of layout.rows) {
         pulse(action==='recheck'?'적용 직전 다시 확인':'새로 넣을 항목 확인',++tried,layout.rows.length,r.rel);
         const to=mapping.get(r.u);if(!to)continue;
         const rel='data/'+to+'/'+r.rel, t=info(install,rel);let preserve=!!(t.s||t.blocked),why=t.blocked?'blocked':'';
         const targetRev=t.blocked?'blocked':revision(t.s);
-        if(!preserve&&r.k==='chats') {
-            const key=r.u+'/'+r.rel.split('/')[1];
-            if(!guarded.has(key)){
-                const incoming=cardRows.get(key), card='data/'+to+'/characters/'+r.rel.split('/')[1]+'.png', live=info(install,card);
-                // Do not silently attach PC conversations to a different phone
-                // character with the same filename (or to an unverifiable card).
-                const ok=!live.blocked && (!live.s || (live.s.isFile()&&incoming&&incoming.bytes===Number(live.s.size)&&crcOf(install,card,live.s)===incoming.crc32));
-                guarded.set(key,!!ok);update('owner',card,revision(live.s),!!ok);
-            }
-            if(!guarded.get(key)){preserve=true;why='character_conflict';}
+        if(r.k==='avatars'){
+            if(!preserve)candidateAvatars++;
+            if(!includeAvatars){omittedAvatars++;update(r.e.path,rel,targetRev,'skip-avatars');continue;}
         }
-        if(!preserve&&r.k==='group_chats'&&groupConflicts.has(r.u)){preserve=true;why='group_conflict';}
+        if(!preserve){
+            if(r.k==='characters'&&owners.orphan(to,r.rel.slice(11)))why='character_conflict';
+            if(r.k==='chats'&&!owners.card(r.u,r.rel.split('/')[1]+'.png').ok)why='character_conflict';
+            if(r.k==='groups'&&!owners.group(r.u,r.rel.slice(7,-5)))why='group_conflict';
+            if(r.k==='group_chats'&&!owners.groupChat(r.u,r.rel.slice(12,-6)))why='group_conflict';
+            if(why){preserve=true;relations++;reasons[r.k]=(reasons[r.k]||0)+1;}
+        }
         update(r.e.path,rel,targetRev,preserve,why);
         const c=counts[r.k]||(counts[r.k]=[0,0]);
-        if(preserve){kept++;c[1]++;if(why==='character_conflict'||why==='group_conflict')relations++;continue;}
+        if(preserve){kept++;c[1]++;continue;}
         bytes+=r.e.bytes;c[0]++;selected.push({...r.e,mode:0o600});
         snapshot.push({src:r.e.path,rel,bytes:r.e.bytes});
     }
     const digest=h.digest('hex');
     if(archiveStamp(archive)!==stamp)fail(72,'ZIP을 확인하는 중 파일이 바뀌었어요.');
+    if(action==='plan'&&!work&&process.env.ST_PC_REPLACE_IMPACT==='1')previewReplacementImpact(install,layout);
     const mergeable=layout.rows.length>0;
     if(expectedTarget && digest!==expectedTarget)fail(73,'미리보기 이후 대상이 바뀌었어요. 목록을 다시 확인해 주세요.');
     if(action==='recheck')return;
@@ -207,11 +385,18 @@ function plan([install,archive,indexPath,enc,expected,expectedTarget,work,free])
         save(path.join(work,'selected.json'),{archive:z.archive,entries:selected});
         save(path.join(work,'plan.json'),{rootId,snapshot,kept,profiles:Object.fromEntries([...destinations].map(u=>[u,id(info(install,'data/'+u).s)]))});
     } else {
-        for(const [k,v] of Object.entries({layout_kind:layout.kind,mergeable:mergeable?1:0,archive_revision:stamp,installation_revision:digest,add_count:selected.length,keep_count:kept,relationship_skipped:relations,add_bytes:bytes,required_bytes:required,excluded_count:z.entries.filter(e=>!e.isDirectory).length-layout.rows.length}))console.log(k+'='+v);
+        for(const [k,v] of Object.entries({layout_kind:layout.kind,mergeable:mergeable?1:0,archive_revision:stamp,installation_revision:digest,add_count:selected.length,keep_count:kept,relationship_skipped:relations,add_bytes:bytes,required_bytes:required,avatars_included:includeAvatars?1:0,candidate_avatars:candidateAvatars,excluded_count:z.entries.filter(e=>!e.isDirectory).length-layout.rows.length+omittedAvatars}))console.log(k+'='+v);
         if(/^\d+$/.test(process.env.ST_PC_AVAILABLE_BYTES||''))console.log('available_bytes='+process.env.ST_PC_AVAILABLE_BYTES);
         for(const u of layout.sources)console.log(['profile',b64(u),b64(mapping.get(u)||'')].join('\t'));
         for(const u of targets)console.log('target\t'+b64(u));
         for(const [k,c] of Object.entries(counts))console.log(['kind',k,...c].join('\t'));
+        for(const [k,n] of Object.entries(reasons))console.log(['relation',k,n].join('\t'));
+        const included=new Set(layout.rows.map(r=>r.e.path)),excluded={};
+        if(omittedAvatars)excluded.avatars=omittedAvatars;
+        for(const e of z.entries)if(!e.isDirectory&&!included.has(e.path)){
+            const k=layout.excluded?.get(e.path)||'other';excluded[k]=(excluded[k]||0)+1;
+        }
+        for(const [k,n] of Object.entries(excluded))console.log(['excluded',k,n].join('\t'));
     }
 }
 function permitted(rel,directory) {
@@ -219,7 +404,8 @@ function permitted(rel,directory) {
     if(!a.every(part)||a[0]!=='data'||!profile(a[1])||!dirs.has(a[2]))return false;
     return directory ? a.length===3 || (a[2]==='chats'&&a.length===4) : !!category(a.slice(2).join('/'));
 }
-function prepare(install,work){
+function prepare(install,work,requestId=crypto.randomBytes(16).toString('hex')){
+    if(!/^[a-f0-9]{32}$/.test(requestId))fail(153,'합치기 작업 번호를 확인할 수 없어요.');
     const plan=readJson(path.join(work,'plan.json')), nodes=[],folders=new Map();
     if(id(stat(install))!==plan.rootId)fail(73,'설치가 바뀌었어요.');
     fs.mkdirSync(path.join(work,'new-dirs'),{mode:0o700});
@@ -250,7 +436,7 @@ function prepare(install,work){
             pulse('합치기 전 복구 기록 준비',++ready,plan.snapshot.length,f.rel);
         } finally{fs.closeSync(fd);}
     }
-    save(path.join(work,'guard','journal.json'),{format:'st-pc-merge-v1',rootId:plan.rootId,profiles:plan.profiles,work:path.basename(work),workId:id(stat(work)),nodes,kept:plan.kept});
+    save(path.join(work,'guard','journal.json'),{format:'st-pc-merge-v1',requestId,rootId:plan.rootId,profiles:plan.profiles,work:path.basename(work),workId:id(stat(work)),nodes,kept:plan.kept});
     if(stat(path.join(work,'guard','journal.json')).size>268435456n)fail(29,'안전하게 복구 기록을 보관하기에는 파일이 너무 많아요. 더 작은 ZIP으로 나누어 주세요.');
     syncDir(path.join(work,'guard'));
 }
@@ -281,8 +467,23 @@ function publish(src,dst,srcFd,dstFd,directory){
 function committed(pending,j){
     const p=path.join(pending,'committed.json');
     if(!stat(p))return false;
-    if(readJson(p,4096).workId!==j.workId)fail(153,'완료 기록이 바뀌었어요.');
-    return true;
+    const receipt=readJson(p,4096);
+    // v1 journals from older installations have no requestId or rootId in their receipt.
+    if(receipt.workId!==j.workId || receipt.requestId!==j.requestId ||
+        (j.requestId!==undefined && (!/^[a-f0-9]{32}$/.test(j.requestId)||receipt.rootId!==j.rootId)))fail(153,'완료 기록이 바뀌었어요.');
+    return receipt;
+}
+function verifyCurrentCommit(install,pending,work,requestId){
+    // The nonce comes from the current lock owner, not from a recovered folder name.
+    // Never infer a successful import from the existence of a marker or a worker exit alone.
+    if(!/^[a-f0-9]{32}$/.test(requestId)||path.basename(pending)!=='pc-merge-pending'||
+        !stat(pending)?.isDirectory()||!stat(work)?.isDirectory()||!stat(install)?.isDirectory())fail(153,'합치기 완료 대상을 확인할 수 없어요.');
+    const j={requestId,workId:id(stat(work)),rootId:id(stat(install))};
+    const receipt=committed(pending,j);
+    if(!receipt||![receipt.added,receipt.kept].every(n=>Number.isSafeInteger(n)&&n>=0))fail(153,'이번 작업의 완료 기록을 확인할 수 없어요.');
+    // Handles worker loss after rename but before syncDir/return. The marker file itself was fsynced before rename.
+    syncDir(pending);
+    console.log('added='+receipt.added+'\nkept='+receipt.kept);
 }
 function apply(install,pending){
     const j=journal(install,pending);if(committed(pending,j))fail(153,'이미 완료된 합치기예요.');
@@ -303,8 +504,9 @@ function apply(install,pending){
     // Atomic commit marker: after this, neither a restart nor an error while
     // cleaning scratch space may roll back a successfully imported file.
     const tmp=path.join(pending,'done.tmp');
-    save(tmp,{workId:j.workId});fs.renameSync(tmp,path.join(pending,'committed.json'));syncDir(pending);
-    console.log('added='+j.nodes.filter(n=>!n.dir).length+'\nkept='+j.kept);
+    const added=j.nodes.filter(n=>!n.dir).length;
+    save(tmp,{workId:j.workId,requestId:j.requestId,rootId:j.rootId,added,kept:j.kept});fs.renameSync(tmp,path.join(pending,'committed.json'));syncDir(pending);
+    console.log('added='+added+'\nkept='+j.kept);
 }
 function recover(install,pending){
     const j=journal(install,pending,false);
@@ -332,8 +534,13 @@ function recover(install,pending){
     const tmp=path.join(pending,'rollback-'+crypto.randomUUID()+'.tmp');
     save(tmp,{workId:j.workId});fs.renameSync(tmp,done);syncDir(pending);
 }
+function verifyRecordedCommit(install,pending){
+    if(!committed(pending,journal(install,pending,false)))fail(153,'합치기 완료 기록이 없어요.');
+}
 function discard(install,pending){
     const j=journal(install,pending,false);
+    if(!committed(pending,j)&&readJson(path.join(pending,'rolled-back.json'),4096).workId!==j.workId)
+        fail(153,'정리할 수 있는 완료 기록이 없어요.');
     if(stat(j.w))fs.rmSync(j.w,{force:false,recursive:true});
 }
 try {
@@ -342,6 +549,8 @@ try {
         case 'plan':case 'recheck':plan(argv);break;
         case 'prepare':prepare(...argv);break;
         case 'apply':apply(...argv);break;
+        case 'verify-current-commit':verifyCurrentCommit(...argv);break;
+        case 'verify-recorded-commit':verifyRecordedCommit(...argv);break;
         case 'recover':recover(...argv);break;
         case 'discard-work':discard(...argv);break;
         default:fail(64,'알 수 없는 가져오기 명령이에요.');

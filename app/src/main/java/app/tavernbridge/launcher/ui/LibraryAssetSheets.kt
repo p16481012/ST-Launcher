@@ -16,6 +16,15 @@ import androidx.compose.ui.unit.dp
 import app.tavernbridge.launcher.data.*
 import kotlinx.coroutines.CancellationException
 
+@Composable internal fun LibraryChatRefreshSheet(kind: LibraryChatMove, acknowledge: () -> Unit) {
+    V2BottomSheet(acknowledge, footer = { V2SheetPrimaryButton("확인", onClick = acknowledge) }) {
+        Text("열어 둔 실리태번 탭을 새로고침해 주세요", style = MaterialTheme.typography.titleLarge)
+        SettingsCaption(if (kind == LibraryChatMove.RENAMED)
+            "새로고침하지 않고 대화를 이어가면 옛 카드 이름에 채팅이 다시 저장될 수 있어요. 새로고침한 뒤 새 이름의 카드를 선택해 주세요."
+            else "새로고침하지 않고 대화를 이어가면 휴지통으로 옮긴 채팅이 옛 위치에 다시 생길 수 있어요.")
+    }
+}
+
 internal val LibraryKind.managedAsset: Boolean get() = when(this) {
     LibraryKind.BACKGROUNDS, LibraryKind.PRESETS, LibraryKind.WORLDS, LibraryKind.THEMES, LibraryKind.QUICK_REPLIES -> true
     else -> false

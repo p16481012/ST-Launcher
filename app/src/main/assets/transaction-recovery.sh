@@ -89,6 +89,44 @@ transaction_termux_ancestors() {
     done
 }
 
+transaction_writer_environment() {
+    # Silence a disappearing /proc entry at redirection time, not just inside tr.
+    tr '\0' '\n' 2>/dev/null < "$1/environ" | sed -n '/^ST_LAUNCHER_WRITER_TOKEN=/p'
+}
+
+# Called with the active tokens and verified ancestor identities in dynamic scope.
+transaction_process_quiet() {
+    local proc="$1" own_uid="$2" earliest="$3" pid="${1##*/}" owner started snapshot state now environment token attempt
+    for attempt in 1 2 3; do
+        [[ -d "$proc" && "$pid" != "$$" ]] || return 0
+        owner="$(stat -c %u "$proc" 2>/dev/null)" || { [[ ! -d "$proc" ]] && return 0; continue; }
+        [[ "$owner" == "$own_uid" ]] || return 0
+        started="$(process_start_ticks "$pid")"
+        if [[ ! "$started" =~ ^[0-9]{1,18}$ ]]; then [[ ! -d "$proc" ]] && return 0; continue; fi
+        (( 10#$started < 10#$earliest )) && return 0
+        if environment="$(transaction_writer_environment "$proc")"; then
+            while IFS= read -r token; do
+                token="${token#ST_LAUNCHER_WRITER_TOKEN=}"
+                if [[ "$token" =~ ^[0-9a-f]{32}$ && -n "${tokens[$token]:-}" ]]; then
+                    echo "이전 작업의 하위 프로세스가 아직 실행 중입니다. 종료 후 점검·복구를 다시 실행해 주세요." >&2
+                    return 1
+                fi
+            done <<< "$environment"
+            return 0
+        fi
+        # Losing an exited PID is benign. A replacement with the same PID may be a writer itself.
+        snapshot="$(awk '{sub(/^.*\) /, ""); print $1, $20}' "$proc/stat" 2>/dev/null)" || { [[ ! -d "$proc" ]] && return 0; continue; }
+        read -r state now <<< "$snapshot"
+        [[ "$now" =~ ^[0-9]{1,18}$ ]] || continue
+        [[ "$state" != Z ]] || return 0
+        [[ "$now" == "$started" ]] || continue
+        [[ -z "${termux_ancestors[$pid:$started]:-}" ]] || return 0
+        break
+    done
+    echo "이전 작업의 하위 프로세스 종료를 확인하지 못했습니다. Termux 작업이 끝난 뒤 다시 시도해 주세요." >&2
+    return 1
+}
+
 transaction_writers_quiet() {
     local work="$1" marker token cutoff earliest="" started proc owner environment own_uid done pid gate
     local -A tokens=() termux_ancestors=()
@@ -128,28 +166,7 @@ transaction_writers_quiet() {
         [[ "$proc" =~ ^[1-9][0-9]*:[1-9][0-9]*$ ]] && termux_ancestors["$proc"]=1
     done < <(transaction_termux_ancestors "$own_uid")
     for proc in /proc/[0-9]*; do
-        [[ -d "$proc" && "$proc" != "/proc/$$" ]] || continue
-        owner="$(stat -c %u "$proc" 2>/dev/null)" || continue
-        [[ "$owner" == "$own_uid" ]] || continue
-        started="$(process_start_ticks "${proc##*/}")"
-        if [[ ! "$started" =~ ^[0-9]{1,18}$ ]]; then [[ ! -d "$proc" ]] && continue; return 1; fi
-        # Android's non-dumpable Termux Java parent shares our UID, but predates
-        # this token. It (and every older process) cannot inherit a token that
-        # only future worker children receive. Never try reading its environ.
-        (( 10#$started < 10#$earliest )) && continue
-        if ! environment="$(tr '\0' '\n' < "$proc/environ" 2>/dev/null | sed -n '/^ST_LAUNCHER_WRITER_TOKEN=/p')"; then
-            [[ ! -d "$proc" || "$(awk '{sub(/^.*\) /, ""); print $1}' "$proc/stat" 2>/dev/null)" == Z ]] && continue
-            [[ -n "${termux_ancestors[${proc##*/}:$started]:-}" && "$(process_start_ticks "${proc##*/}")" == "$started" ]] && continue
-            echo "이전 작업의 하위 프로세스 종료를 확인하지 못했습니다. Termux 작업이 끝난 뒤 다시 시도해 주세요." >&2
-            return 1
-        fi
-        while IFS= read -r token; do
-            token="${token#ST_LAUNCHER_WRITER_TOKEN=}"
-            if [[ "$token" =~ ^[0-9a-f]{32}$ && -n "${tokens[$token]:-}" ]]; then
-                echo "이전 작업의 하위 프로세스가 아직 실행 중입니다. 종료 후 점검·복구를 다시 실행해 주세요." >&2
-                return 1
-            fi
-        done <<< "$environment"
+        transaction_process_quiet "$proc" "$own_uid" "$earliest" || return 1
     done
     # Only after proving no tagged descendant survives may subsequent checks
     # take the cheap completion path. A mere parent wait()/exit is not proof.

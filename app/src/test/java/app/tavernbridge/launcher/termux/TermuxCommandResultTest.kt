@@ -5,6 +5,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TermuxCommandResultTest {
+    @Test fun partialExtensionFailureRetainsCodeReceiptAndCompletionCount() {
+        val failure = TermuxCommandResult("id", "", "원본이 바뀌었어요.\nerror_code=EXTENSION_CHANGED", 75, -1, "")
+        val batch = failure.inFailedExtensionBatch(1, 4, "대상\n확장")
+        assertTrue(batch.stableErrorCode == "EXTENSION_CHANGED")
+        assertTrue(batch.readableError().startsWith("[EXTENSION_CHANGED]\n확장 1/4개 완료 · 대상 확장\n"))
+        assertTrue(batch.readableError().endsWith("원본이 바뀌었어요."))
+        val cancelled = failure.copy(stderr = "", exitCode = 130).inFailedExtensionBatch(2, 4, "다음 확장")
+        assertTrue(cancelled.exitCode == 130 && cancelled.stableErrorCode == "OPERATION_CANCELLED")
+        assertTrue(cancelled.readableError().contains("2/4개 완료"))
+    }
     @Test fun onlyAnOptedInForegroundHttpReadyStartMayOpenABrowser() {
         val ready = TermuxCommandResult("start", "started=1\npid=42\n", "", 0, -1, "")
         assertTrue(ready.shouldAutoOpenAfterStart(true, true, false))

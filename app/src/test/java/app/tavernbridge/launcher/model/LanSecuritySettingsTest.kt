@@ -6,6 +6,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LanSecuritySettingsTest {
+    @Test fun savedButNotSyncedReportsWarningWithoutDisplayingRawOutput() {
+        assertFalse(lanSettingsSavedMessage("saved=1\ndurability_warning=0\n").contains("확인하지 못했어요"))
+        val warning = lanSettingsSavedMessage("saved=1\ndurability_warning=1\nprivate-value\nserver_resume=STARTED")
+        assertTrue(warning.contains("디스크 기록"))
+        assertFalse(warning.contains("private-value"))
+    }
+
     @Test fun emptyShortAndControlCharactersAreRejected() {
         for ((user, password) in listOf("" to "long-password", "user" to "short", "a:b" to "long-password", "user\n" to "long-password", "user" to "long\npassword")) {
             assertNull(EphemeralBasicAuthCredentials.create(user, password))

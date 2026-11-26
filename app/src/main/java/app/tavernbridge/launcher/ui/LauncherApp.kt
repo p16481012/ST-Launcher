@@ -68,6 +68,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
 import app.tavernbridge.launcher.model.canModifyTavernFiles
+import app.tavernbridge.launcher.model.canUndoLibraryWithoutStoppingServer
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -278,8 +279,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
     LaunchedEffect(section) {
         if (section !in setOf(MainSection.SETUP, MainSection.BACKUPS)) viewModel.closePcZip()
     }
-    if (!state.isWorking) pcZip?.let { preview ->
-        PcZipReviewScreen(preview, state.environment.processRunning, viewModel::closePcZip, viewModel::mapPcZip, viewModel::applyPcZip)
+    val pcZipChecking = pcZip?.checking == true && state.dispatchedOperation == "import-preview"
+    if (!state.isWorking || pcZipChecking) pcZip?.let { preview ->
+        PcZipReviewScreen(preview, state.environment.processRunning, viewModel::closePcZip, viewModel::mapPcZip,
+            viewModel::checkPcZipReplacement, { viewModel.cancelCurrentOperation() }, viewModel::togglePcZipAvatars, viewModel::applyPcZip)
     }
     var browserPickerOpen by rememberSaveable { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -379,6 +382,10 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
 
     var seenResult by rememberSaveable { mutableStateOf(state.lastOperationResult?.completedAtMillis ?: -1L) }
     var failedResult by rememberSaveable { mutableStateOf(-1L) }
+    val chatAdvice by viewModel.dataLibrary.chatMoveNotices.pending.collectAsState()
+    if (!state.isWorking && failedResult < 0L) chatAdvice?.let { kind ->
+        LibraryChatRefreshSheet(kind) { viewModel.dataLibrary.chatMoveNotices.acknowledge(kind) }
+    }
     val summary = state.lastOperationResult
     LaunchedEffect(summary?.completedAtMillis, state.isWorking) {
         if (!state.isWorking && summary != null && summary.completedAtMillis != seenResult) {
@@ -454,7 +461,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             })
         }
     }
-    LaunchedEffect(state.message, state.error, state.lastOperationResult) {
+    LaunchedEffect(state.message, state.error, state.lastOperationResult, chatAdvice) {
         val notice = state.error ?: state.message
         if (notice != null) {
             if (summary != null && !summary.succeeded && state.error != null && (summary.detail == notice || notice.contains(summary.detail))) {
@@ -462,6 +469,8 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 return@LaunchedEffect
             }
             val op = summary?.takeIf { it.succeeded && it.detail == notice && state.error == null }?.operation
+            // Let the user read the persistent advice first, then start the undo snackbar's timer.
+            if (chatAdvice != null && op in setOf("library-trash", "library-card-change")) return@LaunchedEffect
             if (op == "start" && state.autoOpenedStartAtMillis >= 0 && state.autoOpenedStartAtMillis == state.dispatchedAtMillis) {
                 viewModel.consumeNotice()
                 return@LaunchedEffect
@@ -488,8 +497,14 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
             viewModel.consumeNotice()
             if (result == SnackbarResult.ActionPerformed) when {
                 libraryUndo != null -> {
-                    viewModel.dataLibrary.requestUndo(libraryUndo)
-                    viewModel.selectTool(ToolPage.DATA_LIBRARY)
+                    val now = viewModel.state.value
+                    val direct = if (now.canUndoLibraryWithoutStoppingServer())
+                        viewModel.dataLibrary.directUndo(libraryUndo) else null
+                    if (direct != null) viewModel.runLibrary(direct)
+                    else {
+                        viewModel.dataLibrary.requestUndo(libraryUndo)
+                        viewModel.selectTool(ToolPage.DATA_LIBRARY)
+                    }
                 }
                 chatUndo != null -> {
                     val now = viewModel.state.value
@@ -855,7 +870,7 @@ private fun LauncherScaffold(state: LauncherUiState, viewModel: LauncherViewMode
                 V2BackupFlowSheet(state, scope, viewModel::createBackup, viewModel::cancelCurrentOperation) {
                     if (backupWork) progressFolded = true else backupScopeOpen = false
                 }
-            } else if (showWorkProgress && !progressFolded && !commandAtHome &&
+            } else if (showWorkProgress && !progressFolded && !commandAtHome && !pcZipChecking &&
                 !(state.section == MainSection.SETTINGS && state.runningSettingsDiagnostic)) {
                 WorkingOverlay(state.workingLabel, state.workProgress, state.workingStartedAtMillis,
                     state.cancellationRequested, viewModel::cancelCurrentOperation) { progressFolded = true }

@@ -19,10 +19,6 @@ internal object BackupTransferPolicy {
         bytes[1] == 0x4b.toByte() && ((bytes[2] == 3.toByte() && bytes[3] == 4.toByte()) ||
         (bytes[2] == 5.toByte() && bytes[3] == 6.toByte()))
 
-    fun requireEmptyDestination(size: Long) {
-        require(size == 0L) { "비어 있는 새 파일인지 확인할 수 없습니다. 다른 이름이나 저장 위치를 선택해 주세요." }
-    }
-
     /** Bounded memory, Long counters; never write past the selected archive's known size. */
     fun copy(
         input: InputStream,

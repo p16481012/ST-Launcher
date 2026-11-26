@@ -32,4 +32,14 @@ class FileManagementModelsTest {
         assertFalse(idle.copy(environment = idle.environment.copy(recoveryPending = true)).canModifyTavernFiles())
         assertFalse(idle.copy(environment = idle.environment.copy(managerConnected = false)).canModifyTavernFiles())
     }
+    @Test fun oneTapUndoRequiresKnownStoppedServerAndNeverApprovesAPause() {
+        val env = EnvironmentStatus(managerConnected = true, sillyTavernInstalled = true)
+        val idle = LauncherUiState(isWorking = false, environment = env, environmentChecked = true,
+            termuxSetup = TermuxSetupState(TermuxSetupStatus.READY))
+        assertTrue(idle.canUndoLibraryWithoutStoppingServer())
+        for (s in listOf(idle.copy(environment = env.copy(serverReachable = true)),
+            idle.copy(environment = env.copy(processRunning = true)), idle.copy(environmentChecked = false),
+            idle.copy(termuxSetup = TermuxSetupState()), idle.copy(isWorking = true), idle.copy(termuxWakeBlocked = true),
+            idle.copy(environment = env.copy(recoveryPending = true)))) assertFalse(s.canUndoLibraryWithoutStoppingServer())
+    }
 }

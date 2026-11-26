@@ -34,10 +34,35 @@ class BackupTransferPolicyTest {
     }
 
     @Test fun refusesExistingOrUnknownDestinationBeforeWriting() {
-        BackupTransferPolicy.requireEmptyDestination(0)
+        assertEquals("ok", writeSelectedBackupDocument({ 0L }, {}) { "ok" })
         listOf(-1L, 1L, 4L, Long.MAX_VALUE).forEach { size ->
-            assertThrows(IllegalArgumentException::class.java) { BackupTransferPolicy.requireEmptyDestination(size) }
+            assertThrows(BackupTransferPreflightException::class.java) {
+                writeSelectedBackupDocument({ size }, {}) { throw AssertionError("destination opened") }
+            }
         }
+    }
+
+    @Test fun pickerDocumentSurvivesCancellationAndInterruptedWrite() {
+        val destination = java.io.File.createTempFile("st-picker-user-", ".zip")
+        try {
+            var checks = 0
+            val interrupted = java.util.concurrent.CancellationException("fixture")
+            val cancelled = assertThrows(java.util.concurrent.CancellationException::class.java) {
+                writeSelectedBackupDocument(destination::length, { if (++checks == 2) throw interrupted }) {
+                    throw AssertionError("destination opened after cancellation")
+                }
+            }
+            assertSame(interrupted, cancelled)
+            assertTrue(destination.exists())
+            assertEquals(0L, destination.length())
+            assertThrows(SelectedBackupWriteException::class.java) {
+                writeSelectedBackupDocument(destination::length, {}) {
+                    destination.outputStream().use { it.write(42) }
+                    throw IOException("provider disconnected")
+                }
+            }
+            assertArrayEquals(byteArrayOf(42), destination.readBytes())
+        } finally { destination.delete() }
     }
 
     @Test fun streamsExactContentsAndRealByteCounts() {

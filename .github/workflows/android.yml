@@ -152,6 +152,12 @@ jobs:
             bash scripts/test-backup-cancel.sh
           done
 
+      - name: Measure ZIP merge and card listing on synthetic Linux data
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          bash scripts/benchmark-pc-merge-review.sh
+          node scripts/benchmark-card-list.cjs
+
       - name: Test, lint, and build debug and unsigned release APKs
         run: ./gradlew --no-daemon test lint assembleDebug assembleRelease
 

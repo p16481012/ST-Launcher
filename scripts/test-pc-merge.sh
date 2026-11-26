@@ -28,6 +28,9 @@ with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED) as z:
         z.writestr('characters/C.png',b'raw')
     elif kind=='wrapper':
         z.writestr('copied/PC/data/default-user/worlds/W.json',b'{}')
+    elif kind=='avatars':
+        z.writestr('User Avatars/Persona.png',b'avatar')
+        z.writestr('worlds/Imported with no avatar.json',b'{}')
     elif kind=='legacy':
         z.writestr('PC/public/characters/C.png',b'raw')
     elif kind=='config':
@@ -36,6 +39,13 @@ PY
 }
 expect() { local expected="$1"; shift; local code=0; "$@" > "$sandbox/response" 2>&1 || code=$?; [[ "$code" == "$expected" ]] || { cat "$sandbox/response" >&2; echo "expected $expected, got $code" >&2; exit 1; }; }
 enc() { printf '%s' "$1" | base64 -w0; }
+mkzip avatars
+out="$(pc import-preview "$name")"; ar="$(value archive_revision "$out")"; tr="$(value installation_revision "$out")"
+out="$(pc import-preview "$name" '' merge-preview "$ar" skip-avatars)"
+[[ "$(value candidate_avatars "$out")" == 1 && "$(value avatars_included "$out")" == 0 && "$(value excluded_count "$out")" == 1 ]]
+expect 73 pc import-merge "$name" "$ar" "$tr" '' skip-avatars
+out="$(pc import-merge "$name" "$ar" "$(value installation_revision "$out")" '' skip-avatars)"
+[[ "$(value added "$out")" == 1 && ! -e "$ST_HOME/data/default-user/User Avatars/Persona.png" && -f "$ST_HOME/data/default-user/worlds/Imported with no avatar.json" ]]
 mkzip multi
 printf DIFFERENT > "$ST_HOME/data/default-user/characters/A.png"
 printf LOCAL > "$ST_HOME/data/default-user/secrets.json"
@@ -78,4 +88,53 @@ mv "$work/files/characters/C.png" "$ST_HOME/data/default-user/characters/C.png"
 pc_merge_rollback_pending
 [[ ! -e "$ST_HOME/data/default-user/characters/C.png" && ! -e "$pending" && ! -e "$work" ]]
 [[ "$(cat "$ST_HOME/data/default-user/characters/A.png")" == DIFFERENT ]]
+
+# Hold only the post-commit cleanup, then exercise the real manager recovery guard.
+# The fake writer receipt points at THIS still-live test process; no sleeps or PID races.
+out="$(pc import-preview "$name")"
+out="$(bash -c '
+    source "$1"; holder=$2; holder_start=$3; shift 3
+    transaction_writers_quiet() {
+        if [[ "$1" == "$BACKUP_DIR/pc-merge-pending" && -f "$1/committed.json" ]]; then
+            local t=abcdef0123456789abcdef0123456789
+            printf "token=%s\nowner_start=%s\npid=%s\nstart=%s\n" "$t" "$holder_start" "$holder" "$holder_start" > "$1/writer-$t.env"
+            return 1
+        fi
+        return 0
+    }
+    pc_merge_command "$@"
+' fixture "$assets/manager.sh" "$$" "$(process_start_ticks "$$")" import-merge "$name" "$(value archive_revision "$out")" "$(value installation_revision "$out")")"
+[[ "$(value cleanup_pending "$out")" == 1 && "$(value added "$out")" == 1 && -f "$pending/committed.json" ]]
+[[ "$(cat "$ST_HOME/data/default-user/characters/C.png")" == raw ]]
+grep -Fx 'status=success' "$RUN_DIR/last-result.env" >/dev/null
+expect 25 pc import-preview "$name"
+[[ -f "$pending/committed.json" && "$(cat "$ST_HOME/data/default-user/characters/C.png")" == raw ]]
+tx_work="$BACKUP_DIR/$(node -p 'require(process.argv[1]).work' "$pending/journal.json")"
+req="$(node -p 'require(process.argv[1]).requestId' "$pending/journal.json")"
+[[ "$req" =~ ^[0-9a-f]{32}$ ]]
+expect 153 pc_merge_data verify-current-commit "$ST_HOME" "$pending" "$tx_work" invalid
+expect 153 pc_merge_data verify-current-commit "$ST_HOME" "$pending" "$tx_work" ffffffffffffffffffffffffffffffff
+expect 0 pc_merge_data verify-current-commit "$ST_HOME" "$pending" "$tx_work" "$req"
+rm -- "$pending/writer-abcdef0123456789abcdef0123456789.env"
+out="$(pc import-preview "$name")"
+[[ ! -e "$pending" && ! -e "$tx_work" && "$(value add_count "$out")" == 0 && "$(cat "$ST_HOME/data/default-user/characters/C.png")" == raw ]]
 echo 'pc merge standalone and manager scenarios passed'
+
+# A replacement inventory is opt-in and uses original ZIP users, never the
+# destination chosen for merging. Refuse to invent counts for native scopes.
+mkdir -p "$ST_HOME/data/localonly/characters" "$ST_HOME/data/localonly/chats/old"
+printf 'local' > "$ST_HOME/data/localonly/characters/Only.png"
+printf 'local' > "$ST_HOME/data/localonly/chats/old/x.jsonl"
+mkzip multi
+out="$(pc import-preview "$name" "$mapping")"; [[ "$out" != *replace_impact* ]]
+out="$(pc import-preview "$name" "$mapping" replace-impact)"
+# C.png from the committed transaction and localonly/Only.png are absent,
+# as are the work and localonly users by their original (not merge-mapped) names.
+grep -Fxq $'replace_impact\tknown\t2\t1\t2' <<< "$out"
+approved_zip="$(value archive_revision "$out")"
+pc import-preview "$name" "$mapping" merge-preview "$approved_zip" >/dev/null
+mkzip native; out="$(pc import-preview "$name" '' replace-impact)"
+grep -Fxq $'replace_impact\tunknown' <<< "$out"
+# A replaced staging ZIP is rejected before a stale account mapping can mask it.
+expect 72 pc import-preview "$name" "$mapping" merge-preview "$approved_zip"
+expect 72 pc import-preview "$name" "$mapping" replace-impact "$approved_zip"

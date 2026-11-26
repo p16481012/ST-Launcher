@@ -28,6 +28,14 @@ data class TermuxCommandResult(
     internal val isRepairLinkerFailure: Boolean
         get() = errorCode == Activity.RESULT_OK && exitCode == 71 && stableErrorCode == "NODE_LINKER_FAILED"
 
+    /** Keep the original machine-readable failure first; the batch count belongs to the detail. */
+    internal fun inFailedExtensionBatch(completed: Int, total: Int, item: String): TermuxCommandResult {
+        require(!isSuccess && completed in 0 until total)
+        val name = item.replace('\n', ' ').replace('\r', ' ').take(160)
+        return copy(stderr = "error_code=$stableErrorCode\n확장 ${completed}/${total}개 완료 · $name\n" +
+            readableError().substringAfter('\n'))
+    }
+
     fun readableError(): String {
         val detail = LauncherErrorCode.withoutProtocolLines(stderr)
             .ifBlank { errorMessage.trim() }

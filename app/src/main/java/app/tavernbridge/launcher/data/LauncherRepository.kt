@@ -248,21 +248,24 @@ class LauncherRepository(private val context: Context) {
         )
         if (!result.isSuccess || !keepRunning) return result
         try {
-            val stopped = stop()
-            if (!stopped.isSuccess) return stopped
-            if (wakeLockEnabled()) setTermuxWakeLock(true).let { if (!it.isSuccess) return it }
-            return start()
+            return followCommittedUpdate(result) {
+                val stopped = stop()
+                if (!stopped.isSuccess) return@followCommittedUpdate stopped
+                if (wakeLockEnabled()) setTermuxWakeLock(true).let { if (!it.isSuccess) return@followCommittedUpdate it }
+                start()
+            }
         } catch (cancelled: UserOperationCancelled) {
             // The update is already committed. Stop only its temporary/start
             // server; do not turn a committed update into a failed update.
             val control = currentCoroutineContext()[OperationCancellationControl]
-            withoutOperationCancellation {
-                if (control != null) cancelOperation("", control.requestId).let {
-                    if (!it.isSuccess) throw IllegalStateException(it.readableError())
+            val stopConfirmed = try {
+                withoutOperationCancellation {
+                    val acknowledged = control == null || cancelOperation("", control.requestId).isSuccess
+                    acknowledged && stop().isSuccess
                 }
-                stop().let { if (!it.isSuccess) throw IllegalStateException(it.readableError()) }
-            }
-            return result.copy(stdout = result.stdout + "\nfollowup_cancelled=1\n")
+            } catch (e: CancellationException) { throw e }
+              catch (_: Exception) { false }
+            return result.copy(stdout = result.stdout + "\nfollowup_cancelled=1\nfollowup_stopped=${if (stopConfirmed) 1 else 0}\n")
         }
     }
 
@@ -768,19 +771,27 @@ class LauncherRepository(private val context: Context) {
         return Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
     }
 
-    internal suspend fun previewPcZip(file: SharedImportStaging.Transfer, map: Map<String, String>?):
+    internal suspend fun previewPcZip(file: SharedImportStaging.Transfer, map: Map<String, String>?, impact: Boolean = false,
+        archiveRevision: String? = null, includeAvatars: Boolean = true):
         Pair<PcZipPreview, TermuxCommandResult> {
-        val mappingArg = map?.let { " " + shellQuote(pcZipMapping(it)) }.orEmpty()
-        val result = runManager("import-preview ${shellQuote(file.name)}$mappingArg", 45 * 60_000L)
+        val mappingArg = map?.let { " " + shellQuote(pcZipMapping(it)) } ?: if (impact || archiveRevision != null) " ''" else ""
+        val flag = (if (impact) " replace-impact" else if (archiveRevision != null) " merge-preview" else "") +
+            (archiveRevision?.let { " " + shellQuote(it) } ?: "")
+        require(includeAvatars || archiveRevision != null)
+        val options = if (includeAvatars) "" else " skip-avatars"
+        val result = runManager("import-preview ${shellQuote(file.name)}$mappingArg$flag$options", 45 * 60_000L)
         check(result.isSuccess) { result.readableError() }
         check(!result.stdoutTruncated) { "ZIP 미리보기 응답이 잘렸어요. 아무 파일도 바꾸지 않았어요." }
-        return parsePcZipPreview(result.stdout) to result
+        val parsed = parsePcZipPreview(result.stdout)
+        check(parsed.avatarsIncluded == includeAvatars) { "페르소나 그림 선택을 확인하지 못했어요. ZIP을 다시 확인해 주세요." }
+        return parsed to result
     }
 
     internal suspend fun applyPcZip(file: SharedImportStaging.Transfer, preview: PcZipPreview, replace: Boolean): TermuxCommandResult {
         val args = if (replace) "import-backup ${shellQuote(file.name)} ${shellQuote(preview.archive)}" else {
             require(preview.canAdd)
-            "import-merge ${shellQuote(file.name)} ${shellQuote(preview.archive)} ${shellQuote(preview.installation)} ${shellQuote(pcZipMapping(preview.profiles))}"
+            "import-merge ${shellQuote(file.name)} ${shellQuote(preview.archive)} ${shellQuote(preview.installation)} ${shellQuote(pcZipMapping(preview.profiles))}" +
+                if (preview.avatarsIncluded) "" else " skip-avatars"
         }
         return dispatchStagedTransfer(file, args, 90 * 60_000L)
     }
