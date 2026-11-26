@@ -31,7 +31,7 @@ internal fun recoveredSubstepNotice(requestedOperation: String?, completedOperat
         "switch-branch" -> "브랜치 전환"
         "restore", "restore-selected", "import-backup" -> "복원"
         "import-merge" -> "PC ZIP 합치기"
-        "library-trash", "library-undo", "library-asset-change" -> "자료 관리"
+        "library-trash", "library-undo", "library-asset-change", "library-card-change" -> "자료 관리"
         "change-version" -> "이전 버전으로 변경"
         "import-install" -> "설치 가져오기"
         "reset-installation" -> "초기화"

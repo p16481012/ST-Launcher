@@ -95,6 +95,7 @@ internal val LibraryKind.managedAsset: Boolean get() = when(this) {
 @Composable internal fun AssetChangeSheet(library: DataLibraryAccess, user: String, row: LibraryItem, requested: AssetChange,
     canWrite: Boolean, serverRunning: Boolean, close: () -> Unit, perform: (LibraryWrite) -> Unit) {
     val rename = requested == AssetChange.RENAME
+    val card = row.isCardAsset()
     val file = row.path.substringAfterLast('/')
     var stem by rememberSaveable { mutableStateOf(file.substringBeforeLast('.')) }
     var edited by rememberSaveable { mutableStateOf(false) }
@@ -111,7 +112,7 @@ internal val LibraryKind.managedAsset: Boolean get() = when(this) {
         catch (e: Exception) { readError = e.message ?: "사용처 검사를 마치지 못했어요." }
     }
     val status = usage?.state
-    val copy = rename && (status == AssetUse.USED || status == AssetUse.UNKNOWN && !forceRename)
+    val copy = rename && (status == AssetUse.USED || status == AssetUse.UNKNOWN && (card || !forceRename))
     val destructive = !copy && status != null
     val needsConsent = destructive && status == AssetUse.UNKNOWN
     val usedBlocked = !rename && status == AssetUse.USED
@@ -140,8 +141,8 @@ internal val LibraryKind.managedAsset: Boolean get() = when(this) {
             }
         }
     }) {
-        Text(if (rename) "파일 이름 변경" else "휴지통으로 옮길까요?",style = MaterialTheme.typography.titleLarge)
-        SettingsCaption(file)
+        Text(if (card && rename) "캐릭터 카드 이름 변경" else if (rename) "파일 이름 변경" else "휴지통으로 옮길까요?",style = MaterialTheme.typography.titleLarge)
+        SettingsCaption(if (card) "${row.label} · $file" else file)
         if (serverRunning && !usedBlocked && canWrite) SettingsCaption("확정하면 서버를 잠시 끄고 작업을 마친 뒤 다시 켜요.")
         val result = usage
         if (!canWrite) SettingsCaption("다른 작업이나 복구가 끝난 뒤 변경할 수 있어요.")
@@ -151,18 +152,19 @@ internal val LibraryKind.managedAsset: Boolean get() = when(this) {
         } else if (result != null) {
             SettingsHeading(result.label)
             if (result.detail.isNotBlank()) SettingsCaption(result.detail)
-            if (status == AssetUse.USED) SettingsCaption(if(rename)
+            if (card && copy) SettingsCaption("원래 카드와 채팅·그룹 연결을 유지하고 새 카드만 만들어요. 채팅은 복사하지 않아요.")
+            else if (status == AssetUse.USED) SettingsCaption(if(rename)
                 "연결을 유지하려면 원래 파일은 그대로 두고 새 이름으로 복사해요."
                 else "이 자료를 사용하는 곳에서 다른 자료로 바꾸거나 연결을 해제해 주세요.")
             if (rename) {
                 OutlinedTextField(value = stem, onValueChange = { stem = it; edited = true; submitError = "" },
-                    label = { Text("새 파일 이름") }, suffix = { Text("." + file.substringAfterLast('.')) }, singleLine = true,
+                    label = { Text(if (card) "새 카드 이름" else "새 파일 이름") }, suffix = { Text("." + file.substringAfterLast('.')) }, singleLine = true,
                     isError = edited && nameError != null, modifier = Modifier.fillMaxWidth())
                 if (edited && nameError != null) Text(nameError,color = MaterialTheme.colorScheme.error)
                 SettingsCaption("확장자는 그대로 두고, 같은 이름이 있으면 덮어쓰지 않아요.")
-                if (row.path.startsWith("themes/") || row.path.startsWith("QuickReplies/"))
+                if (card || row.path.startsWith("themes/") || row.path.startsWith("QuickReplies/"))
                     SettingsCaption("실리태번 목록에 표시되는 이름도 새 이름에 맞춰요.")
-                if (status == AssetUse.UNKNOWN) {
+                if (!card && status == AssetUse.UNKNOWN) {
                     SettingsGroup {
                         SettingsRow("새 이름으로 복사",selected = !forceRename,caption = "원래 파일과 연결을 유지해요.",
                             onClick = { forceRename = false; accepted = false })

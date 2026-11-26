@@ -9,6 +9,7 @@ internal enum class AssetChange(val wire: String, val label: String) {
 }
 
 internal fun assetStem(s: String): String = Normalizer.normalize(s, Normalizer.Form.NFC)
+private val cardReservedStem = Regex("^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.|$)", RegexOption.IGNORE_CASE)
 
 /** The editable field is only a stem. Never silently sanitize a user's intended destination. */
 internal fun assetNameError(row: LibraryItem, newStem: String): String? {
@@ -19,6 +20,8 @@ internal fun assetNameError(row: LibraryItem, newStem: String): String? {
         stem.isBlank() -> "새 이름을 입력해 주세요."
         stem != stem.trim() || stem.startsWith('.') || stem.endsWith('.') -> "이름 앞뒤의 공백이나 점을 빼 주세요."
         stem.any { it.code < 32 || it.code == 127 || it in "/\\:*?\"<>|" } -> "파일 이름에 사용할 수 없는 문자가 있어요."
+        row.isCardAsset() && (cardReservedStem.containsMatchIn(stem) || stem.any { it.code in 128..159 }) ->
+            "실리태번 캐릭터 파일에 사용할 수 없는 이름이에요."
         ext.isEmpty() -> "파일 확장자를 확인할 수 없어요."
         "$stem.$ext".toByteArray(Charsets.UTF_8).size > 240 -> "파일 이름이 너무 길어요."
         assetStem(name) == "$stem.$ext" -> "지금 이름과 다른 이름을 입력해 주세요."
@@ -36,4 +39,13 @@ internal fun LibraryItem.isManagedAsset(): Boolean {
         "worlds", "OpenAI Settings", "QuickReplies", "themes" -> ext == "json"
         else -> false
     }
+}
+
+// Card identity is stored both in PNG metadata and in filename-based SillyTavern links.
+// Never let a card fall through to the generic rename/trash commands.
+internal fun LibraryItem.isCardAsset(): Boolean {
+    if (!path.startsWith("characters/") || !librarySha.matches(revision)) return false
+    val name = path.removePrefix("characters/")
+    return name.endsWith(".png") && !name.startsWith('.') &&
+        name.none { it == '/' || it == '\\' || it.code < 32 || it.code == 127 }
 }

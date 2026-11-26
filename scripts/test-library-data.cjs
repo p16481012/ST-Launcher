@@ -170,5 +170,6 @@ try{
     let cursor='',seen=new Set(),pages=0;
     do{const page=answer(0,'library-list','worlds',cursor);assert(Buffer.byteLength(page)<40*1024);for(const x of rows(page)){assert(!seen.has(x.path));seen.add(x.path);}cursor=readValue(page,'next_cursor');assert(++pages<20);}while(cursor);
     assert(pages>1);assert.equal(seen.size,482);
+    require('./library-card-fixtures.cjs')({base,home,owner,invoke,rows,b64,decode,readValue,chunk});
     console.log('Library data: stable paging, separated imports, safe five-category rename/copy/trash, crash recovery, grouped undo, revisions and tri-state usage passed.');
 }finally{fs.rmSync(base,{recursive:true,force:true});}

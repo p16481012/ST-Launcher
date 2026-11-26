@@ -65,8 +65,10 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
         return LibraryAssetPreview.parse(result.stdout)
     }
     suspend fun assetUsage(user: String, row: LibraryItem): AssetUsage {
-        require(row.isManagedAsset())
-        val r = run(wire("library-usage", libraryEncode(user), libraryEncode(row.path), row.revision), 5 * 60_000L).verified()
+        val card = row.isCardAsset()
+        require(card || row.isManagedAsset())
+        val r = run(wire(if (card) "library-card-usage" else "library-usage",
+            libraryEncode(user), libraryEncode(row.path), row.revision), 5 * 60_000L).verified()
         val state = when (r.field("state")) {
             "used" -> AssetUse.USED; "none" -> AssetUse.NONE; "unconfirmed" -> AssetUse.UNKNOWN
             else -> error("사용처 검사 결과를 확인할 수 없어요. 다시 확인해 주세요.")
@@ -75,19 +77,26 @@ internal class DataLibraryAccess(private val context: Context, private val getUs
     }
 
     fun changeAsset(user: String, row: LibraryItem, action: AssetChange, newStem: String = "", allowUnknown: Boolean = false): LibraryWrite {
-        require(row.isManagedAsset())
+        val card = row.isCardAsset()
+        require(card || row.isManagedAsset())
+        require(!card || (!allowUnknown && action != AssetChange.TRASH)) {
+            "채팅·그룹 연결이 불확실한 카드는 원본을 바꾸지 않아요."
+        }
         val stem = if (action == AssetChange.TRASH) "" else {
             assetNameError(row, newStem)?.let { throw IllegalArgumentException(it) }
             assetStem(newStem)
         }
-        val command = wire("library-asset-change", libraryEncode(user), libraryEncode(row.path), row.revision,
-            action.wire, libraryEncode(stem), if (allowUnknown) "1" else "0")
-        return LibraryWrite("library-asset-change", action.label, true, { result ->
+        val operation = if (card) "library-card-change" else "library-asset-change"
+        val args = listOf(libraryEncode(user), libraryEncode(row.path), row.revision, action.wire, libraryEncode(stem)) +
+            (if (card) emptyList() else listOf(if (allowUnknown) "1" else "0"))
+        val command = wire(operation, *args.toTypedArray())
+        return LibraryWrite(operation, action.label, true, { result ->
             val name = result.field("name_b64")?.let(::libraryDecode)
             when (action) {
                 AssetChange.TRASH -> "휴지통으로 옮겼어요. 원래 위치로 되돌릴 수 있어요."
                 AssetChange.RENAME -> "이름을 바꿨어요 · ${name ?: stem}"
-                AssetChange.COPY -> "새 이름으로 복사했어요 · ${name ?: stem}\n원본은 그대로예요."
+                AssetChange.COPY -> "새 이름으로 복사했어요 · ${name ?: stem}\n" +
+                    if (card) "기존 채팅과 그룹은 원본 카드에 남아 있어요." else "원본은 그대로예요."
             }
         }) {
             lastMoved.value = null

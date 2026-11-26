@@ -71,11 +71,11 @@ function cardInfo(p){
             const hd=readAt(fd,8,pos),n=hd.readUInt32BE(0),t=hd.toString('ascii',4,8);
             if(pos+n+12>len||(i===0&&(t!=='IHDR'||n!==13)))return null;
             if(t==='tEXt'){
-                const hdr=readAt(fd,Math.min(80,n),pos+8),nul=hdr.indexOf(0),key=nul>0?hdr.toString('latin1',0,nul):'';
+                const hdr=readAt(fd,Math.min(80,n),pos+8),nul=hdr.indexOf(0),keyword=nul>0?hdr.toString('latin1',0,nul):'',key=keyword.toLowerCase();
                 if(key==='chara'||key==='ccv3'){
                     if(n>8*MB||tags.has(key))return null;
                     const bytes=readAt(fd,n-nul-1,pos+9+nul),encoded=bytes.toString('latin1'),plain=Buffer.from(encoded,'base64');
-                    if(plain.toString('base64')!==encoded||crcText(key,bytes)!==readAt(fd,4,pos+n+8).readUInt32BE(0))return null;
+                    if(plain.toString('base64')!==encoded||crcText(keyword,bytes)!==readAt(fd,4,pos+n+8).readUInt32BE(0))return null;
                     tags.set(key,JSON.parse(utf(plain)));
                 }
             }
@@ -111,7 +111,7 @@ function openCardCache(){
         cacheIdentity=[rootName,ino(fs.statSync(root,{bigint:true})),user,ino(fs.statSync(profile,{bigint:true}))].join('\0');
         cacheName='library-card-'+h(cacheIdentity)+'.json';cacheFolder=pin(path.join(owner,'cache'),true);
         const from=json(path.join(cacheFolder,cacheName),3*MB);
-        if(from.v===1&&from.scope===h(cacheIdentity)&&Array.isArray(from.items)&&from.items.length<=4000){
+        if(from.v===2&&from.scope===h(cacheIdentity)&&Array.isArray(from.items)&&from.items.length<=4000){
             for(const rec of from.items)if(Array.isArray(rec)&&rec.length===2&&assetName(rec[0])&&obj(rec[1]))cardCache.set(rec[0],rec[1]);
         }
     }catch{/* private derived cache is entirely optional */}
@@ -135,7 +135,7 @@ function flushCardCache(){
         }
         // Rename an exclusive temporary snapshot. Concurrent readers may miss
         // a cache entry but can never publish partial JSON or change live data.
-        fs.writeFileSync(temp,JSON.stringify({v:1,scope:h(cacheIdentity),items:kept.reverse()}),{flag:'wx',mode:0o600});
+        fs.writeFileSync(temp,JSON.stringify({v:2,scope:h(cacheIdentity),items:kept.reverse()}),{flag:'wx',mode:0o600});
         fs.renameSync(temp,path.join(cacheFolder,cacheName));
     }catch{/* full/read-only storage: library remains usable */}
     finally{try{fs.unlinkSync(temp);}catch{}}
@@ -158,11 +158,19 @@ function listFiles(kind){
     }
     return out.sort();
 }
-function groups(){
-    const members=new Set();let unknown=false;
+function groups(extended=false){
+    const members=new Set(),other=new Set();let unknown=false,extraUnknown=false;
     try{for(const e of entries(dirpath(profile,'groups',true))){if(!e.name.endsWith('.json'))continue;
-        if(!e.isFile()){unknown=true;continue;}try{const g=json(path.join(profile,'groups',e.name),4*MB);if(!Array.isArray(g.members))unknown=true;else g.members.forEach(x=>members.add(x));}catch{unknown=true;}}}catch{unknown=true;}
-    return {members,unknown};
+        if(!e.isFile()){unknown=true;continue;}try{
+            const g=json(path.join(profile,'groups',e.name),4*MB);
+            if(!Array.isArray(g.members))unknown=true;else g.members.forEach(x=>members.add(x));
+            if(extended)for(const v of [g.members,g.disabled_members]){
+                if(v==null)continue;
+                if(!Array.isArray(v)){extraUnknown=true;continue;}
+                for(const x of v){if(typeof x==='string')other.add(x);else extraUnknown=true;}
+            }
+        }catch{unknown=true;}}}catch{unknown=true;}
+    return {members,unknown,other,extraUnknown};
 }
 function chatStat(name){
     const chat=dirpath(profile,'chats',true),d=chat&&path.join(chat,name),st=d&&stat(d),hash=crypto.createHash('sha256');
@@ -187,7 +195,7 @@ function item(r,g){
         else {if(stat(path.join(dirpath(profile,'characters'),n+'.png')))fail(145,'같은 이름의 캐릭터 카드가 생겼어요.');protectedItem=g.unknown||g.members.has(n+'.png');}
         protectedItem ||= !chats.safe;
     }
-    return {r,k,n,p,label,bytes,fileBytes:k==='orphans'?0:Number(s.size),count,when,prot:protectedItem,
+    return {r,k,n,p,label,bytes,fileBytes:k==='orphans'?0:Number(s.size),count,when,prot:protectedItem,card,
         artRev:k==='cards'||k==='backgrounds'?h(JSON.stringify([rootName,user,r,partId(s)])):'',
         rev:h(JSON.stringify([rootName,user,r,partId(s),revisionData,protectedItem]))};
 }
@@ -340,6 +348,101 @@ function stem(s,tail){
     let clean=s.normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f-\x9f]/g,'').trim().replace(/^[. ]+|[. ]+$/g,'');
     if(!clean||/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:[.]|$)/i.test(clean))clean='가져온 파일';
     let out='';for(const c of clean){if(Buffer.byteLength(out+c+tail)>200)break;out+=c;}return out+tail;
+}
+// Write to the caller's exclusive temporary descriptor only. Do not decode
+// or re-encode pixels, stringify extension data, or publish a partial card.
+function writeNamedCard(sourcePath,destFd,newStem){
+    const invalid=()=>fail(144,'캐릭터 카드 형식을 안전하게 확인하지 못했어요. 원본은 그대로예요.');
+    const tooBig=()=>fail(144,'카드 정보가 너무 커서 이름을 안전하게 바꿀 수 없어요. 원본은 그대로예요.');
+    const write=bytes=>fs.writeFileSync(destFd,bytes);
+    const crc=(prev,b)=>{for(let j=0;j<b.length;j++)prev=crcTable[(prev^b[j])&255]^(prev>>>8);return prev;};
+    function namedText(bytes,tag){
+        const encoded=bytes.toString('latin1'),decoded=Buffer.from(encoded,'base64');
+        if(!encoded.length||encoded!==decoded.toString('base64'))invalid();
+        const bom=decoded.subarray(0,3).equals(Buffer.from([239,187,191]));
+        let text,doc;try{text=utf(decoded);doc=JSON.parse(text);}catch{invalid();}
+        if(!obj(doc)||('spec' in doc&&!['chara_card_v1','chara_card_v2','chara_card_v3'].includes(doc.spec)))invalid();
+        // JSON.parse above validates the grammar; this lexer locates *only*
+        // the name tokens. Unknown fields, 64-bit IDs, escapes, whitespace
+        // and nested objects named "name" are otherwise byte-preserved.
+        const ws=i=>{while(i<text.length&&' \n\r\t'.includes(text[i]))i++;return i;};
+        const endString=i=>{for(i++;i<text.length;i++){
+            if(text[i]==='\\')i++;else if(text[i]==='"')return i+1;
+        }invalid();};
+        const endValue=i=>{
+            if(text[i]==='"')return endString(i);
+            if(text[i]==='{'||text[i]==='['){let depth=1;for(i++;i<text.length;i++){
+                const c=text[i];if(c==='"')i=endString(i)-1;else if(c==='{'||c==='[')depth++;else if((c==='}'||c===']')&&!--depth)return i+1;
+            }invalid();}
+            while(i<text.length&&!(',}] \n\r\t'.includes(text[i])))i++;return i;
+        };
+        const fields=(at,keys)=>{
+            if(text[at]!=='{')invalid();let i=ws(at+1);const out=new Map();
+            while(text[i]!=='}'){
+                const j=endString(i),k=JSON.parse(text.slice(i,j)),v=ws(ws(j)+1),end=endValue(v);
+                if(keys.includes(k)){if(out.has(k))invalid();out.set(k,[v,end]);}
+                i=ws(end);if(text[i]===',')i=ws(i+1);
+            }return out;
+        };
+        const start=ws(0),top=fields(start,['name','data','spec']),data=top.get('data'),mods=[],value=JSON.stringify(newStem);
+        const hasName=s=>typeof s==='string'&&s.trim().length>0;
+        if(data&&!obj(doc.data))invalid();
+        if((tag==='ccv3'||doc.spec==='chara_card_v2'||doc.spec==='chara_card_v3')&&!data)invalid();
+        if(!hasName(doc.name)&&!hasName(doc.data?.name))invalid();
+        function set(at,keys){
+            const field=keys.get('name');
+            if(field){
+                if(text[field[0]]!=='"')invalid();
+                mods.push([field[0],field[1],value]);
+            }else{
+                const comma=text[ws(at+1)]==='}'?'':',';
+                mods.push([at+1,at+1,'"name":'+value+comma]);
+            }
+        }
+        set(start,top);if(data)set(data[0],fields(data[0],['name']));
+        for(const [a,b,v] of mods.sort((l,r)=>r[0]-l[0]))text=text.slice(0,a)+v+text.slice(b);
+        return Buffer.from((bom?'\ufeff':'')+text).toString('base64');
+    }
+    withFile(sourcePath,Number.MAX_SAFE_INTEGER,(fd,s)=>{
+        const len=Number(s.size),tags=new Set();let pos=8,idat=false,idatBytes=0,idatClosed=false,palette=false,color=-1,depth=0;
+        if(len<57||!Number.isSafeInteger(len))invalid();
+        const sig=readAt(fd,8,0);if(sig.toString('hex')!=='89504e470d0a1a0a')invalid();write(sig);
+        for(let i=0;pos+12<=len&&i<65536;i++){
+            cancel();const hd=readAt(fd,8,pos),n=hd.readUInt32BE(0),type=hd.subarray(4),tag=type.toString('latin1'),end=pos+12+n;
+            if(n>0x7fffffff||end>len||!/^[A-Za-z]{2}[A-Z][A-Za-z]$/.test(tag)||(i===0)!==(tag==='IHDR'))invalid();
+            if(tag[0]<='Z'&&!['IHDR','PLTE','IDAT','IEND'].includes(tag))invalid();
+            if(tag==='IHDR'){
+                if(n!==13)invalid();const ih=readAt(fd,13,pos+8);depth=ih[8];color=ih[9];
+                const validDepth={0:[1,2,4,8,16],2:[8,16],3:[1,2,4,8],4:[8,16],6:[8,16]};
+                if(ih.readInt32BE(0)<=0||ih.readInt32BE(4)<=0||!validDepth[color]?.includes(depth)||ih[10]||ih[11]||ih[12]>1)invalid();
+            }
+            if(tag==='PLTE'){if(idat||palette||color===0||color===4||!n||n%3||n>768||(color===3&&n>3*(2**depth)))invalid();palette=true;}
+            if(tag==='IDAT'){if(idatClosed||color===3&&!palette)invalid();idat=true;idatBytes+=n;}else if(idat)idatClosed=true;
+            if(tag==='IEND'&&(!idatBytes||!tags.size||n!==0||end!==len))invalid();
+            let keyword='',split=-1;
+            if(['tEXt','zTXt','iTXt'].includes(tag)){
+                const prefix=readAt(fd,Math.min(n,80),pos+8);split=prefix.indexOf(0);
+                if(split<1)invalid();keyword=prefix.toString('latin1',0,split);
+            }
+            if(['chara','ccv3'].includes(keyword.toLowerCase())){
+                if(tag!=='tEXt'||tags.has(keyword.toLowerCase()))invalid();if(n>8*MB)tooBig();
+                tags.add(keyword.toLowerCase());
+                const bytes=readAt(fd,n-split-1,pos+9+split);
+                if(crcText(keyword,bytes)!==readAt(fd,4,end-4).readUInt32BE(0))invalid();
+                const updated=namedText(bytes,keyword.toLowerCase()),data=Buffer.from(keyword+'\0'+updated,'latin1');
+                if(data.length>8*MB)tooBig();
+                const head=Buffer.from(hd),tail=Buffer.alloc(4);head.writeUInt32BE(data.length);
+                tail.writeUInt32BE((~crc(crc(-1,type),data))>>>0);write(head);write(data);write(tail);
+            }else{
+                write(hd);let sum=crc(-1,type);
+                for(let off=0;off<n;){
+                    cancel();const block=readAt(fd,Math.min(128*1024,n-off),pos+8+off);sum=crc(sum,block);write(block);off+=block.length;
+                }
+                const tail=readAt(fd,4,end-4);if(((~sum)>>>0)!==tail.readUInt32BE(0))invalid();write(tail);
+            }
+            pos=end;if(tag==='IEND')return;
+        }invalid();
+    });
 }
 function importAsset(){
     const [kind,source,rawName,expected]=args,name=dec(rawName);
@@ -509,15 +612,102 @@ function checkInternalName(folder,stem,ignore){
         if(typeof doc?.name==='string'&&doc.name.normalize('NFC')===stem)fail(145,'파일 이름은 달라도 실리태번에서 같은 이름을 쓰는 자료가 있어요.');
     }
 }
-function stashAsset(r,source,check){
+function stashAsset(r,source,check,preflight){
     const created=Date.now(),gid=crypto.randomUUID(),id=created+'-'+crypto.randomUUID();
-    const s=check(),rows=[{r,selected:r,id,identity:ino(s),version:partId(s),chatRevision:''}];
+    const s=preflight||check(),rows=[{r,selected:r,id,identity:ino(s),version:partId(s),chatRevision:''}];
     const journal=pin(path.join(owner,'library-undo'),true),base=pin(path.join(owner,'file-trash'),true);
     writeEx(path.join(journal,gid+'.json'),JSON.stringify({format:1,root:rootName,rootInode:ino(fs.statSync(root,{bigint:true})),user,userInode:ino(fs.statSync(profile,{bigint:true})),created,rows}));syncDir(journal);
     const record=path.join(base,id);fs.mkdirSync(record,{mode:0o700});syncDir(base);
     const container=pin(record);
     writeEx(path.join(container,'metadata.json'),JSON.stringify({root:rootName,relative:'data/'+user+'/'+r,deleted_at:created,libraryGroup:gid}));syncDir(container);
     check();noReplace(source,path.join(container,'item'));syncDir(container);syncDir(path.dirname(source));return gid;
+}
+// A card PNG is also an identity: chats, group avatars, expressions and settings
+// can point to its basename. Never change these links speculatively. A new
+// independent card is an explicit *copy*, never an automatic rename fallback.
+function cardSettingsRefs(names){
+    const found=new Set(),forms=new Map();
+    for(const n of names)for(const form of [n,n+'.png','characters/'+n+'.png','/characters/'+n+'.png'])
+        forms.set(form.normalize('NFC'),n);
+    const see=v=>{if(typeof v==='string'&&v.length<=3072){
+        let s=v;try{if(s.includes('%'))s=decodeURIComponent(s);}catch{/* may be a literal percent */}
+        for(const a of [v,s]){const hit=forms.get(a.normalize('NFC'));if(hit)found.add(hit);}
+    }};
+    try{
+        const doc=json(path.join(profile,'settings.json'),8*MB);if(!obj(doc))return {found,unknown:true};
+        let budget=100000;
+        function visit(v,d){
+            if(--budget<0||d>64)throw Error('budget');
+            if(typeof v==='string')see(v);
+            else if(v&&typeof v==='object')for(const key of Object.keys(v)){see(key);visit(v[key],d+1);}
+        }
+        visit(doc,0);return {found,unknown:false};
+    }catch{return {found,unknown:true};}
+}
+function hasGroupHistory(){
+    const d=dirpath(profile,'group chats',true);if(!d)return false;
+    const handle=fs.opendirSync(d);try{let e;while((e=handle.readSync()))if(e.name.endsWith('.jsonl'))return true;}
+    finally{handle.closeSync();}return false;
+}
+function cardOperation(){
+    const changing=action==='library-card-change',[raw,rev,mode,rawName]=args,r=dec(raw);
+    if(args.length!==(changing?4:2)||category(r)!=='cards'||!/^[a-f0-9]{64}$/.test(rev)||
+        (changing&&!['rename','copy'].includes(mode)))fail(64,'변경할 캐릭터 카드를 다시 선택해 주세요.');
+    const old=path.basename(r,'.png'),stem=changing?dec(rawName,240):'',file=stem+'.png';
+    if(changing&&(!assetName(stem)||stem!==stem.trim()||stem!==stem.normalize('NFC')||stem.endsWith('.')||
+        /[:*?"<>|\x80-\x9f]/.test(stem)||/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem)||
+        Buffer.byteLength(file)>240||old.normalize('NFC')===stem))fail(64,'확장자를 제외한 새 이름을 입력해 주세요.');
+    const folder=fixedParent(profile,r),folderId=ino(fs.statSync(folder,{bigint:true})),source=path.join(folder,old+'.png'),dest=path.join(folder,file);
+    const check=(published=null)=>{
+        cancel();verifyLiveProfile();const par=stat(path.join(profile,'characters'));
+        if(!par?.isDirectory()||ino(par)!==folderId)fail(145,'캐릭터 폴더가 바뀌었어요. 목록을 새로 확인해 주세요.');
+        const g=groups(true),x=item(r,g),s=stat(source);
+        if(!s?.isFile()||x.rev!==rev||x.artRev!==h(JSON.stringify([rootName,user,r,partId(s)])))fail(145,'카드나 연결 상태가 바뀌었어요. 목록을 다시 열어 주세요.');
+        const names=[old];if(changing)names.push(stem);
+        if(x.card?.name)names.push(x.card.name);
+        const settings=cardSettingsRefs(names);
+        let used='',unknown='';
+        const sprite=n=>stat(path.join(folder,n));
+        if(x.count)used='연결된 채팅이 '+x.count+'개 있어요.';
+        else if(g.other.has(old+'.png'))used='그룹에서 이 카드를 참조하고 있어요.';
+        else if(x.card?.favorite)used='즐겨찾기 카드예요.';
+        else if(sprite(old)||(x.card?.name&&assetName(x.card.name)&&sprite(x.card.name)))used='이 카드 이름에 연결된 표정 폴더나 파일이 있어요.';
+        else if(settings.found.has(old)||settings.found.has(x.card?.name))used='사용자 설정에 이 카드 이름을 쓰는 항목이 있어요.';
+        else if(x.prot||g.extraUnknown||settings.unknown)unknown='카드·그룹 또는 설정의 연결 상태를 전부 확인하지 못했어요.';
+        else {try{if(hasGroupHistory())unknown='기존 그룹 대화에 남은 캐릭터 참조를 확인할 수 없어요.';}catch{unknown='그룹 대화 기록을 확인하지 못했어요.';}}
+        if(!changing)return {state:used?'used':unknown?'unconfirmed':'none',detail:used||unknown||'연결된 채팅이나 그룹을 찾지 못했어요.'};
+        if(mode==='rename'&&(used||unknown))fail(144,(used||unknown)+' 원본을 유지하고 새 이름으로 복사해 주세요.');
+        const chats=dirpath(profile,'chats',true), existing=stat(dest);
+        if((published?(!existing||partId(existing)!==published):!!existing)||sprite(stem)||(chats&&stat(path.join(chats,stem)))||
+            g.other.has(file)||settings.found.has(stem))fail(145,'새 이름을 쓰는 카드·채팅·그룹 또는 설정이 있어요. 다른 이름을 골라 주세요.');
+        return s;
+    };
+    const initial=check();
+    if(!changing){console.log('state='+initial.state+'\ndetail_b64='+b64(initial.detail));return;}
+    const tmp=path.join(folder,'.st-launcher-card-'+crypto.randomUUID()+'.tmp');
+    let committed=false,tmpId;
+    try{
+        const fd=fs.openSync(tmp,'wx',0o600);
+        try{tmpId=ino(fs.fstatSync(fd,{bigint:true}));writeNamedCard(source,fd,stem);fs.fsyncSync(fd);}
+        finally{fs.closeSync(fd);}
+        const approved=check(),prepared=stat(tmp);
+        if(!prepared?.isFile()||ino(prepared)!==tmpId)fail(145,'변경할 사본이 바뀌었어요.');
+        noReplace(tmp,dest);committed=true;syncDir(folder);
+        if(mode==='rename'){
+            const fresh=stat(dest);
+            if(!fresh||ino(fresh)!==tmpId||fresh.size!==prepared.size||fresh.mtimeNs!==prepared.mtimeNs)fail(145,'새 카드가 바뀌었어요.');
+            const stamp=partId(fresh);
+            // Publish the new valid file before shelving the unmodified original.
+            // A crash between the two leaves both cards, never neither.
+            stashAsset(r,source,()=>check(stamp),approved);
+        }
+        console.log('action='+mode+'\nname_b64='+b64(file));
+    }catch(e){
+        if(committed){
+            if(stat(source))fail(e.exit||145,'새 카드가 이미 저장됐어요. 원본도 남겨 두었으니 목록을 다시 확인해 주세요.');
+            fail(e.exit||145,'새 카드를 저장했어요. 원본의 휴지통 보관 결과를 확인해 주세요.');
+        }throw e;
+    }finally{const left=stat(tmp);if(left&&ino(left)===tmpId)fs.unlinkSync(tmp);}
 }
 function assetChange(){
     const [raw,revision,mode,rawStem,allow]=args,r=dec(raw),k=category(r);
@@ -577,6 +767,7 @@ try{
     else if(action==='library-history'||action==='library-undo')historyOrUndo();
     else if(action==='library-usage')usage();
     else if(action==='library-asset-change')assetChange();
+    else if(action==='library-card-usage'||action==='library-card-change')cardOperation();
     else if(action==='library-import')importAsset();
     else fail(64,'지원하지 않는 작업이에요.');
 }catch(e){

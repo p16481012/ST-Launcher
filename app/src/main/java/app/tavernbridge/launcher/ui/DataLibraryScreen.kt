@@ -180,7 +180,7 @@ private enum class CardOrder(val label: String) {
     val results = state.lastOperationResult
     var observed by remember { mutableStateOf(results?.completedAtMillis) }
     LaunchedEffect(results?.completedAtMillis) {
-        if (results != null && results.completedAtMillis != observed && results.operation in setOf("library-import","library-trash","library-undo","library-asset-change")) {
+        if (results != null && results.completedAtMillis != observed && results.operation in setOf("library-import","library-trash","library-undo","library-asset-change","library-card-change")) {
             observed = results.completedAtMillis
             selected = emptySet(); selecting = false; detail = null; assetChange = null; generation++
         }
@@ -287,7 +287,10 @@ private enum class CardOrder(val label: String) {
                     }
                 }
                 LibraryItemRow(library,user,kind,row,selecting,row.path in selected,canChangeAsset,
-                    { action -> assetChange = row to action },
+                    { action ->
+                        if (kind == LibraryKind.CARDS && action == AssetChange.TRASH) trashConfirm = listOf(row)
+                        else assetChange = row to action
+                    },
                     { if(selecting) toggle() else detail = row })
             }
             if (!loading && !blocked && kind != LibraryKind.HISTORY && !selecting) {
@@ -334,7 +337,12 @@ private enum class CardOrder(val label: String) {
     trashConfirm?.let { records ->
         var withChats by remember(records) { mutableStateOf(false) }
         val chatCount = records.sumOf { it.chats }
-        V2BottomSheet({ trashConfirm = null }) {
+        if (records.any { it.protected }) V2BottomSheet({ trashConfirm = null },footer = {
+            V2SheetPrimaryButton("닫기",onClick = { trashConfirm = null })
+        }) {
+            Text("보호된 카드는 옮기지 않아요",style = MaterialTheme.typography.titleLarge)
+            SettingsCaption("즐겨찾기나 그룹에 연결되어 있거나, 연결 상태를 확인하지 못한 카드예요. 원본과 채팅은 그대로 두었어요.")
+        } else V2BottomSheet({ trashConfirm = null }) {
             Text("${records.size}개를 휴지통으로 옮길까요?",style = MaterialTheme.typography.titleLarge)
             SettingsCaption(if (kind == LibraryKind.ORPHANS) "선택한 채팅 폴더와 대화 파일이 함께 옮겨져요." else "카드만 옮기면 채팅은 그대로 남아요.")
             if (kind != LibraryKind.ORPHANS && chatCount > 0) SettingsRow("채팅 ${chatCount}개도 같이 옮기기",checked = withChats,
@@ -394,7 +402,7 @@ private enum class CardOrder(val label: String) {
             }
             Text((if (kind == LibraryKind.CARDS) "총 " else "") + formatBackupBytes(row.bytes),
                 style = MaterialTheme.typography.bodySmall)
-            if (!selecting && kind.managedAsset && canChange) AssetOverflow(row,onAction)
+            if (!selecting && (kind.managedAsset || kind == LibraryKind.CARDS) && canChange) AssetOverflow(row,onAction)
             else if(!selecting) Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp))
         }
     }
@@ -407,11 +415,19 @@ private enum class CardOrder(val label: String) {
     val scope = rememberCoroutineScope()
     V2BottomSheet(close) {
         Text(row.label,style = MaterialTheme.typography.titleLarge)
-        if (kind == LibraryKind.BACKGROUNDS) {
+        if (kind == LibraryKind.BACKGROUNDS || kind == LibraryKind.CARDS) {
             LibraryArtwork(library,user,row,Modifier.fillMaxWidth().height(216.dp).clip(RoundedCornerShape(12.dp)),detail = true)
         } else if (kind.managedAsset) LibraryPreviewSection(library,user,kind,row)
-        SettingsCaption("${row.path} · ${formatBackupBytes(row.bytes)}")
-        if (kind.trashable) {
+        if (kind != LibraryKind.CARDS) SettingsCaption("${row.path} · ${formatBackupBytes(row.bytes)}")
+        if (kind == LibraryKind.CARDS) {
+            SettingsGroup {
+                SettingsRow("파일 이름",row.path.substringAfterLast('/'))
+                SettingsDivider()
+                SettingsRow("카드 크기",formatBackupBytes(row.fileBytes))
+                SettingsDivider()
+                SettingsRow("연결된 채팅","${row.chats}개")
+            }
+        } else if (kind.trashable) {
             SettingsRow("채팅", "${row.chats}개")
             if (row.protected) SettingsCaption("즐겨찾기·그룹 연결 등으로 보호된 항목은 여기서 옮기지 않아요.")
             else if (canWrite) V2DangerAction("휴지통으로 옮기기",trash,Modifier.fillMaxWidth())

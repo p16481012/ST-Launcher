@@ -19,6 +19,7 @@ import org.json.JSONArray
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 class DataLibraryFlowTest {
     @get:Rule val ui = createComposeRule()
@@ -26,9 +27,9 @@ class DataLibraryFlowTest {
     private val revision = "1".repeat(64)
     private val writes = mutableListOf<LibraryWrite>()
     private val calls = CopyOnWriteArrayList<String>()
-    private fun row(path: String, name: String, bytes: Int, chats: Int = 0) =
+    private fun row(path: String, name: String, bytes: Int, chats: Int = 0, protected: Boolean = false) =
         listOf("item", enc(path), enc(name), bytes.toString(), chats.toString(), "100", revision,
-            "0", bytes.toString(), if(path.startsWith("chats/")) "" else revision).joinToString("\t")
+            (if (protected) "1" else "0"), bytes.toString(), if(path.startsWith("chats/")) "" else revision).joinToString("\t")
     // This 4:1 green image has red/blue edge strips. A cropped landscape tile hides the strips;
     // the fitted detail must show them. Generate valid PNG bytes with Android's codec.
     private val artPng by lazy {
@@ -69,15 +70,30 @@ class DataLibraryFlowTest {
             else -> error("예상하지 않은 미리보기 경로")
         }
     }
-    private fun launch(assetUse: String? = null, serverRunning: Boolean = false) {
+    private fun launch(assetUse: String? = null, serverRunning: Boolean = false, cardCases: Boolean = false) {
         val library = DataLibraryAccess(InstrumentationRegistry.getInstrumentation().targetContext,{ listOf("default-user") }) { args,_ ->
             calls += args
             val output = when {
                 args.startsWith("library-artwork ") -> artOutput(args)
+                args.startsWith("library-card-usage ") -> {
+                    val state = when {
+                        "'${enc("characters/새.png")}'" in args -> "none"
+                        "'${enc("characters/미확인.png")}'" in args -> "unconfirmed"
+                        else -> "used"
+                    }
+                    "state=$state\ndetail_b64=" + enc("채팅·그룹 검사 결과")
+                }
+                args.startsWith("library-card-change ") -> "action=" + (if (" 'copy' " in args) "copy" else "rename") + "\nname_b64=" + enc("새 이름.png")
+                args.startsWith("library-trash ") -> "moved=1\nskipped=0"
                 args.startsWith("library-usage ") -> "state=" + assetUse + "\ndetail_b64=" + enc("검사 결과")
                 args.startsWith("library-preview ") -> previewOutput(args)
                 args.startsWith("library-list ") -> (when {
                     " 'orphans' " in args -> row("chats/남은 대화","남은 대화",1000,5)
+                    cardCases && " 'cards' " in args -> listOf(
+                        row("characters/새.png","다른 표시 이름",400),
+                        row("characters/대화.png","대화 있음",300,3),
+                        row("characters/미확인.png","연결 미확인",200,0,true)
+                    ).joinToString("\n")
                     " 'cards' " in args -> listOf(row("characters/가.png","가나다",200,4),
                         row("characters/나.png","나라마",900,1)).joinToString("\n")
                     " 'backgrounds' " in args -> listOf("봄.jpg","여름.png","겨울.webp").mapIndexed { i, name ->
@@ -168,6 +184,71 @@ class DataLibraryFlowTest {
         ui.onNode(hasText(text) and hasAnyAncestor(hasTestTag("v2-sheet-footer")))
     private fun sheetInput() =
         ui.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("v2-sheet-body")))
+
+    private fun openCardList() = ui.onNodeWithText("캐릭터 카드").performScrollTo().performClick()
+    private fun openCardMenu(label: String) = ui.onNodeWithContentDescription("$label 더보기").performScrollTo().performClick()
+
+    @Test fun cardTapShowsUncroppedArtAndMetadataWithoutOpeningActions() {
+        launch(cardCases = true)
+        openCardList()
+        ui.runOnIdle { assertFalse(calls.any { " 'detail' " in it || it.startsWith("library-card-usage ") }) }
+        ui.onNodeWithText("다른 표시 이름").performScrollTo().performClick()
+        ui.onNodeWithText("새.png").assertExists()
+        ui.onNodeWithText("연결된 채팅").assertExists()
+        val art = hasTestTag("library-artwork-ready") and hasAnyAncestor(hasTestTag("v2-sheet-surface"))
+        ui.waitUntil(10_000) { ui.onAllNodes(art,useUnmergedTree = true).fetchSemanticsNodes().size == 1 }
+        assertEquals(setOf(Color.RED,Color.GREEN,Color.BLUE),sampledColors(ui.onNode(art,useUnmergedTree = true)))
+        ui.onNodeWithText("휴지통으로 옮기기").assertDoesNotExist()
+        ui.runOnIdle { assertTrue(writes.isEmpty()); assertFalse(calls.any { it.startsWith("library-card-usage ") }) }
+    }
+
+    @Test fun cardRenameOnlyChangesUnlinkedCardsAndOffersCopyOtherwise() {
+        launch(cardCases = true)
+        openCardList()
+        for ((index,pair) in listOf("다른 표시 이름" to "rename","대화 있음" to "copy","연결 미확인" to "copy").withIndex()) {
+            openCardMenu(pair.first)
+            ui.runOnIdle { assertEquals(index,calls.count { it.startsWith("library-card-usage ") }); assertEquals(index,writes.size) }
+            ui.onNodeWithText("이름 변경").performClick()
+            val label = if (pair.second == "copy") "새 이름으로 복사" else "이름 변경"
+            if (pair.second == "copy") {
+                ui.onNodeWithText("원래 카드와 채팅·그룹 연결을 유지하고 새 카드만 만들어요. 채팅은 복사하지 않아요.").assertExists()
+                ui.onNodeWithText("원본 이름 변경").assertDoesNotExist()
+                ui.onNodeWithText("연결이 끊길 수 있음을 확인했어요").assertDoesNotExist()
+            }
+            sheetInput().performTextReplacement("새 이름")
+            footer(label).assertIsEnabled().performClick()
+            val write = ui.runOnIdle { writes.last() }
+            assertEquals("library-card-change",write.operation)
+            runBlocking { write.execute() }
+            assertTrue(calls.any { it.startsWith("library-card-change ") && " '${pair.second}' " in it })
+            ui.runOnIdle { assertEquals(label,write.label) }
+        }
+    }
+
+    @Test fun cardTrashDefaultsToCardOnlyAndProtectedCardExplainsWhy() {
+        launch(cardCases = true)
+        openCardList()
+        fun trash(label: String) {
+            openCardMenu(label)
+            ui.onNodeWithText("휴지통으로 옮기기").performClick()
+        }
+        trash("대화 있음")
+        val include = ui.onNodeWithText("채팅 3개도 같이 옮기기")
+        include.assertIsOff().performClick().assertIsOn()
+        ui.onNodeWithText("취소").performClick()
+        trash("대화 있음")
+        include.assertIsOff()
+        ui.onNodeWithText("휴지통으로 옮기기").performClick()
+        val task = ui.runOnIdle { writes.single() }
+        assertEquals("library-trash",task.operation)
+        runBlocking { task.execute() }
+        assertTrue(calls.single { it.startsWith("library-trash ") }.endsWith(" '0'"))
+        trash("연결 미확인")
+        ui.onNodeWithText("보호된 카드는 옮기지 않아요").assertExists()
+        ui.onNodeWithText("휴지통으로 옮기기").assertDoesNotExist()
+        footer("닫기").performClick()
+        ui.runOnIdle { assertEquals(1,writes.size) }
+    }
 
     @Test fun jsonAssetsPreviewOnlyWhenOpenedAndNeverExecuteTheirContents() {
         launch("none")
